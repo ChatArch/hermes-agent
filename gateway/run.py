@@ -7528,6 +7528,12 @@ class GatewayRunner:
                 logger.info("Ignoring /start platform ping for active session %s", _quick_key)
                 return ""
 
+            if _cmd_def_inner and _cmd_def_inner.name == "topic":
+                return await self._handle_topic_command(event)
+
+            if _cmd_def_inner and _cmd_def_inner.name == "thread":
+                return await self._handle_thread_command(event)
+
             if _cmd_def_inner and _cmd_def_inner.name == "restart":
                 return await self._handle_restart_command(event)
 
@@ -7957,6 +7963,9 @@ class GatewayRunner:
 
         if canonical == "topic":
             return await self._handle_topic_command(event)
+
+        if canonical == "thread":
+            return await self._handle_thread_command(event)
         
         if canonical == "help":
             return await self._handle_help_command(event)
@@ -8289,6 +8298,10 @@ class GatewayRunner:
                 return self._telegram_topic_root_lobby_message()
             return None
 
+        return await self._dispatch_event_to_agent(event, source, _quick_key)
+
+    async def _dispatch_event_to_agent(self, event: MessageEvent, source: SessionSource, session_key: str):
+        """Run one inbound event through the normal agent turn pipeline."""
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
         # are numerous await points (hooks, vision enrichment, STT,
@@ -8296,12 +8309,12 @@ class GatewayRunner:
         # message arriving during any of those yields would pass the
         # "already running" guard and spin up a duplicate agent for the
         # same session — corrupting the transcript.
-        self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
-        self._running_agents_ts[_quick_key] = time.time()
-        _run_generation = self._begin_session_run_generation(_quick_key)
+        self._running_agents[session_key] = _AGENT_PENDING_SENTINEL
+        self._running_agents_ts[session_key] = time.time()
+        _run_generation = self._begin_session_run_generation(session_key)
 
         try:
-            _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            _agent_result = await self._handle_message_with_agent(event, source, session_key, _run_generation)
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -8336,14 +8349,14 @@ class GatewayRunner:
             # then cleaned it up, this is a no-op.  If we exited early
             # (exception, command fallthrough, etc.) the sentinel must
             # not linger or the session would be permanently locked out.
-            if self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
-                self._release_running_agent_state(_quick_key)
+            if self._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL:
+                self._release_running_agent_state(session_key)
             else:
                 # Agent path already cleaned _running_agents; make sure
                 # the paired metadata dicts are gone too.
-                self._running_agents_ts.pop(_quick_key, None)
+                self._running_agents_ts.pop(session_key, None)
                 if hasattr(self, "_busy_ack_ts"):
-                    self._busy_ack_ts.pop(_quick_key, None)
+                    self._busy_ack_ts.pop(session_key, None)
 
     async def _prepare_inbound_message_text(
         self,
@@ -9832,6 +9845,110 @@ class GatewayRunner:
             lines.append(f"◆ Endpoint: {base_url}")
 
         return "\n".join(lines)
+
+    async def _handle_thread_command(self, event: MessageEvent):
+        """Handle Feishu /thread <prompt>.
+
+        In a normal Feishu chat this creates a new Feishu thread from the
+        command message, then runs the prompt as a thread-scoped Hermes turn. In
+        an existing Feishu thread it resets that thread's Hermes session and
+        runs the prompt in the same thread.
+        """
+        source = event.source
+        if source.platform != Platform.FEISHU:
+            return "/thread is currently supported only on Feishu."
+
+        prompt = event.get_command_args().strip()
+        if not prompt:
+            return "Usage: /thread <prompt>"
+
+        thread_source = source
+        seed_message_id = getattr(event, "message_id", None)
+        created_thread_seed_message_id = None
+        original_session_key = self._session_key_for_source(source)
+        adapter = self.adapters.get(source.platform)
+
+        if source.thread_id:
+            thread_key = self._session_key_for_source(source)
+            if thread_key in self._running_agents:
+                await self._interrupt_and_clear_session(
+                    thread_key,
+                    source,
+                    interrupt_reason=_INTERRUPT_REASON_RESET,
+                    invalidation_reason="thread_command",
+                )
+            # Reset just this thread session, but do not return the /new notice;
+            # the next visible message should be the assistant's answer to the
+            # supplied prompt inside the same thread.
+            reset_event = dataclasses.replace(event, text="/new")
+            await self._handle_reset_command(reset_event)
+        else:
+            create_thread = getattr(adapter, "create_thread", None) if adapter else None
+            if create_thread is None:
+                return "Feishu /thread is unavailable: adapter does not support thread creation."
+            if not seed_message_id:
+                return "Feishu /thread requires a message id to create a thread."
+            result = await create_thread(
+                source.chat_id,
+                "⏳",
+                reply_to=str(seed_message_id),
+            )
+            if not getattr(result, "success", False):
+                return f"Failed to create Feishu thread: {getattr(result, 'error', 'unknown error')}"
+            thread_id = getattr(result, "thread_id", None) or getattr(result, "message_id", None)
+            if not thread_id:
+                return "Failed to create Feishu thread: response did not include a thread id."
+            seed_message_id = getattr(result, "message_id", None) or str(seed_message_id)
+            created_thread_seed_message_id = seed_message_id
+            thread_source = dataclasses.replace(
+                source,
+                thread_id=str(thread_id),
+                parent_chat_id=source.chat_id,
+                message_id=seed_message_id,
+            )
+            release_retargeted = getattr(adapter, "release_retargeted_session_guard", None)
+            if release_retargeted is not None:
+                release_retargeted(original_session_key)
+
+        # Retarget the original event so BasePlatformAdapter recomputes send
+        # metadata and delivers the final assistant response to the Feishu
+        # thread, not the parent chat where /thread was typed.
+        event.text = prompt
+        event.message_type = MessageType.TEXT
+        event.source = thread_source
+        event.reply_to_message_id = seed_message_id
+        event.reply_to_text = prompt
+
+        thread_key = self._session_key_for_source(thread_source)
+        agent_result = await self._dispatch_event_to_agent(event, thread_source, thread_key)
+
+        if created_thread_seed_message_id:
+            final_text = ""
+            if isinstance(agent_result, dict):
+                final_text = str(agent_result.get("final_response") or "")
+            elif isinstance(agent_result, str):
+                final_text = agent_result
+            if final_text.strip():
+                edit_message = getattr(adapter, "edit_message", None) if adapter else None
+                if edit_message is not None:
+                    edit_result = await edit_message(
+                        source.chat_id,
+                        str(created_thread_seed_message_id),
+                        final_text,
+                        finalize=True,
+                    )
+                    if getattr(edit_result, "success", False):
+                        return None
+                    logger.warning(
+                        "Feishu /thread final edit failed for %s: %s",
+                        created_thread_seed_message_id,
+                        getattr(edit_result, "error", "unknown error"),
+                    )
+            # If the edit path is unavailable or failed, fall back to returning
+            # the final text so the normal gateway send path still delivers it.
+            return agent_result
+
+        return agent_result
 
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""

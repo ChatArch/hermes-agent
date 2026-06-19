@@ -170,6 +170,18 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
         assert "Unknown command" not in result
 
 
+@pytest.mark.asyncio
+async def test_thread_slash_command_not_flagged_as_unknown(monkeypatch):
+    """/thread must be registered so it reaches its dedicated handler."""
+    runner = _make_runner()
+    runner._handle_thread_command = AsyncMock(return_value="thread handled")  # type: ignore[attr-defined]
+
+    result = await runner._handle_message(_make_event("/thread summarize"))
+
+    assert result == "thread handled"
+    assert "Unknown command" not in result
+
+
 # ------------------------------------------------------------------
 # command:<name> decision hook — deny / handled / rewrite
 # ------------------------------------------------------------------
