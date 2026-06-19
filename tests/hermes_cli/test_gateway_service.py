@@ -800,6 +800,41 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", "-k", target],
         ]
 
+    def test_launchd_restart_kickstart_path_writes_planned_restart_marker(
+        self, tmp_path, monkeypatch
+    ):
+        """Hard launchd restarts should still produce startup lifecycle feedback.
+
+        When the CLI falls back to terminate + ``launchctl kickstart -k``, the
+        old gateway does not run ``request_restart()``, so it cannot write the
+        ``.restart_pending.json`` marker during shutdown. The CLI must create
+        that marker before the hard restart so the replacement gateway can send
+        the normal home-channel "back online" notification.
+        """
+        calls = []
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "terminate_pid",
+            lambda pid, force=False: calls.append(("term", pid, force)),
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_restart()
+
+        marker = tmp_path / ".restart_pending.json"
+        assert marker.exists()
+        assert "launchd" in marker.read_text(encoding="utf-8")
+
     def test_launchd_restart_self_requests_graceful_restart_without_kickstart(self, monkeypatch, capsys):
         calls = []
 
@@ -821,6 +856,32 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_restart()
 
         assert calls == [("self", 321)]
+        assert "restart requested" in capsys.readouterr().out.lower()
+
+    def test_gateway_restart_inside_gateway_uses_self_restart_request(
+        self, monkeypatch, capsys
+    ):
+        """A gateway-hosted terminal restart should use SIGUSR1, not hard-refuse.
+
+        The old blanket ``_HERMES_GATEWAY`` guard blocked even the safe path
+        that asks the running gateway ancestor to restart itself gracefully.
+        That forced operators into raw ``launchctl kickstart`` workarounds,
+        which bypass planned-restart markers and user-visible success feedback.
+        """
+        calls = []
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda pid: calls.append(pid) or True,
+        )
+
+        args = SimpleNamespace(gateway_command="restart", all=False, system=False)
+
+        gateway_cli._gateway_command_inner(args)
+
+        assert calls == [321]
         assert "restart requested" in capsys.readouterr().out.lower()
 
     def test_launchd_stop_uses_bootout_not_kill(self, monkeypatch):

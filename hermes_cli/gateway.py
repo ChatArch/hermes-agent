@@ -223,6 +223,58 @@ def _request_gateway_self_restart(pid: int) -> bool:
     return True
 
 
+def _request_current_gateway_self_restart() -> bool:
+    """Request a graceful restart from a gateway-hosted child process.
+
+    ``hermes gateway restart`` is normally blocked when inherited environment
+    marks the caller as gateway-hosted, because a blind service restart from an
+    agent/tool call can create restart loops. There is, however, a safe and
+    intentionally-supported path for this exact topology: if the currently
+    running gateway PID is an ancestor of this CLI process, send SIGUSR1 to the
+    gateway and let the gateway's own drain/restart machinery run. That path
+    writes the planned-restart marker during shutdown, so the replacement
+    process can send normal lifecycle feedback.
+    """
+    try:
+        from gateway.status import get_running_pid
+
+        pid = get_running_pid()
+    except Exception:
+        pid = None
+    if pid is None:
+        return False
+    if not _request_gateway_self_restart(pid):
+        return False
+    print("✓ Service restart requested")
+    return True
+
+
+def _write_planned_restart_notification_marker(**extra) -> bool:
+    """Best-effort marker for non-chat planned restarts.
+
+    The gateway's startup path consumes ``.restart_pending.json`` and sends the
+    configured home channel a lightweight "gateway is back" notification. The
+    marker is normally written by ``GatewayRunner.stop(restart=True)``. CLI
+    service paths that bypass that shutdown code (for example launchd terminate
+    + kickstart fallback) must write it themselves before relaunching.
+    """
+    try:
+        import time as _time
+        from utils import atomic_json_write
+
+        payload = {"requested_at": _time.time()}
+        payload.update(extra)
+        atomic_json_write(
+            get_hermes_home() / ".restart_pending.json",
+            payload,
+            indent=None,
+        )
+        return True
+    except Exception as exc:
+        logger.debug("Failed to write planned restart notification marker: %s", exc)
+        return False
+
+
 def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
     """Send SIGUSR1 to a gateway PID and wait for it to exit gracefully.
 
@@ -3758,6 +3810,11 @@ def launchd_restart():
                     print(
                         f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
                     )
+        _write_planned_restart_notification_marker(
+            source="launchd",
+            via_cli=True,
+            hard_restart=True,
+        )
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
@@ -6829,13 +6886,18 @@ def _gateway_command_inner(args):
                 print(f"✓ Stopped {get_service_name()} service")
 
     elif subcmd == "restart":
-        # Defense: refuse self-targeting gateway restart from inside the gateway.
-        # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
+        # Defense: refuse unsafe self-targeting gateway restart from inside the gateway.
+        # If this CLI is a gateway-hosted child and the running gateway is our
+        # ancestor, use the safe SIGUSR1 path instead: the gateway drains itself
+        # and writes planned-restart markers before exiting. Keep refusing cases
+        # that cannot be proven to target the current ancestor gateway.
         if os.getenv("_HERMES_GATEWAY") == "1":
+            if not getattr(args, "all", False) and _request_current_gateway_self_restart():
+                return
             print_error(
                 "Refusing to restart the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"
-                "Use `hermes gateway restart` from a shell outside the running gateway."
+                "Use `/restart` in chat or run `hermes gateway restart` from a shell outside the running gateway."
             )
             sys.exit(1)
 
