@@ -26,9 +26,10 @@ class _FakeAdapter:
         self._pending_messages = {}
         self._active_sessions = {}
         self.interrupted_sessions = []
+        self.sent_messages = []
 
     async def send(self, chat_id, text, **kwargs):
-        pass
+        self.sent_messages.append((chat_id, text, kwargs))
 
     async def interrupt_session_activity(self, session_key, chat_id):
         self.interrupted_sessions.append((session_key, chat_id))
@@ -73,6 +74,39 @@ def _make_event(text="hello", chat_id="12345"):
         user_id="u1",
     )
     return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
+
+
+@pytest.mark.asyncio
+async def test_draining_gateway_rejects_new_non_active_session_turn():
+    """Restart drain must be a global inbound gate, not only a busy-session gate.
+
+    A restart requested from inside an active gateway-hosted turn waits for the
+    active turn to drain before the process exits. During that window adapters
+    may still receive new platform messages. Those messages can target a
+    different session key (for example a new Feishu/Telegram thread), so they
+    bypass the existing active-session busy handler unless the cold path also
+    checks ``_draining``. They must not spawn new agent runs while the gateway is
+    already restarting.
+    """
+    runner = _make_runner()
+    adapter = runner.adapters[Platform.TELEGRAM]
+    runner._draining = True
+    runner._restart_requested = True
+    runner._running_agents = {
+        "agent:main:telegram:dm:original": MagicMock(),
+    }
+
+    event = _make_event(text="/thread new thread turn", chat_id="different-thread")
+    runner._handle_thread_command = AsyncMock(
+        side_effect=AssertionError("draining gateway dispatched /thread")
+    )
+
+    result = await runner._handle_message(event)
+
+    assert isinstance(result, str)
+    assert "Gateway is restarting" in result
+    runner._handle_thread_command.assert_not_awaited()
+    assert not getattr(adapter, "sent_messages")
 
 
 # ------------------------------------------------------------------

@@ -7544,6 +7544,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     canonical = _cmd_def.name if _cmd_def else command
                     break
 
+        if self._draining and canonical != "status":
+            return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
+
         if canonical == "new":
             if self._is_telegram_topic_root_lobby(source):
                 return self._telegram_topic_root_new_message()
