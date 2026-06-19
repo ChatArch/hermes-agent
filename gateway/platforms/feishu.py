@@ -1828,6 +1828,46 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    async def create_thread(
+        self,
+        chat_id: str,
+        content: str,
+        *,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Create a Feishu thread by replying to ``reply_to`` with ``reply_in_thread``.
+
+        Feishu opens a thread when a reply is sent with ``reply_in_thread=True``.
+        Newer API responses expose ``thread_id``; fall back to the sent message
+        id so the gateway still has a stable thread lane when the SDK response
+        shape omits it.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        if not reply_to:
+            return SendResult(success=False, error="Feishu /thread requires a source message id")
+
+        formatted = self.format_message(content)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        seed_chunk = chunks[0] if isinstance(chunks, list) and chunks else formatted
+        msg_type, payload = self._build_outbound_payload(seed_chunk)
+        try:
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type=msg_type,
+                payload=payload,
+                reply_to=reply_to,
+                metadata={**(metadata or {}), "thread_id": "__create__"},
+            )
+            result = self._finalize_send_result(response, "create_thread failed")
+            if result.success and not result.thread_id:
+                result.thread_id = result.message_id
+            return result
+        except Exception as exc:
+            logger.error("[Feishu] create_thread error: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
     async def edit_message(
         self,
         chat_id: str,
@@ -4532,6 +4572,10 @@ class FeishuAdapter(BasePlatformAdapter):
         return SendResult(
             success=True,
             message_id=self._extract_response_field(response, "message_id"),
+            thread_id=(
+                self._extract_response_field(response, "thread_id")
+                or self._extract_response_field(response, "root_id")
+            ),
             raw_response=response,
         )
 

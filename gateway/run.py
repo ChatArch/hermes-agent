@@ -7122,6 +7122,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.info("Ignoring /start platform ping for active session %s", _quick_key)
                 return ""
 
+            if _cmd_def_inner and _cmd_def_inner.name == "topic":
+                return await self._handle_topic_command(event)
+
+            if _cmd_def_inner and _cmd_def_inner.name == "thread":
+                return await self._handle_thread_command(event)
+
             if _cmd_def_inner and _cmd_def_inner.name == "restart":
                 return await self._handle_restart_command(event)
 
@@ -7556,6 +7562,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "topic":
             return await self._handle_topic_command(event)
+
+        if canonical == "thread":
+            return await self._handle_thread_command(event)
         
         if canonical == "help":
             return await self._handle_help_command(event)
@@ -7934,6 +7943,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return self._telegram_topic_root_lobby_message()
             return None
 
+        return await self._dispatch_event_to_agent(event, source, _quick_key)
+
+    async def _dispatch_event_to_agent(self, event: MessageEvent, source: SessionSource, session_key: str):
+        """Run one inbound event through the normal agent turn pipeline."""
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
         # are numerous await points (hooks, vision enrichment, STT,
@@ -7942,25 +7955,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # "already running" guard and spin up a duplicate agent for the
         # same session — corrupting the transcript.
         _active_session_lease, _limit_message = self._claim_active_session_slot(
-            _quick_key,
+            session_key,
             source,
         )
         if _limit_message is not None:
             logger.info(
                 "Rejecting new active session %s: max_concurrent_sessions reached",
-                _quick_key,
+                session_key,
             )
             return _limit_message
         if _active_session_lease is not None:
             if not hasattr(self, "_active_session_leases"):
                 self._active_session_leases = {}
-            self._active_session_leases[_quick_key] = _active_session_lease
-        self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
-        self._running_agents_ts[_quick_key] = time.time()
-        _run_generation = self._begin_session_run_generation(_quick_key)
+            self._active_session_leases[session_key] = _active_session_lease
+        self._running_agents[session_key] = _AGENT_PENDING_SENTINEL
+        self._running_agents_ts[session_key] = time.time()
+        _run_generation = self._begin_session_run_generation(session_key)
 
         try:
-            _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            _agent_result = await self._handle_message_with_agent(event, source, session_key, _run_generation)
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -7998,7 +8011,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # bumps the generation (N -> N+1) mid-flight: gen-N's guarded release
             # inside _run_agent returns False, and the old sentinel-only check here
             # missed the leftover real agent — locking the session out forever (#28686).
-            self._release_running_agent_state(_quick_key)
+            self._release_running_agent_state(session_key)
 
     async def _prepare_inbound_message_text(
         self,
@@ -9725,6 +9738,272 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return "\n".join(lines)
 
+    async def _handle_thread_command(self, event: MessageEvent):
+        """Handle Feishu /thread <prompt>.
+
+        In a normal Feishu chat this creates a new Feishu thread from the
+        command message, then runs the prompt as a thread-scoped Hermes turn. In
+        an existing Feishu thread it resets that thread's Hermes session and
+        runs the prompt in the same thread.
+        """
+        source = event.source
+        if source.platform != Platform.FEISHU:
+            return "/thread is currently supported only on Feishu."
+
+        prompt = event.get_command_args().strip()
+        if not prompt:
+            return "Usage: /thread <prompt>"
+
+        thread_source = source
+        seed_message_id = getattr(event, "message_id", None)
+        created_thread_seed_message_id = None
+        original_session_key = self._session_key_for_source(source)
+        adapter = self.adapters.get(source.platform)
+
+        if source.thread_id:
+            thread_key = self._session_key_for_source(source)
+            if thread_key in self._running_agents:
+                await self._interrupt_and_clear_session(
+                    thread_key,
+                    source,
+                    interrupt_reason=_INTERRUPT_REASON_RESET,
+                    invalidation_reason="thread_command",
+                )
+            # Reset just this thread session, but do not return the /new notice;
+            # the next visible message should be the assistant's answer to the
+            # supplied prompt inside the same thread.
+            reset_event = dataclasses.replace(event, text="/new")
+            await self._handle_reset_command(reset_event)
+        else:
+            create_thread = getattr(adapter, "create_thread", None) if adapter else None
+            if create_thread is None:
+                return "Feishu /thread is unavailable: adapter does not support thread creation."
+            if not seed_message_id:
+                return "Feishu /thread requires a message id to create a thread."
+            result = await create_thread(
+                source.chat_id,
+                "⏳",
+                reply_to=str(seed_message_id),
+            )
+            if not getattr(result, "success", False):
+                return f"Failed to create Feishu thread: {getattr(result, 'error', 'unknown error')}"
+            thread_id = getattr(result, "thread_id", None) or getattr(result, "message_id", None)
+            if not thread_id:
+                return "Failed to create Feishu thread: response did not include a thread id."
+            seed_message_id = getattr(result, "message_id", None) or str(seed_message_id)
+            created_thread_seed_message_id = seed_message_id
+            thread_source = dataclasses.replace(
+                source,
+                thread_id=str(thread_id),
+                parent_chat_id=source.chat_id,
+                message_id=seed_message_id,
+            )
+            release_retargeted = getattr(adapter, "release_retargeted_session_guard", None)
+            if release_retargeted is not None:
+                release_retargeted(original_session_key)
+
+        # Retarget the original event so BasePlatformAdapter recomputes send
+        # metadata and delivers the final assistant response to the Feishu
+        # thread, not the parent chat where /thread was typed.
+        event.text = prompt
+        event.message_type = MessageType.TEXT
+        event.source = thread_source
+        event.reply_to_message_id = seed_message_id
+        event.reply_to_text = prompt
+
+        thread_key = self._session_key_for_source(thread_source)
+        agent_result = await self._dispatch_event_to_agent(event, thread_source, thread_key)
+
+        if created_thread_seed_message_id:
+            final_text = ""
+            if isinstance(agent_result, dict):
+                final_text = str(agent_result.get("final_response") or "")
+            elif isinstance(agent_result, str):
+                final_text = agent_result
+            if final_text.strip():
+                edit_message = getattr(adapter, "edit_message", None) if adapter else None
+                if edit_message is not None:
+                    edit_result = await edit_message(
+                        source.chat_id,
+                        str(created_thread_seed_message_id),
+                        final_text,
+                        finalize=True,
+                    )
+                    if getattr(edit_result, "success", False):
+                        return None
+                    logger.warning(
+                        "Feishu /thread final edit failed for %s: %s",
+                        created_thread_seed_message_id,
+                        getattr(edit_result, "error", "unknown error"),
+                    )
+            # If the edit path is unavailable or failed, fall back to returning
+            # the final text so the normal gateway send path still delivers it.
+            return agent_result
+
+        return agent_result
+
+    async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /new or /reset command."""
+        source = event.source
+        
+        # Get existing session key
+        session_key = self._session_key_for_source(source)
+        self._invalidate_session_run_generation(session_key, reason="session_reset")
+
+        # Snapshot the old entry so on_session_finalize can report the
+        # expiring session id before reset_session() rotates it.
+        old_entry = self.session_store._entries.get(session_key)
+
+        # Close tool resources on the old agent (terminal sandboxes, browser
+        # daemons, background processes) before evicting from cache.
+        # Guard with getattr because test fixtures may skip __init__.
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        if _cache_lock is not None:
+            with _cache_lock:
+                _cached = self._agent_cache.get(session_key)
+                _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
+            if _old_agent is not None:
+                self._cleanup_agent_resources(_old_agent)
+        self._evict_cached_agent(session_key)
+
+        # Discard any /queue overflow for this session — /new is a
+        # conversation-boundary operation, queued follow-ups from the
+        # previous conversation must not bleed into the new one.
+        _qe = getattr(self, "_queued_events", None)
+        if _qe is not None:
+            _qe.pop(session_key, None)
+
+        try:
+            from tools.env_passthrough import clear_env_passthrough
+            clear_env_passthrough()
+        except Exception:
+            pass
+
+        try:
+            from tools.credential_files import clear_credential_files
+            clear_credential_files()
+        except Exception:
+            pass
+
+        # Reset the session
+        new_entry = self.session_store.reset_session(session_key)
+
+        # Clear any session-scoped model/reasoning overrides so the next agent
+        # picks up configured defaults instead of previous session switches.
+        self._session_model_overrides.pop(session_key, None)
+        self._set_session_reasoning_override(session_key, None)
+        if hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes.pop(session_key, None)
+
+        # Clear session-scoped dangerous-command approvals and /yolo state.
+        # /new is a conversation-boundary operation — approval state from the
+        # previous conversation must not survive the reset.
+        self._clear_session_boundary_security_state(session_key)
+
+        # Fire plugin on_session_finalize hook (session boundary)
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _old_sid = old_entry.session_id if old_entry else None
+            _invoke_hook("on_session_finalize", session_id=_old_sid,
+                         platform=source.platform.value if source.platform else "")
+        except Exception:
+            pass
+
+        # Emit session:end hook (session is ending)
+        await self.hooks.emit("session:end", {
+            "platform": source.platform.value if source.platform else "",
+            "user_id": source.user_id,
+            "session_key": session_key,
+        })
+
+        # Emit session:reset hook
+        await self.hooks.emit("session:reset", {
+            "platform": source.platform.value if source.platform else "",
+            "user_id": source.user_id,
+            "session_key": session_key,
+        })
+
+        # Resolve session config info to surface to the user
+        try:
+            session_info = self._format_session_info()
+        except Exception:
+            session_info = ""
+
+        if new_entry:
+            header = self._telegram_topic_new_header(source) or t("gateway.reset.header_default")
+        else:
+            # No existing session, just create one
+            new_entry = self.session_store.get_or_create_session(source, force_new=True)
+            header = self._telegram_topic_new_header(source) or t("gateway.reset.header_new")
+
+        # Set session title if provided with /new <title>
+        _title_arg = event.get_command_args().strip()
+        _title_note = ""
+        if _title_arg and self._session_db and new_entry:
+            from hermes_state import SessionDB
+            try:
+                sanitized = SessionDB.sanitize_title(_title_arg)
+            except ValueError as e:
+                sanitized = None
+                _title_note = t("gateway.reset.title_rejected", error=str(e))
+            if sanitized:
+                try:
+                    self._session_db.set_session_title(new_entry.session_id, sanitized)
+                    header = t("gateway.reset.header_titled", title=sanitized)
+                except ValueError as e:
+                    _title_note = t("gateway.reset.title_error_untitled", error=str(e))
+                except Exception:
+                    pass
+            elif not _title_note:
+                # sanitize_title returned empty (whitespace-only / unprintable)
+                _title_note = t("gateway.reset.title_empty_untitled")
+        header = header + _title_note
+
+        # When /new runs inside a Telegram DM topic lane, rewrite the
+        # (chat_id, thread_id) → session_id binding so the next message
+        # uses the freshly-created session. Without this, the binding
+        # still points at the old session and the binding-lookup at the
+        # top of _handle_message_with_agent would switch right back.
+        if self._is_telegram_topic_lane(source) and new_entry is not None:
+            try:
+                self._record_telegram_topic_binding(source, new_entry)
+            except Exception:
+                logger.debug("Failed to rebind Telegram topic after /new", exc_info=True)
+
+        # Fire plugin on_session_reset hook (new session guaranteed to exist)
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _new_sid = new_entry.session_id if new_entry else None
+            _invoke_hook("on_session_reset", session_id=_new_sid,
+                         platform=source.platform.value if source.platform else "")
+        except Exception:
+            pass
+
+        # Append a random tip to the reset message
+        try:
+            from hermes_cli.tips import get_random_tip
+            _tip_line = t("gateway.reset.tip", tip=get_random_tip())
+        except Exception:
+            _tip_line = ""
+
+        if session_info:
+            return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")
+        return EphemeralReply(f"{header}{_tip_line}")
+
+    async def _handle_profile_command(self, event: MessageEvent) -> str:
+        """Handle /profile — show active profile name and home directory."""
+        from hermes_constants import display_hermes_home
+        from hermes_cli.profiles import get_active_profile_name
+
+        display = display_hermes_home()
+        profile_name = get_active_profile_name()
+
+        lines = [
+            t("gateway.profile.header", profile=profile_name),
+            t("gateway.profile.home", home=display),
+        ]
+
+        return "\n".join(lines)
 
 
 

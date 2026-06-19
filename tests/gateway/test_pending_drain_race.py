@@ -210,3 +210,31 @@ async def test_no_pending_cleans_up_normally():
     assert sk not in adapter._pending_messages
 
     await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+async def test_release_retargeted_session_guard_unblocks_parent_session():
+    """A command retargeted to another lane must not keep the parent busy."""
+    adapter = _make_adapter()
+    sk = _sk()
+    owner_task = asyncio.current_task()
+    assert owner_task is not None
+
+    guard = asyncio.Event()
+    adapter._active_sessions[sk] = guard
+    adapter._session_tasks[sk] = owner_task
+    adapter._pending_messages[sk] = _make_event(text="PARENT_FOLLOWUP")
+
+    started = []
+
+    def fake_start(event, session_key, *, interrupt_event=None):
+        started.append((event.text, session_key))
+        return True
+
+    adapter._start_session_processing = fake_start
+
+    assert adapter.release_retargeted_session_guard(sk) is True
+    assert sk not in adapter._active_sessions
+    assert sk not in adapter._session_tasks
+    assert sk not in adapter._pending_messages
+    assert started == [("PARENT_FOLLOWUP", sk)]

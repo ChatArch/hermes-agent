@@ -1553,6 +1553,7 @@ class SendResult:
     """Result of sending a message."""
     success: bool
     message_id: Optional[str] = None
+    thread_id: Optional[str] = None
     error: Optional[str] = None
     raw_response: Any = None
     # Adapter-specific metadata.  Cross-layer contracts that affect delivery
@@ -3828,6 +3829,33 @@ class BasePlatformAdapter(ABC):
         if release_guard:
             self._release_session_guard(session_key)
 
+    def release_retargeted_session_guard(self, session_key: str) -> bool:
+        """Release this task's adapter guard after a handler retargets work.
+
+        Some gateway commands start in one adapter session but then move the
+        long-running work to another lane (for example Feishu ``/thread`` typed
+        in a parent chat creates and runs inside a new thread).  The outer
+        ``_process_message_background`` task is still keyed by the original
+        parent session, so leaving its guard installed would make unrelated
+        parent-chat messages look busy until the thread task finishes.
+
+        This method detaches the current task from ``session_key`` only when it
+        owns that key, releases the guard, and restarts any message that already
+        queued behind the old guard.
+        """
+        current_task = asyncio.current_task()
+        if current_task is None or self._session_tasks.get(session_key) is not current_task:
+            return False
+
+        self._session_tasks.pop(session_key, None)
+        self._release_session_guard(session_key)
+        self._discard_text_debounce(session_key)
+
+        pending_event = self._pending_messages.pop(session_key, None)
+        if pending_event is not None:
+            self._start_session_processing(pending_event, session_key)
+        return True
+
     async def _drain_pending_after_session_command(
         self,
         session_key: str,
@@ -3994,8 +4022,8 @@ class BasePlatformAdapter(ABC):
                     self.name, cmd, session_key,
                 )
                 try:
-                    _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
                     response = await self._message_handler(event)
+                    _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
                     _text, _eph_ttl = self._unwrap_ephemeral(response)
                     if _text:
                         _r = await self._send_with_retry(
@@ -4199,6 +4227,11 @@ class BasePlatformAdapter(ABC):
             # string, and remember the TTL + platform capability so the
             # post-send block can schedule the deletion.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+            # Command handlers such as Feishu /thread may retarget the event to
+            # a newly-created thread before returning.  Recompute delivery
+            # metadata after the handler so the final response follows the
+            # mutated source instead of the pre-command chat.
+            _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
 
             # Send response if any.  A None/empty response is normal when
             # streaming already delivered the text (already_sent=True) or
