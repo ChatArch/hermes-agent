@@ -63,6 +63,19 @@ def _runner():
     return runner
 
 
+def test_thread_command_registered_alias():
+    from hermes_cli.commands import ACTIVE_SESSION_BYPASS_COMMANDS, resolve_command
+
+    cmd = resolve_command("thread")
+    alias = resolve_command("t")
+
+    assert cmd is not None
+    assert cmd.name == "thread"
+    assert alias is cmd
+    assert "thread" in ACTIVE_SESSION_BYPASS_COMMANDS
+    assert "t" in ACTIVE_SESSION_BYPASS_COMMANDS
+
+
 @pytest.mark.asyncio
 async def test_thread_command_in_normal_feishu_chat_creates_thread_and_runs_prompt():
     runner = _runner()

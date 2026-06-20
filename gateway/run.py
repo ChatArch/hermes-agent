@@ -7135,6 +7135,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "thread":
                 return await self._handle_thread_command(event)
 
+            if _cmd_def_inner and _cmd_def_inner.name == "template":
+                return await self._handle_template_command(event)
+
             if _cmd_def_inner and _cmd_def_inner.name == "restart":
                 return await self._handle_restart_command(event)
 
@@ -7575,6 +7578,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "thread":
             return await self._handle_thread_command(event)
+
+        if canonical == "template":
+            return await self._handle_template_command(event)
         
         if canonical == "help":
             return await self._handle_help_command(event)
@@ -9748,48 +9754,191 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return "\n".join(lines)
 
-    async def _handle_thread_command(self, event: MessageEvent):
-        """Handle Feishu /thread <prompt>.
+    def _template_usage(self) -> str:
+        return "Usage: /template <name|create|update|use> [instruction...]"
 
-        In a normal Feishu chat this creates a new Feishu thread from the
-        command message, then runs the prompt as a thread-scoped Hermes turn. In
-        an existing Feishu thread it resets that thread's Hermes session and
-        runs the prompt in the same thread.
+    def _parse_template_args(self, raw_args: str) -> tuple[str | None, str | None, str]:
+        """Parse `/template` arguments into (action, name, instruction)."""
+        raw_args = (raw_args or "").strip()
+        if not raw_args:
+            return None, None, ""
+        first, sep, rest = raw_args.partition(" ")
+        first_norm = first.strip().lower()
+        if first_norm in {"create", "new", "update", "edit", "use", "run"}:
+            rest = rest.strip()
+            if not rest:
+                return first_norm, None, ""
+            name, _sep2, instruction = rest.partition(" ")
+            action = {
+                "new": "create",
+                "edit": "update",
+                "run": "use",
+            }.get(first_norm, first_norm)
+            return action, name.strip(), instruction.strip()
+        return "use", first.strip(), rest.strip() if sep else ""
+
+    def _template_store_dir(self) -> Path:
+        """Return the private template store root.
+
+        Templates deliberately live outside ``~/.hermes/skills`` so they do not
+        become dynamic ``/<skill-name>`` slash commands or participate in the
+        official Hermes skill lifecycle.
+        """
+        return get_hermes_home() / "templates"
+
+    def _template_path(self, name: str) -> Path | None:
+        name = (name or "").strip().lower().replace("_", "-")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", name):
+            return None
+        return self._template_store_dir() / name / "SKILL.md"
+
+    def _list_template_names(self) -> list[str]:
+        root = self._template_store_dir()
+        if not root.exists():
+            return []
+        out: list[str] = []
+        try:
+            for child in sorted(root.iterdir()):
+                if child.is_dir() and (child / "SKILL.md").is_file():
+                    out.append(child.name)
+        except OSError:
+            return []
+        return out
+
+    def _parse_template_frontmatter(self, content: str) -> tuple[dict[str, Any], str]:
+        if not content.startswith("---"):
+            return {}, content.strip()
+        lines = content.splitlines()
+        end_idx = None
+        for idx, line in enumerate(lines[1:], start=1):
+            if line.strip() == "---":
+                end_idx = idx
+                break
+        if end_idx is None:
+            return {}, content.strip()
+        meta: dict[str, Any] = {}
+        for line in lines[1:end_idx]:
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            meta[key.strip()] = value.strip().strip('"\'')
+        body = "\n".join(lines[end_idx + 1 :]).strip()
+        return meta, body
+
+    def _build_template_use_payload(self, *, name: str, instruction: str) -> str | None:
+        template_path = self._template_path(name)
+        if template_path is None or not template_path.is_file():
+            return None
+        try:
+            content = template_path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        meta, body = self._parse_template_frontmatter(content)
+        display_name = str(meta.get("name") or name)
+        description = str(meta.get("description") or "")
+        parts = [
+            f'[IMPORTANT: The user has invoked the "{display_name}" template. Treat the template below as active guidance for this thread.]',
+            "",
+            f"Template: {display_name}",
+        ]
+        if description:
+            parts.append(f"Description: {description}")
+        parts.extend(
+            [
+                f"Template file: {template_path}",
+                "",
+                body or content.strip(),
+            ]
+        )
+        if instruction:
+            parts.extend(["", f"User instruction: {instruction}"])
+        parts.extend(["", "[Runtime note: thread-isolated /template use invocation]"])
+        return "\n".join(parts)
+
+    def _template_management_prompt(self, *, action: str, name: str, instruction: str) -> str:
+        template_path = self._template_path(name)
+        target = template_path or (self._template_store_dir() / name / "SKILL.md")
+        action_title = (
+            "Create a new Hermes template"
+            if action == "create"
+            else "Update an existing Hermes template"
+        )
+        return "\n".join(
+            [
+                action_title,
+                "",
+                f"User requested template name: {name}",
+                f"Template file: {target}",
+                "",
+                "Maintain this as a private template, not as an official Hermes Skill.",
+                "Use SKILL.md format: YAML frontmatter with at least `name` and `description`, then a clear reusable instruction body.",
+                "Keep it under the private template store (`~/.hermes/templates/<name>/SKILL.md`) so it does not become a dynamic `/<skill-name>` command.",
+                "Create parent directories when needed. Prefer targeted edits when updating an existing template.",
+                "",
+                f"User instruction: {instruction or '(no extra instruction provided)'}",
+            ]
+        )
+
+    def _template_unknown_target_message(self, name: str) -> str:
+        available = self._list_template_names()
+        hint = ""
+        if available:
+            hint = "\nAvailable templates: " + ", ".join(f"`{item}`" for item in available[:12])
+        return (
+            f"Unknown template `{name}`.\n"
+            f"Use `/template create {name} <what this template should do>` to create it."
+            f"{hint}"
+        )
+
+    def _template_invalid_name_message(self, name: str) -> str:
+        return (
+            f"Invalid template name `{name}`. Use 1-64 lowercase letters, numbers, "
+            "and hyphens only, starting with a letter or number."
+        )
+
+    async def _dispatch_event_in_feishu_thread(
+        self,
+        event: MessageEvent,
+        payload: str,
+        *,
+        command_name: str,
+        reply_text: str,
+        reset_existing_thread: bool = False,
+        invalidation_reason: str | None = None,
+    ) -> Any:
+        """Dispatch ``payload`` as a Feishu-thread-scoped agent turn.
+
+        This shared helper owns the common thread launcher sequence used by
+        `/thread` and thread-oriented commands: create Feishu thread when the
+        command starts in a parent chat, retarget the event/source, dispatch the
+        agent turn, and edit the seed message with the final answer when
+        possible.
         """
         source = event.source
-        if source.platform != Platform.FEISHU:
-            return "/thread is currently supported only on Feishu."
-
-        prompt = event.get_command_args().strip()
-        if not prompt:
-            return "Usage: /thread <prompt>"
-
+        original_session_key = self._session_key_for_source(source)
+        adapter = self.adapters.get(source.platform)
         thread_source = source
         seed_message_id = getattr(event, "message_id", None)
         created_thread_seed_message_id = None
-        original_session_key = self._session_key_for_source(source)
-        adapter = self.adapters.get(source.platform)
 
         if source.thread_id:
-            thread_key = self._session_key_for_source(source)
-            if thread_key in self._running_agents:
-                await self._interrupt_and_clear_session(
-                    thread_key,
-                    source,
-                    interrupt_reason=_INTERRUPT_REASON_RESET,
-                    invalidation_reason="thread_command",
-                )
-            # Reset just this thread session, but do not return the /new notice;
-            # the next visible message should be the assistant's answer to the
-            # supplied prompt inside the same thread.
-            reset_event = dataclasses.replace(event, text="/new")
-            await self._handle_reset_command(reset_event)
+            if reset_existing_thread:
+                thread_key = self._session_key_for_source(source)
+                if thread_key in self._running_agents:
+                    await self._interrupt_and_clear_session(
+                        thread_key,
+                        source,
+                        interrupt_reason=_INTERRUPT_REASON_RESET,
+                        invalidation_reason=invalidation_reason or command_name,
+                    )
+                reset_event = dataclasses.replace(event, text="/new")
+                await self._handle_reset_command(reset_event)
         else:
             create_thread = getattr(adapter, "create_thread", None) if adapter else None
             if create_thread is None:
-                return "Feishu /thread is unavailable: adapter does not support thread creation."
+                return f"Feishu /{command_name} is unavailable: adapter does not support thread creation."
             if not seed_message_id:
-                return "Feishu /thread requires a message id to create a thread."
+                return f"Feishu /{command_name} requires a message id to create a thread."
             result = await create_thread(
                 source.chat_id,
                 "⏳",
@@ -9812,14 +9961,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if release_retargeted is not None:
                 release_retargeted(original_session_key)
 
-        # Retarget the original event so BasePlatformAdapter recomputes send
-        # metadata and delivers the final assistant response to the Feishu
-        # thread, not the parent chat where /thread was typed.
-        event.text = prompt
+        event.text = payload
         event.message_type = MessageType.TEXT
         event.source = thread_source
         event.reply_to_message_id = seed_message_id
-        event.reply_to_text = prompt
+        event.reply_to_text = reply_text
 
         thread_key = self._session_key_for_source(thread_source)
         agent_result = await self._dispatch_event_to_agent(event, thread_source, thread_key)
@@ -9842,15 +9988,80 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if getattr(edit_result, "success", False):
                         return None
                     logger.warning(
-                        "Feishu /thread final edit failed for %s: %s",
+                        "Feishu /%s final edit failed for %s: %s",
+                        command_name,
                         created_thread_seed_message_id,
                         getattr(edit_result, "error", "unknown error"),
                     )
-            # If the edit path is unavailable or failed, fall back to returning
-            # the final text so the normal gateway send path still delivers it.
             return agent_result
 
         return agent_result
+
+    async def _handle_template_command(self, event: MessageEvent) -> Any:
+        """Handle Feishu `/template` thread launcher."""
+        source = event.source
+        if source.platform != Platform.FEISHU:
+            return "/template is currently supported only on Feishu."
+
+        action, name, instruction = self._parse_template_args(event.get_command_args())
+        if not action or not name:
+            return self._template_usage()
+        if self._template_path(name) is None:
+            return self._template_invalid_name_message(name)
+
+        if source.thread_id:
+            thread_key = self._session_key_for_source(source)
+            if thread_key in self._running_agents:
+                return (
+                    "⏳ Agent is running in this thread — `/template` can't start "
+                    "another turn here. Wait for the current response or `/stop` first."
+                )
+
+        if action in {"create", "update"}:
+            payload = self._template_management_prompt(
+                action=action,
+                name=name,
+                instruction=instruction,
+            )
+        elif action == "use":
+            payload = self._build_template_use_payload(name=name, instruction=instruction)
+            if not payload:
+                return self._template_unknown_target_message(name)
+        else:
+            return self._template_usage()
+
+        return await self._dispatch_event_in_feishu_thread(
+            event,
+            payload,
+            command_name="template",
+            reply_text=instruction or name,
+            reset_existing_thread=False,
+        )
+
+    async def _handle_thread_command(self, event: MessageEvent):
+        """Handle Feishu /thread <prompt>.
+
+        In a normal Feishu chat this creates a new Feishu thread from the
+        command message, then runs the prompt as a thread-scoped Hermes turn. In
+        an existing Feishu thread it resets that thread's Hermes session and
+        runs the prompt in the same thread.
+        """
+        source = event.source
+        if source.platform != Platform.FEISHU:
+            return "/thread is currently supported only on Feishu."
+
+        prompt = event.get_command_args().strip()
+        if not prompt:
+            return "Usage: /thread <prompt>"
+
+        return await self._dispatch_event_in_feishu_thread(
+            event,
+            prompt,
+            command_name="thread",
+            reply_text=prompt,
+            reset_existing_thread=True,
+            invalidation_reason="thread_command",
+        )
 
 
 
