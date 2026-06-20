@@ -48,6 +48,31 @@ async def test_restart_handler_writes_dedup_marker_with_update_id(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_restart_under_launchd_uses_service_restart_path(tmp_path, monkeypatch):
+    """macOS launchd chat /restart should rely on launchd relaunch, not detached helper.
+
+    The installed launchd plist uses ``KeepAlive.SuccessfulExit=false``. If the
+    chat-originated /restart takes the detached-clean-exit path, launchd does not
+    immediately relaunch the gateway and the detached helper can be delayed or
+    lost, forcing operators to run ``hermes gateway restart`` manually. Under a
+    launchd service, /restart should be treated as service-managed so the gateway
+    exits with the launchd restart code and launchd brings it back.
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    result = await runner._handle_restart_command(_make_restart_event(update_id=None))
+
+    assert "Restarting gateway" in result
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+
+@pytest.mark.asyncio
 async def test_redelivered_restart_with_same_update_id_is_ignored(tmp_path, monkeypatch):
     """A /restart with update_id <= recorded marker is silently ignored as a redelivery."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)

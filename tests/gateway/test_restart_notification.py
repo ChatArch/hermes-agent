@@ -99,10 +99,11 @@ async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypatch):
-    """Without systemd, /restart uses the detached subprocess approach."""
+async def test_restart_command_uses_detached_without_service_manager(tmp_path, monkeypatch):
+    """Without systemd/launchd/container supervision, /restart uses detached helper."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
