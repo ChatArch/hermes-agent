@@ -936,7 +936,8 @@ class GatewaySlashCommandsMixin:
         # the non-zero planned-restart exit code that launchd already treats as
         # a KeepAlive relaunch.
         _under_systemd = bool(os.environ.get("INVOCATION_ID"))
-        _under_launchd = sys.platform == "darwin" and bool(os.environ.get("XPC_SERVICE_NAME"))
+        _xpc_service = os.environ.get("XPC_SERVICE_NAME", "")
+        _under_launchd = sys.platform == "darwin" and bool(_xpc_service and _xpc_service != "0")
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
         if _under_systemd or _under_launchd or _in_container:
             self.request_restart(detached=False, via_service=True)

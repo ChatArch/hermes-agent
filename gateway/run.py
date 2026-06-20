@@ -7096,6 +7096,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
 
+            # Restart/stop drain is a global gate, including messages for an
+            # already-active session. Put it before active-session slash
+            # command intercepts so commands like /thread or /new cannot start
+            # new work while shutdown is waiting for the current turn to finish.
+            if self._draining:
+                return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
+
             # Resolve the command once for all early-intercept checks below.
             from hermes_cli.commands import (
                 ACTIVE_SESSION_BYPASS_COMMANDS as _DEDICATED_HANDLERS,

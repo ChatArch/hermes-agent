@@ -870,6 +870,7 @@ class TestLaunchdServiceRecovery:
         """
         calls = []
         monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setenv("INVOCATION_ID", "systemd-test")
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
         monkeypatch.setattr(
             gateway_cli,
@@ -883,6 +884,49 @@ class TestLaunchdServiceRecovery:
 
         assert calls == [321]
         assert "restart requested" in capsys.readouterr().out.lower()
+
+    def test_gateway_restart_inside_gateway_without_supervisor_still_refuses(
+        self, monkeypatch, capsys
+    ):
+        """Gateway-hosted CLI restart must not SIGUSR1 an unsupervised gateway.
+
+        A manual foreground gateway has no service manager to relaunch it after
+        the SIGUSR1 restart handler exits via the service path. Keep the
+        inside-gateway loop guard unless a real supervisor marker is present.
+        """
+        calls = []
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+        monkeypatch.setenv("XPC_SERVICE_NAME", "0")
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda pid: calls.append(pid) or True,
+        )
+
+        args = SimpleNamespace(gateway_command="restart", all=False, system=False)
+
+        with pytest.raises(SystemExit) as exc:
+            gateway_cli._gateway_command_inner(args)
+
+        assert exc.value.code == 1
+        assert calls == []
+        assert "refusing to restart" in capsys.readouterr().out.lower()
+
+
+    def test_gateway_supervisor_detection_ignores_xpc_on_non_darwin(
+        self, monkeypatch
+    ):
+        """XPC_SERVICE_NAME only identifies launchd supervision on macOS."""
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+        monkeypatch.setenv("XPC_SERVICE_NAME", "com.example.not-launchd")
+        monkeypatch.setattr(gateway_cli.sys, "platform", "linux")
+
+        assert gateway_cli._running_under_gateway_supervisor() is False
+
 
     def test_launchd_stop_uses_bootout_not_kill(self, monkeypatch):
         """launchd_stop must bootout the service so KeepAlive doesn't respawn it."""

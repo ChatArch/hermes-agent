@@ -109,6 +109,27 @@ async def test_draining_gateway_rejects_new_non_active_session_turn():
     assert not getattr(adapter, "sent_messages")
 
 
+@pytest.mark.asyncio
+async def test_draining_gateway_rejects_same_active_session_thread_command():
+    """Drain gate must run before active-session slash command intercepts."""
+    runner = _make_runner()
+    runner._draining = True
+    runner._restart_requested = True
+
+    event = _make_event(text="/thread same session turn", chat_id="12345")
+    session_key = build_session_key(event.source)
+    runner._running_agents = {session_key: MagicMock()}
+    runner._handle_thread_command = AsyncMock(
+        side_effect=AssertionError("draining active session dispatched /thread")
+    )
+
+    result = await runner._handle_message(event)
+
+    assert isinstance(result, str)
+    assert "Gateway is restarting" in result
+    runner._handle_thread_command.assert_not_awaited()
+
+
 # ------------------------------------------------------------------
 # Test 1: Sentinel is placed before _handle_message_with_agent runs
 # ------------------------------------------------------------------

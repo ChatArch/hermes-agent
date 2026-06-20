@@ -243,6 +243,8 @@ def _request_current_gateway_self_restart() -> bool:
         pid = None
     if pid is None:
         return False
+    if not _running_under_gateway_supervisor():
+        return False
     if not _request_gateway_self_restart(pid):
         return False
     print("✓ Service restart requested")
@@ -3917,7 +3919,7 @@ def _running_under_gateway_supervisor() -> bool:
     if os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
         return True
     xpc_service = os.environ.get("XPC_SERVICE_NAME", "")
-    if xpc_service and xpc_service != "0":
+    if is_macos() and xpc_service and xpc_service != "0":
         return True
     return False
 

@@ -121,6 +121,29 @@ async def test_restart_command_uses_detached_without_service_manager(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_restart_command_treats_launchd_interactive_xpc_zero_as_unsupervised(tmp_path, monkeypatch):
+    """macOS interactive shells expose XPC_SERVICE_NAME=0, not a launchd job label."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="42")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m1",
+    )
+
+    await runner._handle_restart_command(event)
+    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+@pytest.mark.asyncio
 async def test_restart_command_preserves_thread_id(tmp_path, monkeypatch):
     """Thread ID is saved when the requester is in a threaded chat."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
