@@ -9755,7 +9755,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return "\n".join(lines)
 
     def _template_usage(self) -> str:
-        return "Usage: /template <name|create|update|use> [instruction...]"
+        return "Usage: /template <name|list|create|update|use> [instruction...]"
 
     def _parse_template_args(self, raw_args: str) -> tuple[str | None, str | None, str]:
         """Parse `/template` arguments into (action, name, instruction)."""
@@ -9764,6 +9764,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None, None, ""
         first, sep, rest = raw_args.partition(" ")
         first_norm = first.strip().lower()
+        if first_norm in {"list", "ls"}:
+            return "list", None, rest.strip()
         if first_norm in {"create", "new", "update", "edit", "use", "run"}:
             rest = rest.strip()
             if not rest:
@@ -9799,11 +9801,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         out: list[str] = []
         try:
             for child in sorted(root.iterdir()):
-                if child.is_dir() and (child / "SKILL.md").is_file():
+                template_path = self._template_path(child.name)
+                if not child.is_dir() or template_path is None:
+                    continue
+                if template_path == child / "SKILL.md" and template_path.is_file():
                     out.append(child.name)
         except OSError:
             return []
         return out
+
+    def _template_list_message(self) -> str:
+        names = self._list_template_names()
+        if not names:
+            return (
+                "No templates found.\n"
+                "Use `/template create <name> <what this template should do>` to create one."
+            )
+
+        lines = ["Available templates:"]
+        for name in names:
+            description = ""
+            template_path = self._template_path(name)
+            if template_path is not None:
+                try:
+                    content = template_path.read_text(encoding="utf-8")
+                except OSError:
+                    content = ""
+                if content:
+                    meta, _body = self._parse_template_frontmatter(content)
+                    description = str(meta.get("description") or "").strip()
+            if description:
+                lines.append(f"- `{name}` — {description}")
+            else:
+                lines.append(f"- `{name}`")
+        lines.extend(
+            [
+                "",
+                "Use `/template <name> [instruction...]` to run one in a Feishu thread.",
+                "Use `/template create <name> <instruction...>` to add a new template.",
+            ]
+        )
+        return "\n".join(lines)
 
     def _parse_template_frontmatter(self, content: str) -> tuple[dict[str, Any], str]:
         if not content.startswith("---"):
@@ -10004,7 +10042,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "/template is currently supported only on Feishu."
 
         action, name, instruction = self._parse_template_args(event.get_command_args())
-        if not action or not name:
+        if not action:
+            return self._template_usage()
+        if action == "list":
+            return self._template_list_message()
+        if not name:
             return self._template_usage()
         if self._template_path(name) is None:
             return self._template_invalid_name_message(name)

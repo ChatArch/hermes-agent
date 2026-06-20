@@ -83,9 +83,63 @@ def test_template_command_registered_for_gateway():
     assert cmd.name == "template"
     assert alias is cmd
     assert cmd.gateway_only is True
-    assert cmd.args_hint == "<name|create|update|use> [instruction...]"
+    assert cmd.args_hint == "<name|list|create|update|use> [instruction...]"
+    assert set(cmd.subcommands) >= {"list", "create", "update", "use"}
     assert "template" in ACTIVE_SESSION_BYPASS_COMMANDS
     assert "tpl" in ACTIVE_SESSION_BYPASS_COMMANDS
+
+
+@pytest.mark.asyncio
+async def test_template_command_lists_available_templates_without_starting_thread(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path)
+
+    templates_dir = tmp_path / "templates"
+    (templates_dir / "prd").mkdir(parents=True)
+    (templates_dir / "prd" / "SKILL.md").write_text(
+        "---\nname: prd\ndescription: Write PRDs\n---\nBody", encoding="utf-8"
+    )
+    (templates_dir / "bugfix").mkdir(parents=True)
+    (templates_dir / "bugfix" / "SKILL.md").write_text(
+        "---\nname: bugfix\ndescription: Debug and fix bugs\n---\nBody", encoding="utf-8"
+    )
+    (templates_dir / "Bad_Name").mkdir(parents=True)
+    (templates_dir / "Bad_Name" / "SKILL.md").write_text(
+        "---\nname: Bad_Name\ndescription: invalid\n---\nBody", encoding="utf-8"
+    )
+
+    runner = _runner()
+    adapter = _adapter()
+    runner.adapters = {Platform.FEISHU: adapter}
+    event = _event("/tpl list")
+
+    result = await runner._handle_template_command(event)
+
+    assert "Available templates" in result
+    assert "`bugfix` — Debug and fix bugs" in result
+    assert "`prd` — Write PRDs" in result
+    assert "Bad_Name" not in result
+    assert "/template <name>" in result
+    adapter.create_thread.assert_not_called()
+    runner._dispatch_event_to_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_template_command_list_handles_empty_template_store(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path)
+
+    runner = _runner()
+    adapter = _adapter()
+    runner.adapters = {Platform.FEISHU: adapter}
+    event = _event("/template list")
+
+    result = await runner._handle_template_command(event)
+
+    assert "No templates found" in result
+    assert "/template create <name>" in result
+    adapter.create_thread.assert_not_called()
+    runner._dispatch_event_to_agent.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -245,7 +299,7 @@ async def test_template_command_rejects_when_current_thread_agent_is_running(mon
 async def test_template_command_requires_feishu_and_arguments():
     runner = _runner()
 
-    assert await runner._handle_template_command(_event("/template")) == "Usage: /template <name|create|update|use> [instruction...]"
+    assert await runner._handle_template_command(_event("/template")) == "Usage: /template <name|list|create|update|use> [instruction...]"
 
     non_feishu = MessageEvent(
         text="/template prd hi",
