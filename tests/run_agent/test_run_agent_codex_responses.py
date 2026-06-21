@@ -170,6 +170,28 @@ def _codex_final_answer_with_top_level_incomplete_response(text: str):
     )
 
 
+def _codex_output_cap_response(text: str = ""):
+    output = []
+    output_text = ""
+    if text:
+        output = [
+            SimpleNamespace(
+                type="message",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=text)],
+            )
+        ]
+        output_text = text
+    return SimpleNamespace(
+        output=output,
+        output_text=output_text,
+        usage=SimpleNamespace(input_tokens=4, output_tokens=4096, total_tokens=4100),
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        model="gpt-5-codex",
+    )
+
+
 class _FakeCreateStream:
     """Iterable-only fake for ``responses.create(stream=True)`` outputs.
 
@@ -1354,6 +1376,62 @@ def test_run_conversation_codex_continues_after_incomplete_interim_message(monke
         for msg in result["messages"]
     )
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+
+
+def test_run_conversation_codex_output_cap_continues_instead_of_invalid_retry(monkeypatch):
+    """Codex max_output_tokens terminal responses should enter the length
+    continuation path, not the generic invalid-response retry/fallback path."""
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_output_cap_response("Partial answer"),
+        _codex_message_response(" finished."),
+    ]
+    seen_caps = []
+
+    def _fake_api_call(api_kwargs):
+        seen_caps.append(api_kwargs.get("max_output_tokens"))
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("write a long answer")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Partial answerfinished."
+    assert len(seen_caps) == 2
+    assert any(
+        msg.get("role") == "assistant"
+        and msg.get("finish_reason") == "length"
+        and "Partial answer" in (msg.get("content") or "")
+        for msg in result["messages"]
+    )
+    assert any(
+        msg.get("role") == "user"
+        and "Continue exactly where you left off" in (msg.get("content") or "")
+        for msg in result["messages"]
+    )
+
+
+def test_run_conversation_codex_empty_output_cap_returns_controlled_error(monkeypatch):
+    """If Codex reports max_output_tokens before any visible output, the turn
+    should fail as a controlled partial result instead of spinning on invalid
+    response retries."""
+    agent = _build_agent(monkeypatch)
+    calls = {"count": 0}
+
+    def _fake_api_call(api_kwargs):
+        calls["count"] += 1
+        return _codex_output_cap_response("")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("think forever")
+
+    assert calls["count"] == 1
+    assert result["completed"] is False
+    assert result["partial"] is True
+    assert "max_output_tokens" in result["error"]
+    assert "visible output" in result["error"]
 
 
 def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(monkeypatch):

@@ -1181,18 +1181,42 @@ def run_conversation(
                                 error_details.append(f"response.status={_codex_resp_status}: {_codex_error_msg}")
                             else:
                                 # output_text fallback: stream backfill may have failed
-                                # but normalize can still recover from output_text
+                                # but normalize can still recover from output_text.
+                                # A Responses terminal ``status=incomplete`` with
+                                # ``reason=max_output_tokens`` is different: the
+                                # provider explicitly reported an output-window cap.
+                                # Do NOT route that through the generic
+                                # invalid-response retry/fallback path (which can
+                                # leave gateway turns spinning on repeated empty
+                                # retries). Let the finish_reason="length" handler
+                                # below surface a controlled partial/error response.
                                 _out_text = getattr(response, "output_text", None)
                                 _out_text_stripped = _out_text.strip() if isinstance(_out_text, str) else ""
+                                _resp_status = getattr(response, "status", None)
+                                _resp_incomplete = getattr(response, "incomplete_details", None)
+                                _resp_incomplete_reason = None
+                                if isinstance(_resp_incomplete, dict):
+                                    _resp_incomplete_reason = _resp_incomplete.get("reason")
+                                else:
+                                    _resp_incomplete_reason = getattr(_resp_incomplete, "reason", None)
                                 if _out_text_stripped:
                                     logger.debug(
                                         "Codex response.output is empty but output_text is present "
                                         "(%d chars); deferring to normalization.",
                                         len(_out_text_stripped),
                                     )
+                                elif (
+                                    str(_resp_status or "").strip().lower() == "incomplete"
+                                    and _resp_incomplete_reason in {"max_output_tokens", "length"}
+                                ):
+                                    logger.warning(
+                                        "Codex response hit output token cap with no output items "
+                                        "(incomplete_details=%s, model=%s). Routing to length handler. %s",
+                                        _resp_incomplete,
+                                        getattr(response, "model", None),
+                                        f"api_mode={agent.api_mode} provider={agent.provider}",
+                                    )
                                 else:
-                                    _resp_status = getattr(response, "status", None)
-                                    _resp_incomplete = getattr(response, "incomplete_details", None)
                                     logger.warning(
                                         "Codex response.output is empty after stream backfill "
                                         "(status=%s, incomplete_details=%s, model=%s). %s",
@@ -1544,12 +1568,37 @@ def run_conversation(
                     # would have been appended in the non-truncated path.
                     _trunc_msg = None
                     _trunc_transport = agent._get_transport()
-                    if agent.api_mode == "anthropic_messages":
-                        _trunc_result = _trunc_transport.normalize_response(
-                            response, strip_tool_prefix=agent._is_anthropic_oauth
-                        )
-                    else:
-                        _trunc_result = _trunc_transport.normalize_response(response)
+                    try:
+                        if agent.api_mode == "anthropic_messages":
+                            _trunc_result = _trunc_transport.normalize_response(
+                                response, strip_tool_prefix=agent._is_anthropic_oauth
+                            )
+                        else:
+                            _trunc_result = _trunc_transport.normalize_response(response)
+                    except RuntimeError as exc:
+                        if agent.api_mode == "codex_responses":
+                            _cap_error = (
+                                "Codex response hit the max_output_tokens limit before "
+                                "returning any visible output. Try lowering reasoning "
+                                "effort, narrowing the request, or increasing the output "
+                                "token cap."
+                            )
+                            logger.warning(
+                                "Codex output-cap response could not be normalized: %s. %s",
+                                exc,
+                                agent._client_log_context(),
+                            )
+                            agent._cleanup_task_resources(effective_task_id)
+                            agent._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": None,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "partial": True,
+                                "error": _cap_error,
+                            }
+                        raise
                     _trunc_msg = _trunc_result
 
                     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
@@ -1616,7 +1665,7 @@ def run_conversation(
                             "error": _exhaust_error,
                         }
 
-                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
+                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages", "codex_responses"}:
                         assistant_message = _trunc_msg
                         if assistant_message is not None and not _trunc_has_tool_calls:
                             length_continue_retries += 1
@@ -1677,7 +1726,7 @@ def run_conversation(
                                 "error": "Response remained truncated after 3 continuation attempts",
                             }
 
-                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
+                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages", "codex_responses"}:
                         assistant_message = _trunc_msg
                         if assistant_message is not None and _trunc_has_tool_calls:
                             _is_stub_stall = (
