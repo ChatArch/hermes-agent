@@ -215,6 +215,39 @@ async def test_template_command_create_starts_thread_with_template_authoring_pro
 
 
 @pytest.mark.asyncio
+async def test_template_command_create_inside_existing_thread_does_not_create_nested_thread(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path)
+
+    runner = _runner()
+    adapter = _adapter()
+    runner.adapters = {Platform.FEISHU: adapter}
+    event = _event(
+        "/template create prd 把当前讨论沉淀成 PRD 模板",
+        thread_id="omt_existing",
+    )
+    original_source = event.source
+    expected_key = build_session_key(original_source)
+
+    result = await runner._handle_template_command(event)
+
+    assert result == "assistant answer"
+    adapter.create_thread.assert_not_called()
+    adapter.release_retargeted_session_guard.assert_not_called()
+    adapter.edit_message.assert_not_called()
+    assert event.source.thread_id == "omt_existing"
+    assert event.source.parent_chat_id is None
+    assert event.reply_to_message_id == "om_cmd"
+    assert "Create a new Hermes template" in event.text
+    assert "User requested template name: prd" in event.text
+    assert "把当前讨论沉淀成 PRD 模板" in event.text
+    dispatched_event, dispatched_source, dispatched_key = runner._dispatch_event_to_agent.await_args.args
+    assert dispatched_event is event
+    assert dispatched_source.thread_id == "omt_existing"
+    assert dispatched_key == expected_key
+
+
+@pytest.mark.asyncio
 async def test_template_command_update_starts_thread_with_template_update_prompt(monkeypatch, tmp_path):
     import gateway.run as gateway_run
     monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path)
