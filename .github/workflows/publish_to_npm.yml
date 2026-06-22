@@ -1,0 +1,108 @@
+name: Publish to npm
+
+# Manual-only on purpose. Hermes already uses CalVer tags for PyPI releases,
+# so we do not publish to npm automatically from every v20* tag.
+on:
+  workflow_dispatch:
+    inputs:
+      expected_version:
+        description: 'Expected package.json version to publish, e.g. 1.0.0'
+        required: true
+        type: string
+      publish:
+        description: 'Set to true to publish. false runs packaging + npm publish dry-run only.'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish-${{ inputs.expected_version }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Validate npm package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org/
+
+      - name: Validate package metadata
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const expectedVersion = process.env.EXPECTED_VERSION;
+          const failures = [];
+          if (pkg.name !== '@chatarch/hermes-agent') failures.push(`name=${pkg.name}`);
+          if (pkg.version !== expectedVersion) failures.push(`version=${pkg.version} expected=${expectedVersion}`);
+          if (pkg.private === true) failures.push('private=true');
+          if (pkg.publishConfig?.access !== 'public') failures.push('publishConfig.access must be public');
+          if (pkg.publishConfig?.registry !== 'https://registry.npmjs.org/') failures.push('publishConfig.registry must be npmjs');
+          const files = new Set(pkg.files || []);
+          if (!files.has('README.md') || !files.has('LICENSE')) failures.push('files must include README.md and LICENSE');
+          if (failures.length) {
+            console.error('npm package metadata gate failed:');
+            for (const failure of failures) console.error(`- ${failure}`);
+            process.exit(1);
+          }
+          console.log(`Package gate passed for ${pkg.name}@${pkg.version}`);
+          NODE
+        env:
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+
+      - name: Inspect tarball contents
+        run: |
+          npm pack --dry-run --json > npm-pack-dry-run.json
+          node <<'NODE'
+          const fs = require('fs');
+          const [pack] = JSON.parse(fs.readFileSync('npm-pack-dry-run.json', 'utf8'));
+          console.log(`filename=${pack.filename}`);
+          console.log(`size=${pack.size}`);
+          console.log(`unpackedSize=${pack.unpackedSize}`);
+          console.log(`files=${pack.files.length}`);
+          for (const file of pack.files) console.log(`- ${file.path} ${file.size}`);
+          if (pack.files.length > 10) {
+            console.error('Refusing to publish unexpectedly large metadata package');
+            process.exit(1);
+          }
+          NODE
+
+      - name: npm publish dry-run
+        if: ${{ ! inputs.publish }}
+        run: npm publish --dry-run --access public --registry https://registry.npmjs.org/
+
+  publish:
+    name: Publish to npm
+    if: ${{ inputs.publish }}
+    needs: package
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@chatarch/hermes-agent
+    permissions:
+      contents: read
+      id-token: write  # npm Trusted Publishing / OIDC
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org/
+
+      - name: Publish with npm trusted publishing
+        run: npm publish --access public --provenance --registry https://registry.npmjs.org/
