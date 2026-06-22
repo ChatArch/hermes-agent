@@ -283,7 +283,14 @@ def test_running_under_gateway_supervisor_markers(monkeypatch):
     _clear_supervisor_markers(monkeypatch)
     assert gateway._running_under_gateway_supervisor() is False
 
+    # launchd's XPC marker is only meaningful on macOS.  Linux CI may inherit
+    # or set the variable in tests, but the gateway must not treat it as a
+    # Linux supervisor marker.
     monkeypatch.setenv("XPC_SERVICE_NAME", "org.nousresearch.hermes.gateway")
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    assert gateway._running_under_gateway_supervisor() is False
+
+    monkeypatch.setattr(gateway, "is_macos", lambda: True)
     assert gateway._running_under_gateway_supervisor() is True
 
     monkeypatch.setenv("XPC_SERVICE_NAME", "0")
