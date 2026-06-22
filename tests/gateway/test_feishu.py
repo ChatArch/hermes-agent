@@ -12,7 +12,8 @@ from types import SimpleNamespace
 from typing import Dict
 from unittest.mock import AsyncMock, Mock, patch
 
-from gateway.platforms.base import ProcessingOutcome
+from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+from gateway.session import SessionSource
 
 try:
     import lark_oapi
@@ -161,6 +162,194 @@ class TestFeishuMessageNormalization(unittest.TestCase):
 
 
 class TestFeishuAdapterMessaging(unittest.TestCase):
+    def test_draining_gateway_ack_bypasses_chat_serialization_lock(self):
+        """A shutdown/drain notice must not wait behind an older long turn."""
+        asyncio.run(
+            self._assert_draining_gateway_ack_bypasses_chat_serialization_lock(
+                drain_before_dispatch=True,
+            )
+        )
+
+    def test_gateway_drain_while_waiting_on_chat_lock_sends_ack(self):
+        """A message already waiting on the chat lock must notice later drain.
+
+        This matches the observed incident: Feishu flushed a message into the
+        adapter while an older same-chat turn was still running; only later did
+        the gateway receive SIGTERM and enter shutdown/drain. The waiting message
+        must not stay blocked behind the old turn until shutdown cancels it.
+        """
+        asyncio.run(
+            self._assert_draining_gateway_ack_bypasses_chat_serialization_lock(
+                drain_before_dispatch=False,
+            )
+        )
+
+    def test_chat_lock_waiting_messages_keep_arrival_order(self):
+        """Drain-aware acquisition must not break normal Feishu FIFO order."""
+        asyncio.run(self._assert_chat_lock_waiting_messages_keep_arrival_order())
+
+    def test_drain_race_after_wait_timeout_does_not_leak_chat_lock(self):
+        """If lock acquisition wins just as drain starts, the lock is released."""
+        asyncio.run(self._assert_drain_race_after_wait_timeout_does_not_leak_chat_lock())
+
+    async def _assert_drain_race_after_wait_timeout_does_not_leak_chat_lock(self):
+        from gateway.config import Platform, PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(enabled=True, token="t"))
+        adapter._send_with_retry = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="reply-1")
+        )
+
+        class Runner:
+            _draining = False
+
+            async def handle(self, _event):
+                return "⏳ Gateway is shutting down and is not accepting new work right now."
+
+        runner = Runner()
+        adapter.set_message_handler(runner.handle)
+        event = MessageEvent(
+            text="race",
+            message_type=MessageType.TEXT,
+            message_id="om_race",
+            source=SessionSource(
+                platform=Platform.FEISHU,
+                chat_id="oc_chat",
+                chat_type="dm",
+                user_id="ou_user",
+            ),
+        )
+        chat_lock = adapter._get_chat_lock("oc_chat")
+        await chat_lock.acquire()
+
+        original_is_draining = adapter._gateway_handler_is_draining
+        release_once = {"done": False}
+
+        def draining_and_release_lock():
+            if not release_once["done"]:
+                release_once["done"] = True
+                runner._draining = True
+                chat_lock.release()
+            return original_is_draining()
+
+        adapter._gateway_handler_is_draining = draining_and_release_lock
+
+        async def wait_timeout_after_acquire_completes(tasks, timeout=None):
+            # Simulate the race review found: the timeout branch is selected,
+            # then the lock is released and acquire_task completes before the
+            # drain path calls acquire_task.cancel().
+            draining_and_release_lock()
+            await asyncio.sleep(0)
+            return set(), set(tasks)
+
+        with patch("gateway.platforms.feishu.asyncio.wait", side_effect=wait_timeout_after_acquire_completes):
+            handled = await adapter._acquire_chat_lock_or_send_drain_notice(event, chat_lock)
+
+        self.assertFalse(handled)
+        self.assertFalse(chat_lock.locked(), "chat lock leaked after drain/acquire race")
+        adapter._send_with_retry.assert_awaited_once()
+
+    async def _assert_chat_lock_waiting_messages_keep_arrival_order(self):
+        from gateway.config import Platform, PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(enabled=True, token="t"))
+        processed = []
+
+        class Runner:
+            _draining = False
+
+            async def handle(self, event):
+                processed.append(event.text)
+                return None
+
+        adapter.set_message_handler(Runner().handle)
+
+        async def record_handle_message(event):
+            processed.append(event.text)
+
+        adapter.handle_message = record_handle_message
+
+        def event(text):
+            return MessageEvent(
+                text=text,
+                message_type=MessageType.TEXT,
+                message_id=f"om_{text}",
+                source=SessionSource(
+                    platform=Platform.FEISHU,
+                    chat_id="oc_chat",
+                    chat_type="dm",
+                    user_id="ou_user",
+                ),
+            )
+
+        chat_lock = adapter._get_chat_lock("oc_chat")
+        await chat_lock.acquire()
+        older = asyncio.create_task(adapter._handle_message_with_guards(event("older")))
+        await asyncio.sleep(0)
+        chat_lock.release()
+        younger = asyncio.create_task(adapter._handle_message_with_guards(event("younger")))
+        await asyncio.gather(older, younger)
+        await adapter.cancel_background_tasks()
+
+        self.assertEqual(processed, ["older", "younger"])
+
+    async def _assert_draining_gateway_ack_bypasses_chat_serialization_lock(self, *, drain_before_dispatch: bool):
+        from gateway.config import Platform, PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(enabled=True, token="t"))
+        adapter._send_with_retry = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="reply-1")
+        )
+
+        class DrainRunner:
+            _draining = drain_before_dispatch
+
+            async def handle(self, _event):
+                return "⏳ Gateway is shutting down and is not accepting new work right now."
+
+        runner = DrainRunner()
+        adapter.set_message_handler(runner.handle)
+        event = MessageEvent(
+            text="still there?",
+            message_type=MessageType.TEXT,
+            message_id="om_user",
+            source=SessionSource(
+                platform=Platform.FEISHU,
+                chat_id="oc_chat",
+                chat_type="dm",
+                user_id="ou_user",
+            ),
+        )
+
+        chat_lock = adapter._get_chat_lock("oc_chat")
+        await chat_lock.acquire()
+        try:
+            task = asyncio.create_task(adapter._handle_message_with_guards(event))
+            if not drain_before_dispatch:
+                await asyncio.sleep(0)
+                runner._draining = True
+            for _ in range(50):
+                if task.done():
+                    break
+                await asyncio.sleep(0.01)
+
+            assert task.done(), "drain acknowledgement waited behind the per-chat lock"
+            await task
+        finally:
+            if chat_lock.locked():
+                chat_lock.release()
+            await adapter.cancel_background_tasks()
+
+        adapter._send_with_retry.assert_awaited_once()
+        call = adapter._send_with_retry.await_args
+        assert call is not None
+        _, kwargs = call
+        self.assertEqual(kwargs["chat_id"], "oc_chat")
+        self.assertIn("Gateway is shutting down", kwargs["content"])
+
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",
         "FEISHU_APP_SECRET": "secret_app",

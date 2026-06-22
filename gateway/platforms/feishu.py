@@ -135,6 +135,9 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    _mark_notify_metadata,
+    _reply_anchor_for_event,
+    _thread_metadata_for_source,
     cache_document_from_bytes,
     cache_image_from_url,
     cache_audio_from_bytes,
@@ -2974,10 +2977,116 @@ class FeishuAdapter(BasePlatformAdapter):
         Per-chat lock ensures messages in the same chat are processed one at a
         time (matches openclaw's createChatQueue serial queue behaviour).
         """
+        if self._gateway_handler_is_draining():
+            await self._send_gateway_drain_notice_without_chat_lock(event)
+            return
+
         chat_id = getattr(event.source, "chat_id", "") or "" if event.source else ""
         chat_lock = self._get_chat_lock(chat_id)
-        async with chat_lock:
+        if not await self._acquire_chat_lock_or_send_drain_notice(event, chat_lock):
+            return
+        try:
+            if self._gateway_handler_is_draining():
+                await self._send_gateway_drain_notice_without_chat_lock(event)
+                return
             await self.handle_message(event)
+        finally:
+            if chat_lock.locked():
+                chat_lock.release()
+
+    async def _acquire_chat_lock_or_send_drain_notice(
+        self,
+        event: MessageEvent,
+        chat_lock: asyncio.Lock,
+    ) -> bool:
+        """Acquire the per-chat lock, but abort quickly if gateway drain starts."""
+        acquire_task = asyncio.create_task(chat_lock.acquire())
+        acquired = False
+        try:
+            while True:
+                done, _pending = await asyncio.wait({acquire_task}, timeout=0.05)
+                if acquire_task in done:
+                    await acquire_task
+                    acquired = True
+                    return True
+                if self._gateway_handler_is_draining():
+                    acquire_task.cancel()
+                    try:
+                        await acquire_task
+                    except asyncio.CancelledError:
+                        pass
+                    else:
+                        # Cancellation can lose a race with lock acquisition.
+                        # In that case this helper owns the lock but is about to
+                        # return False, so release locally rather than leaking it.
+                        acquired = True
+                    if acquired and chat_lock.locked():
+                        chat_lock.release()
+                        acquired = False
+                    await self._send_gateway_drain_notice_without_chat_lock(event)
+                    return False
+        except BaseException:
+            if acquire_task.done():
+                try:
+                    await acquire_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+                else:
+                    acquired = True
+            else:
+                acquire_task.cancel()
+                try:
+                    await acquire_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+                else:
+                    acquired = True
+            if acquired and chat_lock.locked():
+                chat_lock.release()
+            raise
+
+    def _gateway_handler_is_draining(self) -> bool:
+        """Return whether the installed gateway runner is already draining.
+
+        Feishu serializes normal messages per chat. During shutdown/restart,
+        waiting behind that lock can hide the user-facing drain acknowledgement
+        until the process exits and cancels the inbound task. The gateway runner
+        owns the authoritative `_draining` flag; bound handlers expose it via
+        `__self__` without coupling the adapter to GatewayRunner directly.
+        """
+        owner = getattr(self._message_handler, "__self__", None)
+        return bool(getattr(owner, "_draining", False))
+
+    async def _send_gateway_drain_notice_without_chat_lock(self, event: MessageEvent) -> None:
+        """Send the gateway drain/shutdown response immediately.
+
+        This intentionally bypasses Feishu's per-chat serialization lock. The
+        response is produced by the normal gateway handler so wording, restart vs
+        shutdown state, authorization, and queue policy remain centralized.
+        """
+        if not self._message_handler:
+            return
+        response = await self._message_handler(event)
+        text, ephemeral_ttl = self._unwrap_ephemeral(response)
+        if not text:
+            return
+        thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+        result = await self._send_with_retry(
+            chat_id=event.source.chat_id,
+            content=text,
+            reply_to=_reply_anchor_for_event(event),
+            metadata=_mark_notify_metadata(thread_meta),
+        )
+        if ephemeral_ttl > 0 and result.success and result.message_id:
+            self._schedule_ephemeral_delete(
+                chat_id=event.source.chat_id,
+                message_id=result.message_id,
+                ttl_seconds=ephemeral_ttl,
+            )
 
     # =========================================================================
     # Processing status reactions
