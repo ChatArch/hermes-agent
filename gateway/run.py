@@ -15298,7 +15298,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
             # schemas for prompt cache hits.
-            _cache_busting = self._extract_cache_busting_config(user_config)
+            _cache_busting = dict(self._extract_cache_busting_config(user_config) or {})
             if _backend_overrides:
                 _cache_busting["terminal.section_backend"] = _backend_overrides.get("env_type")
                 _cache_busting["terminal.section_ssh_host"] = _backend_overrides.get("ssh_host")
