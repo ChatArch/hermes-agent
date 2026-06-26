@@ -1449,6 +1449,19 @@ from gateway.delivery import DeliveryRouter
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
+from gateway.ssh_targets import (
+    find_ssh_target,
+    load_ssh_targets,
+    render_ssh_targets,
+    validate_ssh_target_for_runtime,
+)
+from gateway.ssh_bindings import (
+    clear_ssh_binding,
+    get_ssh_binding,
+    resolve_binding_task_overrides,
+    resolve_binding_target,
+    set_ssh_binding,
+)
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
@@ -7135,6 +7148,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "thread":
                 return await self._handle_thread_command(event)
 
+            if _cmd_def_inner and _cmd_def_inner.name == "ssh":
+                return await self._handle_ssh_command(event)
+
             if _cmd_def_inner and _cmd_def_inner.name == "template":
                 return await self._handle_template_command(event)
 
@@ -7578,6 +7594,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "thread":
             return await self._handle_thread_command(event)
+
+        if canonical == "ssh":
+            return await self._handle_ssh_command(event)
 
         if canonical == "template":
             return await self._handle_template_command(event)
@@ -10080,6 +10099,154 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reset_existing_thread=False,
         )
 
+    async def _handle_ssh_command(self, event: MessageEvent) -> str:
+        """Handle gateway `/ssh` section backend commands."""
+
+        raw_args = event.get_command_args().strip()
+        parts = raw_args.split()
+        action = parts[0].lower() if parts else "help"
+
+        if action in {"help", ""}:
+            return (
+                "Usage:\n"
+                "/ssh list — list SSH targets\n"
+                "/ssh status — show this section's SSH binding\n"
+                "/ssh test <alias> — validate a target without changing binding\n"
+                "/ssh use <alias> [--cwd <remote-path>] — bind current Feishu Thread/Section to SSH\n"
+                "/ssh use <alias> --new-thread [--cwd <remote-path>] — create a Feishu Thread and bind it\n"
+                "/ssh off — clear this section's SSH binding\n"
+                "/ssh local — same as /ssh off"
+            )
+
+        if action == "list":
+            return render_ssh_targets(load_ssh_targets())
+
+        section_key = self._session_key_for_source(event.source)
+
+        if action == "status":
+            resolved = resolve_binding_target(section_key, targets=load_ssh_targets())
+            if resolved is None:
+                return (
+                    "SSH status:\n"
+                    "- current backend: local\n"
+                    "- section binding: none\n"
+                    f"- section key: {section_key}\n"
+                    "- use /ssh list to see targets"
+                )
+            binding, target = resolved
+            lines = [
+                "SSH status:",
+                "- current backend: ssh",
+                f"- section binding: `{binding.alias}`",
+                f"- section key: {section_key}",
+            ]
+            if target.host:
+                lines.append(f"- host: {target.host}")
+            if target.user:
+                lines.append(f"- user: {target.user}")
+            if target.port:
+                lines.append(f"- port: {target.port}")
+            cwd = binding.cwd or target.cwd
+            if cwd:
+                lines.append(f"- cwd: {cwd}")
+            if target.identity_file:
+                lines.append("- identity: [REDACTED_PATH]")
+            return "\n".join(lines)
+
+        if action == "test":
+            alias = parts[1].strip() if len(parts) > 1 else ""
+            if not alias:
+                return "Usage: /ssh test <alias>"
+            target = find_ssh_target(load_ssh_targets(), alias)
+            if target is None:
+                return f"Unknown SSH target: `{alias}`. No binding was changed. Use /ssh list to see targets."
+            target_error = validate_ssh_target_for_runtime(target)
+            if target_error:
+                return target_error
+            return f"SSH test: `{alias}` is configured. No binding was changed."
+
+        if action in {"off", "local"}:
+            clear_ssh_binding(section_key)
+            try:
+                from tools.terminal_tool import clear_task_env_overrides
+                clear_task_env_overrides(section_key)
+            except Exception:
+                pass
+            self._evict_cached_agent(section_key)
+            return "SSH disabled for this section. Current backend: local."
+
+        if action == "use":
+            alias = parts[1].strip() if len(parts) > 1 else ""
+            if not alias:
+                return "Usage: /ssh use <alias> [--cwd <remote-path>] [--new-thread]"
+            new_thread = "--new-thread" in parts
+            cwd = None
+            if "--cwd" in parts:
+                idx = parts.index("--cwd")
+                if idx + 1 >= len(parts):
+                    return "Usage: /ssh use <alias> --cwd <remote-path>"
+                cwd = parts[idx + 1]
+
+            targets = load_ssh_targets()
+            target = find_ssh_target(targets, alias)
+            if target is None:
+                return f"Unknown SSH target: `{alias}`. No binding was changed. Use /ssh list to see targets."
+            target_error = validate_ssh_target_for_runtime(target)
+            if target_error:
+                return target_error
+
+            source = event.source
+            bind_source = source
+            if not source.thread_id:
+                if not new_thread:
+                    return (
+                        "Please run `/ssh use <alias>` inside a Feishu Thread, "
+                        "or use `/ssh use <alias> --new-thread` to create and bind a new Feishu Thread."
+                    )
+                adapter = self.adapters.get(source.platform)
+                create_thread = getattr(adapter, "create_thread", None) if adapter else None
+                if create_thread is None:
+                    return "Feishu /ssh --new-thread is unavailable: adapter does not support thread creation."
+                if not getattr(event, "message_id", None):
+                    return "Feishu /ssh --new-thread requires a message id to create a thread."
+                result = await create_thread(source.chat_id, "SSH target binding", reply_to=str(event.message_id))
+                if not getattr(result, "success", False):
+                    return f"Failed to create Feishu thread: {getattr(result, 'error', 'unknown error')}"
+                thread_id = getattr(result, "thread_id", None) or getattr(result, "message_id", None)
+                if not thread_id:
+                    return "Failed to create Feishu thread: response did not include a thread id."
+                bind_source = dataclasses.replace(
+                    source,
+                    thread_id=str(thread_id),
+                    parent_chat_id=source.chat_id,
+                    message_id=getattr(result, "message_id", None) or event.message_id,
+                )
+
+            bind_key = self._session_key_for_source(bind_source)
+            binding = set_ssh_binding(bind_key, alias=alias, cwd=cwd)
+            overrides = resolve_binding_task_overrides(bind_key, targets=targets)
+            if overrides:
+                try:
+                    from tools.terminal_tool import register_task_env_overrides
+                    register_task_env_overrides(bind_key, overrides)
+                except Exception:
+                    pass
+            self._evict_cached_agent(bind_key)
+            lines = [
+                f"SSH enabled for this section: `{binding.alias}`",
+                "- backend: ssh",
+                f"- section key: {bind_key}",
+            ]
+            effective_cwd = binding.cwd or target.cwd
+            if effective_cwd:
+                lines.append(f"- cwd: {effective_cwd}")
+            if target.identity_file:
+                lines.append("- identity: [REDACTED_PATH]")
+            lines.append("Future terminal/file/execute_code calls in this section will use the SSH backend.")
+            return "\n".join(lines)
+
+        return "Usage: /ssh [list|status|test <alias>|use <alias>|off|help]"
+
     async def _handle_thread_command(self, event: MessageEvent):
         """Handle Feishu /thread <prompt>.
 
@@ -12515,6 +12682,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            session_id=context.session_id,
             message_id=str(context.source.message_id) if context.source.message_id else "",
         )
 
@@ -15111,17 +15279,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     log_message="interim_assistant_callback scheduling error",
                 )
 
+            # Per-section backend binding: register task env overrides before
+            # constructing/reusing AIAgent so prompt_builder and all tools see
+            # the same backend for this turn. Binding is stored by durable
+            # session_key, while tools receive the current transcript session_id.
+            _backend_overrides = resolve_binding_task_overrides(session_key or "")
+            try:
+                from tools.terminal_tool import clear_task_env_overrides, register_task_env_overrides
+                if _backend_overrides:
+                    register_task_env_overrides(session_id, _backend_overrides)
+                else:
+                    clear_task_env_overrides(session_id)
+            except Exception as _be_err:
+                logger.debug("SSH backend override registration failed: %s", _be_err)
+
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
             # schemas for prompt cache hits.
+            _cache_busting = dict(self._extract_cache_busting_config(user_config) or {})
+            if _backend_overrides:
+                _cache_busting["terminal.section_backend"] = _backend_overrides.get("env_type")
+                _cache_busting["terminal.section_ssh_host"] = _backend_overrides.get("ssh_host")
+                _cache_busting["terminal.section_ssh_user"] = _backend_overrides.get("ssh_user")
+                _cache_busting["terminal.section_ssh_port"] = _backend_overrides.get("ssh_port")
+                _cache_busting["terminal.section_cwd"] = _backend_overrides.get("cwd")
+            else:
+                _cache_busting["terminal.section_backend"] = "local"
             _sig = self._agent_config_signature(
                 turn_route["model"],
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
-                cache_keys=self._extract_cache_busting_config(user_config),
+                cache_keys=_cache_busting,
                 user_id=getattr(source, "user_id", None),
                 user_id_alt=getattr(source, "user_id_alt", None),
             )

@@ -607,8 +607,9 @@ def _get_or_create_env(task_id: str):
     from tools.terminal_tool import (
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
-        _creation_locks, _creation_locks_lock, _task_env_overrides,
-        _resolve_container_task_id,
+        _creation_locks, _creation_locks_lock,
+        _resolve_container_task_id, resolve_task_overrides,
+        apply_task_env_overrides,
     )
 
     effective_task_id = _resolve_container_task_id(task_id)
@@ -617,7 +618,8 @@ def _get_or_create_env(task_id: str):
     with _env_lock:
         if effective_task_id in _active_environments:
             _last_activity[effective_task_id] = time.time()
-            return _active_environments[effective_task_id], _get_env_config()["env_type"]
+            config = apply_task_env_overrides(_get_env_config(), resolve_task_overrides(task_id))
+            return _active_environments[effective_task_id], config["env_type"]
 
     # Slow path: create environment (same pattern as file_tools._get_file_ops)
     with _creation_locks_lock:
@@ -629,11 +631,13 @@ def _get_or_create_env(task_id: str):
         with _env_lock:
             if effective_task_id in _active_environments:
                 _last_activity[effective_task_id] = time.time()
-                return _active_environments[effective_task_id], _get_env_config()["env_type"]
+                config = apply_task_env_overrides(_get_env_config(), resolve_task_overrides(task_id))
+                return _active_environments[effective_task_id], config["env_type"]
 
         config = _get_env_config()
+        overrides = resolve_task_overrides(task_id)
+        config = apply_task_env_overrides(config, overrides)
         env_type = config["env_type"]
-        overrides = _task_env_overrides.get(effective_task_id, {})
 
         if env_type == "docker":
             image = overrides.get("docker_image") or config["docker_image"]

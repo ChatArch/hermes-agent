@@ -949,40 +949,77 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
 
 
+_BACKEND_OVERRIDE_KEYS = frozenset({
+    "env_type",
+    "ssh_host",
+    "ssh_user",
+    "ssh_port",
+    "ssh_key",
+    "ssh_persistent",
+})
+
+
+def evict_task_environment(task_id: str):
+    """Evict cached terminal/file/code environments for a task id."""
+
+    if not task_id:
+        return
+    keys = {task_id, _resolve_container_task_id(task_id)}
+    evicted = []
+    with _env_lock:
+        for key in keys:
+            env = _active_environments.pop(key, None)
+            _last_activity.pop(key, None)
+            if env is not None:
+                evicted.append(env)
+    try:
+        from tools.file_tools import clear_file_ops_cache
+        for key in keys:
+            clear_file_ops_cache(key)
+    except Exception:
+        pass
+    for env in evicted:
+        try:
+            if hasattr(env, "cleanup"):
+                env.cleanup()
+            elif hasattr(env, "stop"):
+                env.stop()
+            elif hasattr(env, "terminate"):
+                env.terminate()
+        except Exception:
+            logger.debug("Error cleaning evicted environment for task %s", task_id, exc_info=True)
+
+
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     """
     Register environment overrides for a specific task/rollout.
 
     Called by Atropos environments before the agent loop to configure
-    per-task sandbox settings (e.g., a custom Dockerfile for the Modal image).
+    per-task sandbox settings (e.g., a custom Dockerfile for the Modal image),
+    and by gateway section-backend commands to select SSH for a session.
 
-    Supported override keys:
-        - modal_image: str -- Path to Dockerfile or Docker Hub image name
-        - docker_image: str -- Docker image name
-        - cwd: str -- Working directory inside the sandbox
-
-    Args:
-        task_id: The rollout's unique task identifier
-        overrides: Dict of config keys to override
+    Supported override keys include:
+        - env_type: str -- backend override such as "ssh"
+        - ssh_host/user/port/key: SSH connection config for env_type="ssh"
+        - modal_image/docker_image: backend image overrides
+        - cwd: str -- Working directory inside the sandbox/backend
     """
-    _task_env_overrides[task_id] = overrides
+    previous = _task_env_overrides.get(task_id) or {}
+    next_overrides = dict(overrides or {})
+    _task_env_overrides[task_id] = next_overrides
+
+    backend_keys = set(previous.keys()) | set(next_overrides.keys())
+    if backend_keys & _BACKEND_OVERRIDE_KEYS:
+        previous_backend = {key: previous.get(key) for key in _BACKEND_OVERRIDE_KEYS}
+        next_backend = {key: next_overrides.get(key) for key in _BACKEND_OVERRIDE_KEYS}
+        if previous_backend != next_backend:
+            evict_task_environment(task_id)
+            return
 
     # If a live environment already exists for this task, a freshly registered
-    # ``cwd`` override (e.g. the ACP client switching the editor's project root
-    # mid-session via ``session/load`` / ``session/resume``) must take effect on
-    # the cached env too. ``terminal_tool`` resolves the per-command cwd as
-    # ``workdir > env.cwd > config/override cwd`` so that ordinary in-session
-    # ``cd`` state is preserved; without syncing here the override would sit
-    # below the (already-set) ``env.cwd`` and be silently ignored once any
-    # command has run. Pushing it onto the live env keeps ``cd`` tracking intact
-    # while letting an explicit ACP cwd change win, as the client expects.
-    new_cwd = overrides.get("cwd")
+    # ``cwd`` override must take effect on the cached env too.
+    new_cwd = next_overrides.get("cwd")
     if isinstance(new_cwd, str) and new_cwd.strip():
-        # The live env is cached under the raw task_id for per-session surfaces
-        # (ACP/gateway/dashboard) and under the collapsed container id for
-        # isolation-keyed rollouts. Try the raw id first, then the container id,
-        # so a CWD-only override (which collapses to "default") still finds and
-        # updates the originating session's env.
         container_id = _resolve_container_task_id(task_id)
         with _env_lock:
             env = _active_environments.get(task_id) or _active_environments.get(container_id)
@@ -996,7 +1033,9 @@ def clear_task_env_overrides(task_id: str):
 
     Called during cleanup to avoid stale entries accumulating.
     """
-    _task_env_overrides.pop(task_id, None)
+    previous = _task_env_overrides.pop(task_id, None) or {}
+    if set(previous.keys()) & _BACKEND_OVERRIDE_KEYS:
+        evict_task_environment(task_id)
 
 
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
@@ -1211,6 +1250,36 @@ def _get_env_config() -> Dict[str, Any]:
             "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
         ).lower() in {"true", "1", "yes"},
     }
+
+
+def apply_task_env_overrides(config: Dict[str, Any], overrides: Dict[str, Any] | None) -> Dict[str, Any]:
+    """Return terminal config with per-task backend overrides applied.
+
+    This is the narrow bridge used by section-scoped `/ssh` bindings: global
+    config/env vars still provide defaults, but a session/task can select SSH
+    without mutating process-wide `TERMINAL_ENV` or `TERMINAL_SSH_*` values.
+    """
+
+    merged = dict(config or {})
+    ov = overrides or {}
+    if ov.get("env_type"):
+        merged["env_type"] = str(ov["env_type"])
+    if ov.get("cwd"):
+        merged["cwd"] = str(ov["cwd"])
+    if "ssh_host" in ov:
+        merged["ssh_host"] = str(ov.get("ssh_host") or "")
+    if "ssh_user" in ov:
+        merged["ssh_user"] = str(ov.get("ssh_user") or "")
+    if "ssh_key" in ov:
+        merged["ssh_key"] = str(ov.get("ssh_key") or "")
+    if "ssh_port" in ov:
+        try:
+            merged["ssh_port"] = int(ov.get("ssh_port") or 22)
+        except (TypeError, ValueError):
+            merged["ssh_port"] = 22
+    if "ssh_persistent" in ov:
+        merged["ssh_persistent"] = bool(ov.get("ssh_persistent"))
+    return merged
 
 
 def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
@@ -1896,21 +1965,18 @@ def terminal_tool(
 
         # Get configuration
         config = _get_env_config()
-        env_type = config["env_type"]
 
         # Use task_id for environment isolation. By default all subagent
         # task_ids collapse back to "default" so the top-level agent and
         # every delegate_task child share one container; only task_ids with
-        # a registered env override (RL benchmarks) get isolated sandboxes.
+        # a registered env override (RL benchmarks or /ssh section bindings)
+        # get isolated sandboxes.
         effective_task_id = _resolve_container_task_id(task_id)
 
-        # Check per-task overrides (set by environments like TerminalBench2Env)
-        # before falling back to global env var config. ``resolve_task_overrides``
-        # reads the raw task id first then the collapsed container id, so a
-        # CWD-only override (which collapses ``effective_task_id`` to
-        # ``"default"``) is still found under its originating session id while
-        # isolation-keyed RL/benchmark overrides keep resolving as before.
+        # Check per-task overrides before falling back to global env var config.
         overrides = resolve_task_overrides(task_id)
+        config = apply_task_env_overrides(config, overrides)
+        env_type = config["env_type"]
         
         # Select image based on env type, with per-task override support
         if env_type == "docker":

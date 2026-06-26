@@ -71,6 +71,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, args_hint="[off|help|session-id]"),
     CommandDef("thread", "Start or reset a Feishu thread session", "Session",
                aliases=("t",), gateway_only=True, args_hint="<prompt>"),
+    CommandDef("ssh", "Manage SSH backend targets and section bindings", "Session",
+               gateway_only=True,
+               args_hint="[list|status|test <alias>|use <alias>|off]",
+               subcommands=("list", "status", "test", "use", "off", "local", "help")),
     CommandDef("template", "Use, create, update, or list thread templates", "Tools & Skills",
                aliases=("tpl",), gateway_only=True,
                args_hint="<name|list|create|update|use> [instruction...]",
@@ -364,6 +368,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "profile",
         "queue",
         "restart",
+        "ssh",
         "t",
         "template",
         "tpl",
@@ -1064,8 +1069,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 # "Slack-via-/hermes" decision, not a silent clamp.
 #   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
+#   - update: low-frequency maintenance surface; reached via /hermes update on Slack.
 #   - version: low-frequency info surface; reached via /hermes version on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "debug", "version"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "debug", "update", "version"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
