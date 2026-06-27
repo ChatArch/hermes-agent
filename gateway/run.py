@@ -9998,8 +9998,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         This shared helper owns the common thread launcher sequence used by
         `/thread` and thread-oriented commands: create Feishu thread when the
         command starts in a parent chat, retarget the event/source, dispatch the
-        agent turn, and edit the seed message with the final answer when
-        possible.
+        agent turn, retract the temporary seed message, and return the final
+        answer for normal thread-bottom delivery.
         """
         source = event.source
         original_session_key = self._session_key_for_source(source)
@@ -10069,17 +10069,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     edit_result = await edit_message(
                         source.chat_id,
                         str(created_thread_seed_message_id),
-                        final_text,
+                        "撤回",
                         finalize=True,
                     )
-                    if getattr(edit_result, "success", False):
-                        return None
-                    logger.warning(
-                        "Feishu /%s final edit failed for %s: %s",
-                        command_name,
-                        created_thread_seed_message_id,
-                        getattr(edit_result, "error", "unknown error"),
-                    )
+                    if not getattr(edit_result, "success", False):
+                        logger.warning(
+                            "Feishu /%s seed retraction edit failed for %s: %s",
+                            command_name,
+                            created_thread_seed_message_id,
+                            getattr(edit_result, "error", "unknown error"),
+                        )
             return agent_result
 
         return agent_result
