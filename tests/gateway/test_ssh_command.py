@@ -258,7 +258,7 @@ async def test_ssh_use_in_parent_chat_requires_new_thread(monkeypatch):
     result = await runner._handle_ssh_command(event)
 
     assert "Feishu Thread" in result
-    assert "--new-thread" in result
+    assert "--thread" in result
 
 
 @pytest.mark.asyncio
@@ -362,3 +362,69 @@ async def test_ssh_test_unknown_alias_does_not_change_binding(monkeypatch):
     assert "Unknown SSH target" in result
     assert "missing-host" in result
     assert "No binding was changed" in result
+
+
+@pytest.mark.asyncio
+async def test_ssh_use_thread_alias_creates_thread_and_binds(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+    from gateway.ssh_targets import SshTarget
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        gateway_run,
+        "load_ssh_targets",
+        lambda: [SshTarget(alias="rex.oray", host="rexwzh.oray", user="rexwzh")],
+        raising=False,
+    )
+    runner = _runner()
+    runner.adapters[Platform.FEISHU] = SimpleNamespace(  # type: ignore[assignment]
+        create_thread=AsyncMock(return_value=SimpleNamespace(success=True, thread_id="omt_new", message_id="om_new"))
+    )
+    event = _event("/ssh use rex.oray -t", thread_id=None)
+
+    result = await runner._handle_ssh_command(event)
+
+    from gateway.ssh_bindings import get_ssh_binding
+    section_key = build_session_key(_source(thread_id="omt_new"))
+    binding = get_ssh_binding(section_key)
+    assert "SSH enabled" in result
+    assert binding is not None
+    assert binding.alias == "rex.oray"
+
+
+@pytest.mark.asyncio
+async def test_ssh_yolo_is_thread_scoped_in_feishu_parent_chat():
+    runner = _runner()
+    event = _event("/ssh yolo on rex.oray", thread_id=None)
+
+    result = await runner._handle_ssh_command(event)
+
+    assert "Thread-scoped" in result
+    assert "/ssh use <alias> -t" in result
+
+
+@pytest.mark.asyncio
+async def test_ssh_yolo_on_status_and_off(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+    from gateway.ssh_bindings import get_ssh_yolo_grant
+    from gateway.ssh_targets import SshTarget
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        gateway_run,
+        "load_ssh_targets",
+        lambda: [SshTarget(alias="rex.oray", host="rexwzh.oray", user="rexwzh")],
+        raising=False,
+    )
+    runner = _runner()
+
+    result = await runner._handle_ssh_command(_event("/ssh yolo on rex.oray", thread_id="omt_thread"))
+    status = await runner._handle_ssh_command(_event("/ssh yolo status", thread_id="omt_thread"))
+    off = await runner._handle_ssh_command(_event("/ssh yolo off rex.oray", thread_id="omt_thread"))
+
+    section_key = build_session_key(_source(thread_id="omt_thread"))
+    grant = get_ssh_yolo_grant(section_key)
+    assert "SSH YOLO enabled" in result
+    assert "rex.oray" in status
+    assert "yolo: off" in off
+    assert grant.enabled is False
