@@ -80,6 +80,18 @@ class TestConfigEnvOverrides(unittest.TestCase):
         self.assertIn(Platform.FEISHU, config.get_connected_platforms())
 
 
+class TestFeishuStreamingFinalization(unittest.TestCase):
+    def test_feishu_prefers_bottom_final_with_withdrawn_preview_marker(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = object.__new__(FeishuAdapter)
+        self.assertTrue(adapter.prefers_fresh_final_streaming("final summary"))
+        self.assertEqual(
+            adapter.fresh_final_preview_replacement_text("final summary"),
+            "撤回",
+        )
+
+
 class TestFeishuMessageNormalization(unittest.TestCase):
     def test_normalize_merge_forward_preserves_summary_lines(self):
         from gateway.platforms.feishu import normalize_feishu_message

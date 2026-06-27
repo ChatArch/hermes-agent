@@ -1967,8 +1967,7 @@ class BasePlatformAdapter(ABC):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Whether the stream consumer should finalize a streamed reply by
-        sending a *fresh* final message (and deleting the preview) instead of
-        final-editing the preview.
+        sending a *fresh* final message instead of final-editing the preview.
 
         Some adapters can send richer final messages than their current edit
         implementation supports. Telegram is the motivating case: Hermes sends
@@ -1976,13 +1975,29 @@ class BasePlatformAdapter(ABC):
         previews through its existing MarkdownV2 edit path until Bot API 10.1's
         ``rich_message`` edit parameter is wired directly. Such adapters
         override this to ask the consumer to re-deliver the completed answer as
-        a new rich message and best-effort delete the stale preview, so the
+        a new rich message and best-effort clean up the stale preview, so the
         final rendering matches the rich send path.
 
         Default implementation returns False — legacy platforms keep the
         edit-in-place finalization path.
         """
         return False
+
+    def fresh_final_preview_replacement_text(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Optional text used to replace a stale streaming preview.
+
+        When :meth:`prefers_fresh_final_streaming` asks the stream consumer to
+        send the completed answer as a fresh final message, the consumer
+        normally best-effort deletes the stale preview. Platforms may override
+        this hook to keep the old bubble as a short marker instead. Returning a
+        non-empty string makes the consumer edit the stale preview to that text
+        rather than deleting it.
+        """
+        return None
 
     def streaming_overflow_limit(self) -> Optional[int]:
         """Max single-message length (in this adapter's ``message_len_fn``

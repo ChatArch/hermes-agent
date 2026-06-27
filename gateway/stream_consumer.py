@@ -1220,8 +1220,8 @@ class GatewayStreamConsumer:
 
     def _adapter_prefers_fresh_final(self, text: str) -> bool:
         """Return True when the adapter would rather finalize a streamed reply
-        by sending a fresh message and deleting the preview than by editing the
-        preview in place — e.g. Telegram, whose ``sendRichMessage`` send path
+        by sending a fresh message and cleaning up the preview than by editing
+        the preview in place — e.g. Telegram, whose ``sendRichMessage`` send path
         currently renders richer markdown than Hermes' MarkdownV2 edit path.
 
         Returns False when there is no real preview to replace (no message id,
@@ -1248,11 +1248,30 @@ class GatewayStreamConsumer:
         # fresh-final path.  Mirrors the REQUIRES_EDIT_FINALIZE gate in __init__.
         return result is True
 
+    def _fresh_final_preview_replacement_text(self, text: str) -> Optional[str]:
+        """Return adapter-requested stale-preview replacement text, if any."""
+        fn = getattr(self.adapter, "fresh_final_preview_replacement_text", None)
+        if fn is None:
+            return None
+        try:
+            try:
+                result = fn(text, metadata=self.metadata)
+            except TypeError:
+                result = fn(text)
+        except Exception as e:
+            logger.debug("fresh_final_preview_replacement_text check failed: %s", e)
+            return None
+        if isinstance(result, str) and result.strip():
+            return result
+        return None
+
     async def _try_fresh_final(self, text: str, *, is_turn_final: bool = True) -> bool:
-        """Send ``text`` as a brand-new message (best-effort delete the old
-        preview) so the platform's visible timestamp reflects completion
-        time.  Returns True on successful delivery, False on any failure so
-        the caller falls back to the normal edit path.
+        """Send ``text`` as a brand-new message and clean up the old preview
+        so the platform's visible timestamp reflects completion time.  Cleanup
+        either best-effort deletes the stale preview or, when the adapter asks,
+        edits it into a short replacement marker.  Returns True on successful
+        delivery, False on any failure so the caller falls back to the normal
+        edit path.
 
         ``is_turn_final`` is False when finalizing an interim segment at a tool
         boundary (a preamble) rather than the turn-final answer; the
@@ -1283,24 +1302,40 @@ class GatewayStreamConsumer:
         # callers (e.g. overflow split loops, finalize retries) see a
         # consistent state.
         new_message_id = getattr(result, "message_id", None)
-        # Successful fresh send — try to delete the stale preview(s) so the
-        # user doesn't see the old edit-stuck message(s) underneath.  Cleanup
-        # is best-effort; platforms that don't implement ``delete_message``
-        # just leave the preview behind (still an acceptable outcome — the
-        # visible final timestamp is the important part).  Never delete the
+        # Successful fresh send — clean up the stale preview(s) so the user
+        # doesn't see the old edit-stuck message(s) underneath.  Most platforms
+        # best-effort delete them; platforms can request an edit-to-marker
+        # replacement (e.g. Feishu: "撤回") when keeping a short breadcrumb is
+        # clearer than silently deleting an earlier bubble.  Never touch the
         # message we just sent.
-        delete_fn = getattr(self.adapter, "delete_message", None)
-        if delete_fn is not None:
+        preview_replacement = self._fresh_final_preview_replacement_text(text)
+        if preview_replacement is not None:
             for stale_id in stale_ids:
                 if not stale_id or stale_id == "__no_edit__" or stale_id == new_message_id:
                     continue
                 try:
-                    await delete_fn(self.chat_id, stale_id)
+                    await self._edit_message(
+                        message_id=stale_id,
+                        content=preview_replacement,
+                    )
                 except Exception as e:
                     logger.debug(
-                        "Fresh-final preview cleanup failed (%s): %s",
+                        "Fresh-final preview replacement failed (%s): %s",
                         stale_id, e,
                     )
+        else:
+            delete_fn = getattr(self.adapter, "delete_message", None)
+            if delete_fn is not None:
+                for stale_id in stale_ids:
+                    if not stale_id or stale_id == "__no_edit__" or stale_id == new_message_id:
+                        continue
+                    try:
+                        await delete_fn(self.chat_id, stale_id)
+                    except Exception as e:
+                        logger.debug(
+                            "Fresh-final preview cleanup failed (%s): %s",
+                            stale_id, e,
+                        )
         self._preview_message_ids = set()
         if new_message_id:
             self._message_id = new_message_id
@@ -1391,14 +1426,22 @@ class GatewayStreamConsumer:
         try:
             if self._message_id is not None:
                 if self._edit_supported:
+                    _needs_fresh_final = False
+                    if finalize:
+                        _needs_fresh_final = (
+                            self._should_send_fresh_final()
+                            or self._adapter_prefers_fresh_final(text)
+                        )
                     # Skip if text is identical to what we last sent.
                     # Exception: adapters that require an explicit finalize
                     # call (REQUIRES_EDIT_FINALIZE) must still receive the
                     # finalize=True edit even when content is unchanged, so
                     # their streaming UI can transition out of the in-
-                    # progress state.  Everyone else short-circuits.
+                    # progress state.  Fresh-final adapters must also bypass
+                    # this fast path so they can send the final answer as a new
+                    # bottom message and clean up the stale preview.
                     if text == self._last_sent_text and not (
-                        finalize and self._adapter_requires_finalize
+                        finalize and (self._adapter_requires_finalize or _needs_fresh_final)
                     ):
                         return True
                     # Fresh-final for long-lived previews: when finalizing
@@ -1413,17 +1456,11 @@ class GatewayStreamConsumer:
                     # legacy edit-in-place path stays the default.
                     #
                     # Adapters can also opt in regardless of the time threshold
-                    # via prefers_fresh_final_streaming (e.g. Telegram, whose
-                    # send path renders richer markdown than its edit path):
-                    # finalizing through edit would visibly downgrade a rich
-                    # preview, so re-deliver as a fresh message + delete the
-                    # preview instead.
+                    # via prefers_fresh_final_streaming.  They may either
+                    # delete the old preview or edit it into a short marker
+                    # via fresh_final_preview_replacement_text.
                     if (
-                        finalize
-                        and (
-                            self._should_send_fresh_final()
-                            or self._adapter_prefers_fresh_final(text)
-                        )
+                        _needs_fresh_final
                         and await self._try_fresh_final(
                             text, is_turn_final=is_turn_final,
                         )
