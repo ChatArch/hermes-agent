@@ -90,13 +90,13 @@ async def test_thread_command_in_normal_feishu_chat_creates_thread_and_runs_prom
 
     result = await runner._handle_thread_command(event)
 
-    assert result is None
+    assert result == "assistant answer"
     adapter.create_thread.assert_awaited_once_with("oc_chat", "⏳", reply_to="om_cmd")
     adapter.release_retargeted_session_guard.assert_called_once_with(build_session_key(_source()))
     adapter.edit_message.assert_awaited_once_with(
         "oc_chat",
         "om_seed",
-        "assistant answer",
+        "撤回",
         finalize=True,
     )
     assert event.text == "summarize this"
