@@ -3,7 +3,7 @@
 Ported from openclaw/openclaw#72038.  When a streamed preview has been
 visible long enough that the platform's edit timestamp would be
 noticeably stale by completion time, the stream consumer delivers the
-final reply as a brand-new message and best-effort deletes the old
+final reply as a brand-new message and best-effort cleans up the old
 preview.  This makes Telegram's visible timestamp reflect completion
 time instead of first-token time.
 """
@@ -120,6 +120,66 @@ class TestFreshFinalForLongLivedPreviews:
         adapter.edit_message.assert_not_called()
         # No delete attempt — just the fresh send.
         assert consumer._message_id == "fresh_final"
+
+    @pytest.mark.asyncio
+    async def test_adapter_can_replace_preview_instead_of_deleting_it(self):
+        """Feishu-style UX: send the final answer last, then mark preview withdrawn."""
+        adapter = _make_adapter()
+        adapter.prefers_fresh_final_streaming.return_value = True
+        adapter.fresh_final_preview_replacement_text.return_value = "撤回"
+        adapter.send.side_effect = [
+            SimpleNamespace(success=True, message_id="initial_preview"),
+            SimpleNamespace(success=True, message_id="fresh_final"),
+        ]
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(fresh_final_after_seconds=0.0),
+        )
+        await consumer._send_or_edit("⏳ Working")
+        await consumer._send_or_edit("final summary", finalize=True)
+
+        assert [c.kwargs.get("content") for c in adapter.send.call_args_list] == [
+            "⏳ Working",
+            "final summary",
+        ]
+        adapter.edit_message.assert_awaited_once_with(
+            chat_id="chat",
+            message_id="initial_preview",
+            content="撤回",
+            finalize=False,
+        )
+        adapter.delete_message.assert_not_called()
+        assert consumer._message_id == "fresh_final"
+        assert consumer._final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_adapter_fresh_final_runs_when_final_text_matches_preview(self):
+        """Fresh-final must not be bypassed by the identical-text fast path."""
+        adapter = _make_adapter()
+        adapter.prefers_fresh_final_streaming.return_value = True
+        adapter.fresh_final_preview_replacement_text.return_value = "撤回"
+        adapter.send.side_effect = [
+            SimpleNamespace(success=True, message_id="initial_preview"),
+            SimpleNamespace(success=True, message_id="fresh_final"),
+        ]
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(cursor="", fresh_final_after_seconds=0.0),
+        )
+        await consumer._send_or_edit("final summary")
+        await consumer._send_or_edit("final summary", finalize=True)
+
+        assert adapter.send.call_count == 2
+        adapter.edit_message.assert_awaited_once_with(
+            chat_id="chat",
+            message_id="initial_preview",
+            content="撤回",
+            finalize=False,
+        )
+        assert consumer._message_id == "fresh_final"
+        assert consumer._final_response_sent is True
 
     @pytest.mark.asyncio
     async def test_fresh_final_fallback_to_edit_on_send_failure(self):

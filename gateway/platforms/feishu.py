@@ -1414,6 +1414,29 @@ class FeishuAdapter(BasePlatformAdapter):
 
     supports_code_blocks = True  # Feishu renders fenced code blocks
 
+    def prefers_fresh_final_streaming(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Finalize streamed replies as a new bottom message on Feishu.
+
+        Feishu preserves the original message position when Hermes edits the
+        streaming preview in place.  For long tasks this leaves the useful final
+        summary above later progress/context, forcing users to scroll back up.
+        Ask the stream consumer to send the completed answer as a fresh final
+        message instead.
+        """
+        return True
+
+    def fresh_final_preview_replacement_text(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Replace the old Feishu streaming preview with a compact marker."""
+        return "撤回"
+
     MAX_MESSAGE_LENGTH = 8000
     # Max distinct chat IDs retained in _chat_locks before LRU eviction kicks in.
     CHAT_LOCK_MAX_SIZE: int = 1000
