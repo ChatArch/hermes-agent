@@ -91,6 +91,117 @@ class TestFeishuStreamingFinalization(unittest.TestCase):
             "撤回",
         )
 
+    def test_gateway_thread_metadata_carries_feishu_reply_anchor(self):
+        from gateway.config import Platform
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+
+        metadata = runner._thread_metadata_for_target(
+            Platform.FEISHU,
+            "oc_chat",
+            "omt_thread",
+            reply_to_message_id="om_trigger",
+        )
+
+        self.assertEqual(
+            metadata,
+            {"thread_id": "omt_thread", "reply_to_message_id": "om_trigger"},
+        )
+
+    def test_stream_consumer_fresh_final_replies_to_preview_anchor(self):
+        """Exercise the stream-consumer-to-adapter contract without pytest-asyncio."""
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+        adapter = Mock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="om_preview"),
+            SimpleNamespace(success=True, message_id="om_final"),
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="om_preview"))
+        adapter.delete_message = AsyncMock(return_value=True)
+        adapter.prefers_fresh_final_streaming = Mock(return_value=True)
+        adapter.fresh_final_preview_replacement_text = Mock(return_value="撤回")
+
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="oc_chat",
+            config=StreamConsumerConfig(fresh_final_after_seconds=0.0),
+            metadata={"thread_id": "omt_thread", "reply_to_message_id": "om_trigger"},
+        )
+
+        asyncio.run(consumer._send_or_edit("working ▉"))
+        asyncio.run(consumer._send_or_edit("final summary", finalize=True))
+
+        final_send = adapter.send.call_args_list[1]
+        self.assertEqual(final_send.kwargs["reply_to"], "om_preview")
+        self.assertEqual(final_send.kwargs["metadata"]["thread_id"], "omt_thread")
+        self.assertTrue(final_send.kwargs["metadata"]["notify"])
+        adapter.edit_message.assert_called_once()
+
+    def test_feishu_thread_final_send_uses_reply_api_not_thread_create(self):
+        """Regression: fresh final must append via reply_in_thread, not create(thread_id).
+
+        PR #12 only mocked the stream consumer's adapter.send call, so it missed
+        Feishu's real routing layer.  This test exercises the adapter branch that
+        chooses between message.reply(reply_in_thread=True) and
+        message.create(receive_id_type="thread_id").
+        """
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = object.__new__(FeishuAdapter)
+        reply_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="om_final", thread_id="omt_thread"),
+        )
+        reply = Mock(return_value=reply_response)
+        create = Mock(return_value=SimpleNamespace(success=lambda: True, data=SimpleNamespace()))
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace(reply=reply, create=create)))
+        )
+
+        captured = {}
+
+        def build_reply_body(*, content, msg_type, reply_in_thread, uuid_value):
+            captured["reply_body"] = {
+                "content": content,
+                "msg_type": msg_type,
+                "reply_in_thread": reply_in_thread,
+                "uuid": uuid_value,
+            }
+            return captured["reply_body"]
+
+        def build_reply_request(message_id, body):
+            captured["reply_request"] = {"message_id": message_id, "body": body}
+            return captured["reply_request"]
+
+        adapter._build_reply_message_body = Mock(side_effect=build_reply_body)
+        adapter._build_reply_message_request = Mock(side_effect=build_reply_request)
+        adapter._build_create_message_body = Mock(return_value={"create": True})
+        adapter._build_create_message_request = Mock(return_value={"create_request": True})
+
+        response = asyncio.run(
+            adapter._send_raw_message(
+                chat_id="oc_chat",
+                msg_type="text",
+                payload=json.dumps({"text": "final summary"}),
+                reply_to=None,
+                metadata={
+                    "thread_id": "omt_thread",
+                    "reply_to_message_id": "om_preview",
+                    "notify": True,
+                },
+            )
+        )
+
+        self.assertIs(response, reply_response)
+        reply.assert_called_once_with(captured["reply_request"])
+        create.assert_not_called()
+        self.assertEqual(captured["reply_request"]["message_id"], "om_preview")
+        self.assertTrue(captured["reply_body"]["reply_in_thread"])
+
 
 class TestFeishuMessageNormalization(unittest.TestCase):
     def test_normalize_merge_forward_preserves_summary_lines(self):

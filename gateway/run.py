@@ -12197,6 +12197,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 metadata["direct_messages_topic_id"] = tid
             if reply_to_message_id is not None:
                 metadata["telegram_reply_to_message_id"] = str(reply_to_message_id)
+        if platform == Platform.FEISHU and reply_to_message_id is not None:
+            # Feishu topic messages must use reply(reply_in_thread=True) to keep
+            # the message in the active Thread and ordered after the current turn.
+            # A bare create(thread_id) can render at an unexpected anchor/top.
+            metadata["reply_to_message_id"] = str(reply_to_message_id)
         return metadata
 
     @staticmethod
