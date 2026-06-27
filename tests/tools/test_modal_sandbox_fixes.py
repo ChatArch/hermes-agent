@@ -34,15 +34,24 @@ class TestToolResolution:
     """Verify get_tool_definitions returns all expected tools for eval."""
 
     def test_terminal_and_file_toolsets_resolve_all_tools(self):
-        """enabled_toolsets=['terminal', 'file'] should produce 6 tools."""
+        """enabled_toolsets=['terminal', 'file'] should include required tools."""
         from model_tools import get_tool_definitions
         tools = get_tool_definitions(
             enabled_toolsets=["terminal", "file"],
             quiet_mode=True,
         )
         names = {t["function"]["name"] for t in tools}
-        expected = {"terminal", "process", "read_file", "write_file", "search_files", "patch"}
-        assert expected == names, f"Expected {expected}, got {names}"
+        required = {
+            "terminal",
+            "ssh_mode",
+            "process",
+            "read_file",
+            "write_file",
+            "search_files",
+            "patch",
+        }
+        missing = required - names
+        assert not missing, f"Missing required tools: {missing}. Got: {names}"
 
     def test_terminal_tool_present(self):
         """The terminal tool must be present (not silently dropped)."""
