@@ -1041,29 +1041,49 @@ def clear_task_env_overrides(task_id: str):
         evict_task_environment(task_id)
 
 
+def _current_session_environment_key() -> str:
+    """Return the terminal environment key for the active gateway session.
+
+    Conversation/session history is already keyed by ``HERMES_SESSION_KEY``.
+    Terminal environments must follow the same boundary so one Feishu/Slack/
+    Discord thread cannot leak ``PATH``/``VIRTUAL_ENV``/cwd into another via the
+    shared shell snapshot.  Use ``get_session_env`` so ContextVar-scoped gateway
+    sessions win over stale process-wide ``os.environ`` values, while CLI/cron
+    callers that only set the legacy env var still work.
+    """
+    try:
+        from gateway.session_context import get_session_env
+
+        session_key = get_session_env("HERMES_SESSION_KEY", "")
+    except Exception:
+        session_key = os.getenv("HERMES_SESSION_KEY", "")
+
+    session_key = str(session_key or "").strip()
+    if not session_key:
+        return ""
+    return f"session:{session_key}"
+
+
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     Map a tool-call ``task_id`` to the container/sandbox key used by
     ``_active_environments``.
 
-    The top-level agent passes ``task_id=None`` and lands on ``"default"``.
-    ``delegate_task`` children pass their own subagent ID so that
-    file-state tracking, the active-subagents registry, and TUI events stay
-    distinct per child -- but we deliberately collapse that ID back to
-    ``"default"`` here so subagents share the parent's long-lived container
-    (one bash, one /workspace, one set of installed packages).
+    Hard-isolated benchmark/runtime overrides keep using the raw ``task_id``.
+    Otherwise, gateway/ACP/legacy callers with ``HERMES_SESSION_KEY`` get a
+    session-scoped environment so separate chats/threads/sections do not share
+    a terminal snapshot.  Plain CLI calls without a session key keep the
+    historical ``"default"`` continuous-shell environment.
 
-    Exception: RL / benchmark environments (TerminalBench2, HermesSweEnv, ...)
-    call ``register_task_env_overrides(task_id, {...})`` to request a
-    per-task Docker/Modal image. When an override is registered for a
-    task_id, we honour it by returning the task_id unchanged -- those
-    rollouts need their own isolated sandbox, which is the whole point of
-    the override.
+    ``delegate_task`` children still collapse to the surrounding session unless
+    they register a backend/image override.  This preserves the useful
+    "one workspace, one set of installed packages" behavior inside a session
+    while preventing cross-session environment bleed.
 
-    CWD-only overrides (registered by the ACP adapter for workspace
-    tracking) are *not* isolation signals — they should not cause each
-    session to spin up its own container.  Only overrides containing
-    backend-specific image keys or ``env_type`` trigger isolation.
+    CWD-only overrides (registered by the ACP adapter for workspace tracking)
+    are *not* hard-isolation signals; they follow the active session key.  Only
+    overrides containing backend-specific image keys or ``env_type`` force raw
+    task-id isolation.
     """
     _ISOLATION_KEYS = frozenset({
         "docker_image", "modal_image", "singularity_image",
@@ -1073,20 +1093,26 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         overrides = _task_env_overrides[task_id]
         if set(overrides.keys()) & _ISOLATION_KEYS:
             return task_id
+
+    session_env_key = _current_session_environment_key()
+    if session_env_key:
+        return session_env_key
+
     return "default"
 
 
 def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
-    """Return the env overrides for *task_id*, raw key first then collapsed.
+    """Return the env overrides for *task_id*, raw key first then resolved key.
 
-    ``register_task_env_overrides`` writes under the *raw* task/session id, but
-    a CWD-only override collapses (:func:`_resolve_container_task_id`) to the
-    shared ``"default"`` container so per-session surfaces (ACP/gateway/
-    dashboard) don't each spin up their own sandbox. Callers that need the
-    override (terminal command setup, file-tool cwd resolution) must therefore
-    read the raw id FIRST and only fall back to the collapsed container id, or
-    the originating session's override is silently dropped. This is the single
-    source of that lookup so the terminal and file layers can't drift apart.
+    ``register_task_env_overrides`` writes under the *raw* task/session id.  The
+    resolved environment key may be a hard-isolated raw task id, a session-scoped
+    key (``session:<HERMES_SESSION_KEY>``), or the historical ``default`` key for
+    non-session CLI work.  Callers that need overrides (terminal command setup,
+    file-tool cwd resolution, code_execution backend selection) must therefore
+    read the raw id FIRST and only fall back to the resolved environment id, or
+    the originating session's override can be silently dropped. This is the
+    single source of that lookup so the terminal, file, and code layers can't
+    drift apart.
     """
     raw = task_id or "default"
     return (
