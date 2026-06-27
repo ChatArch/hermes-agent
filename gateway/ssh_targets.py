@@ -23,6 +23,9 @@ class SshTarget:
     user: str | None = None
     port: int | None = None
     identity_file: str | None = None
+    identities_only: bool | None = None
+    known_hosts: str | None = None
+    host_key_policy: str | None = None
     cwd: str | None = None
     source: str = "hermes"
 
@@ -36,20 +39,40 @@ def _coerce_port(value: Any) -> int | None:
         return None
 
 
+def _coerce_bool(value: Any) -> bool | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
 def _coerce_target(alias: str, data: Any, *, source: str = "hermes") -> SshTarget | None:
     if not alias:
         return None
     if not isinstance(data, dict):
         return None
     host = data.get("host") or data.get("hostname")
+    identity_file = data.get("identity_file") or data.get("identityfile") or data.get("key")
+    known_hosts = data.get("known_hosts") or data.get("user_known_hosts_file")
+    host_key_policy = data.get("host_key_policy") or data.get("strict_host_key_checking")
     return SshTarget(
         alias=str(alias),
         host=str(host) if host else None,
         user=str(data.get("user")) if data.get("user") else None,
         port=_coerce_port(data.get("port")),
-        identity_file=str(data.get("identity_file") or data.get("identityfile") or data.get("key"))
-        if (data.get("identity_file") or data.get("identityfile") or data.get("key"))
-        else None,
+        identity_file=str(identity_file) if identity_file else None,
+        identities_only=_coerce_bool(data.get("identities_only") or data.get("identitiesonly")),
+        known_hosts=str(known_hosts) if known_hosts else None,
+        host_key_policy=str(host_key_policy) if host_key_policy else None,
         cwd=str(data.get("cwd") or data.get("remote_cwd")) if (data.get("cwd") or data.get("remote_cwd")) else None,
         source=source,
     )
@@ -86,6 +109,9 @@ def parse_hermes_ssh_targets(config_text: str, *, source: str = "hermes") -> lis
           user: rex
           port: 22
           identity_file: ~/.hermes/ssh/keys/alias
+          identities_only: true
+          known_hosts: ~/.hermes/ssh/known_hosts
+          host_key_policy: strict
           cwd: /home/rex/Playground
     ```
 
@@ -139,6 +165,9 @@ def parse_system_ssh_config(config_text: str, *, source: str = "system-import") 
                     user=current.get("user"),
                     port=_coerce_port(current.get("port")),
                     identity_file=current.get("identityfile"),
+                    identities_only=_coerce_bool(current.get("identitiesonly")),
+                    known_hosts=current.get("userknownhostsfile"),
+                    host_key_policy=current.get("stricthostkeychecking"),
                     source=source,
                 )
             )
@@ -162,7 +191,15 @@ def parse_system_ssh_config(config_text: str, *, source: str = "system-import") 
             current_aliases = parts[1:]
             current = {}
             continue
-        if key in {"hostname", "user", "port", "identityfile"} and current_aliases and value:
+        if key in {
+            "hostname",
+            "user",
+            "port",
+            "identityfile",
+            "identitiesonly",
+            "userknownhostsfile",
+            "stricthostkeychecking",
+        } and current_aliases and value:
             current[key] = value
     flush()
     return targets

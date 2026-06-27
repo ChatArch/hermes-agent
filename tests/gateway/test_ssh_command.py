@@ -78,6 +78,9 @@ ssh:
       user: rexwzh
       port: 2222
       identity_file: ~/.hermes/ssh/keys/rex_oray
+      identities_only: true
+      known_hosts: ~/.hermes/ssh/known_hosts
+      host_key_policy: strict
       cwd: /home/rexwzh/Playground
 """,
         encoding="utf-8",
@@ -89,6 +92,9 @@ ssh:
     assert [t.alias for t in targets] == ["rex.oray"]
     assert targets[0].source == "hermes"
     assert targets[0].cwd == "/home/rexwzh/Playground"
+    assert targets[0].identities_only is True
+    assert targets[0].known_hosts == "~/.hermes/ssh/known_hosts"
+    assert targets[0].host_key_policy == "strict"
     assert "rex.oray" in rendered
     assert "rexwzh" in rendered
     assert "2222" in rendered
@@ -106,6 +112,9 @@ Host rex.oray
   User rexwzh
   Port 2222
   IdentityFile ~/.ssh/id_ed25519
+  IdentitiesOnly yes
+  UserKnownHostsFile ~/.hermes/ssh/known_hosts
+  StrictHostKeyChecking yes
 
 Host main.github.com
   HostName github.com
@@ -116,6 +125,9 @@ Host main.github.com
     rendered = render_ssh_targets(targets)
 
     assert [t.alias for t in targets] == ["rex.oray", "main.github.com"]
+    assert targets[0].identities_only is True
+    assert targets[0].known_hosts == "~/.hermes/ssh/known_hosts"
+    assert targets[0].host_key_policy == "yes"
     assert "rex.oray" in rendered
     assert "rexwzh" in rendered
     assert "2222" in rendered
@@ -180,6 +192,9 @@ async def test_ssh_use_binds_current_thread(monkeypatch, tmp_path):
                 user="rexwzh",
                 port=2222,
                 identity_file="~/.hermes/ssh/keys/rex_oray",
+                identities_only=True,
+                known_hosts="~/.hermes/ssh/known_hosts",
+                host_key_policy="strict",
                 cwd="/home/rexwzh/Playground",
             ),
         ],
@@ -203,6 +218,9 @@ async def test_ssh_use_binds_current_thread(monkeypatch, tmp_path):
             user="rexwzh",
             port=2222,
             identity_file="~/.hermes/ssh/keys/rex_oray",
+            identities_only=True,
+            known_hosts="~/.hermes/ssh/known_hosts",
+            host_key_policy="strict",
             cwd="/home/rexwzh/Playground",
         )
     ]
@@ -217,6 +235,9 @@ async def test_ssh_use_binds_current_thread(monkeypatch, tmp_path):
     assert overrides["ssh_user"] == "rexwzh"
     assert overrides["ssh_port"] == 2222
     assert overrides["ssh_key"] == "~/.hermes/ssh/keys/rex_oray"
+    assert overrides["ssh_identities_only"] is True
+    assert overrides["ssh_known_hosts"] == "~/.hermes/ssh/known_hosts"
+    assert overrides["ssh_host_key_policy"] == "strict"
     assert overrides["cwd"] == "/srv/app"
 
 

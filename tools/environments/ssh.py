@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment, _popen_bash
 from tools.environments.file_sync import (
     FileSyncManager,
@@ -33,6 +34,21 @@ def _ensure_ssh_available() -> None:
         )
 
 
+def _normalize_host_key_policy(policy: str | None) -> str:
+    """Map Hermes-friendly host-key policy names to OpenSSH values."""
+    normalized = (policy or "accept-new").strip().lower()
+    aliases = {
+        "strict": "yes",
+        "ask": "ask",
+        "accept-new": "accept-new",
+        "accept_new": "accept-new",
+        "insecure": "no",
+        "no": "no",
+        "yes": "yes",
+    }
+    return aliases.get(normalized, "accept-new")
+
+
 class SSHEnvironment(BaseEnvironment):
     """Run commands on a remote machine over SSH.
 
@@ -43,12 +59,23 @@ class SSHEnvironment(BaseEnvironment):
     """
 
     def __init__(self, host: str, user: str, cwd: str = "~",
-                 timeout: int = 60, port: int = 22, key_path: str = ""):
+                 timeout: int = 60, port: int = 22, key_path: str = "",
+                 identities_only: bool = True, known_hosts_path: str | Path = "",
+                 host_key_policy: str = "accept-new"):
         super().__init__(cwd=cwd, timeout=timeout)
         self.host = host
         self.user = user
         self.port = port
         self.key_path = key_path
+        self.identities_only = identities_only
+        self.known_hosts_path = (
+            Path(known_hosts_path).expanduser()
+            if known_hosts_path
+            else get_hermes_home() / "ssh" / "known_hosts"
+        )
+        self.known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
+        self.known_hosts_path.touch(exist_ok=True)
+        self.host_key_policy = _normalize_host_key_policy(host_key_policy)
 
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
@@ -86,11 +113,14 @@ class SSHEnvironment(BaseEnvironment):
         cmd.extend(["-o", "ControlMaster=auto"])
         cmd.extend(["-o", "ControlPersist=300"])
         cmd.extend(["-o", "BatchMode=yes"])
-        cmd.extend(["-o", "StrictHostKeyChecking=accept-new"])
+        cmd.extend(["-o", f"UserKnownHostsFile={self.known_hosts_path}"])
+        cmd.extend(["-o", f"StrictHostKeyChecking={self.host_key_policy}"])
         cmd.extend(["-o", "ConnectTimeout=10"])
         if self.port != 22:
             cmd.extend(["-p", str(self.port)])
         if self.key_path:
+            if self.identities_only:
+                cmd.extend(["-o", "IdentitiesOnly=yes"])
             cmd.extend(["-i", self.key_path])
         if extra_args:
             cmd.extend(extra_args)
@@ -169,10 +199,20 @@ class SSHEnvironment(BaseEnvironment):
             stdin=subprocess.DEVNULL,
         )
 
-        scp_cmd = ["scp", "-o", f"ControlPath={self.control_socket}"]
+        scp_cmd = [
+            "scp",
+            "-o",
+            f"ControlPath={self.control_socket}",
+            "-o",
+            f"UserKnownHostsFile={self.known_hosts_path}",
+            "-o",
+            f"StrictHostKeyChecking={self.host_key_policy}",
+        ]
         if self.port != 22:
             scp_cmd.extend(["-P", str(self.port)])
         if self.key_path:
+            if self.identities_only:
+                scp_cmd.extend(["-o", "IdentitiesOnly=yes"])
             scp_cmd.extend(["-i", self.key_path])
         scp_cmd.extend([host_path, f"{self.user}@{self.host}:{remote_path}"])
         result = subprocess.run(

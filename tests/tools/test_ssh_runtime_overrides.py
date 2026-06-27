@@ -12,6 +12,9 @@ def test_task_env_override_selects_ssh_backend(monkeypatch):
         "ssh_user": "rex",
         "ssh_port": 2222,
         "ssh_key": "/redacted/key",
+        "ssh_identities_only": True,
+        "ssh_known_hosts": "/redacted/known_hosts",
+        "ssh_host_key_policy": "strict",
         "cwd": "/home/rex/work",
     }
 
@@ -22,6 +25,9 @@ def test_task_env_override_selects_ssh_backend(monkeypatch):
     assert config["ssh_user"] == "rex"
     assert config["ssh_port"] == 2222
     assert config["ssh_key"] == "/redacted/key"
+    assert config["ssh_identities_only"] is True
+    assert config["ssh_known_hosts"] == "/redacted/known_hosts"
+    assert config["ssh_host_key_policy"] == "strict"
     assert config["cwd"] == "/home/rex/work"
 
 
@@ -104,6 +110,9 @@ def test_file_tools_create_ssh_environment_from_task_override(monkeypatch):
             "ssh_host": "example.internal",
             "ssh_user": "rex",
             "ssh_key": "/redacted/key",
+            "ssh_identities_only": True,
+            "ssh_known_hosts": "/redacted/known_hosts",
+            "ssh_host_key_policy": "strict",
         },
     )
 
@@ -134,6 +143,9 @@ def test_file_tools_create_ssh_environment_from_task_override(monkeypatch):
     assert captured["ssh_config"]["host"] == "example.internal"
     assert captured["ssh_config"]["user"] == "rex"
     assert captured["ssh_config"]["key"] == "/redacted/key"
+    assert captured["ssh_config"]["identities_only"] is True
+    assert captured["ssh_config"]["known_hosts"] == "/redacted/known_hosts"
+    assert captured["ssh_config"]["host_key_policy"] == "strict"
 
 
 def test_execute_code_uses_resolve_task_overrides_for_raw_task_id(monkeypatch):
@@ -150,6 +162,9 @@ def test_execute_code_uses_resolve_task_overrides_for_raw_task_id(monkeypatch):
             "ssh_host": "example.internal",
             "ssh_user": "rex",
             "ssh_key": "/redacted/key",
+            "ssh_identities_only": True,
+            "ssh_known_hosts": "/redacted/known_hosts",
+            "ssh_host_key_policy": "strict",
         },
     )
 
@@ -176,6 +191,9 @@ def test_execute_code_uses_resolve_task_overrides_for_raw_task_id(monkeypatch):
     assert captured["ssh_config"]["host"] == "example.internal"
     assert captured["ssh_config"]["user"] == "rex"
     assert captured["ssh_config"]["key"] == "/redacted/key"
+    assert captured["ssh_config"]["identities_only"] is True
+    assert captured["ssh_config"]["known_hosts"] == "/redacted/known_hosts"
+    assert captured["ssh_config"]["host_key_policy"] == "strict"
 
 
 def test_prompt_builder_uses_task_override_backend(monkeypatch):
@@ -192,6 +210,9 @@ def test_prompt_builder_uses_task_override_backend(monkeypatch):
             "ssh_host": "example.internal",
             "ssh_user": "rex",
             "ssh_key": "/redacted/key",
+            "ssh_identities_only": True,
+            "ssh_known_hosts": "/redacted/known_hosts",
+            "ssh_host_key_policy": "strict",
         },
     )
     try:

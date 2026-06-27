@@ -167,6 +167,14 @@ def binding_to_task_overrides(binding: SshBinding, target: SshTarget) -> dict[st
         "ssh_key": target.identity_file or "",
         "ssh_persistent": True,
     }
+    if target.identity_file:
+        overrides["ssh_key"] = target.identity_file
+    if target.identities_only is not None:
+        overrides["ssh_identities_only"] = target.identities_only
+    if target.known_hosts:
+        overrides["ssh_known_hosts"] = target.known_hosts
+    if target.host_key_policy:
+        overrides["ssh_host_key_policy"] = target.host_key_policy
     cwd = binding.cwd or target.cwd
     if cwd:
         overrides["cwd"] = cwd
