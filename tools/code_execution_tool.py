@@ -670,6 +670,9 @@ def _get_or_create_env(task_id: str):
                 "user": config.get("ssh_user", ""),
                 "port": config.get("ssh_port", 22),
                 "key": config.get("ssh_key", ""),
+                "identities_only": config.get("ssh_identities_only", True),
+                "known_hosts": config.get("ssh_known_hosts", ""),
+                "host_key_policy": config.get("ssh_host_key_policy", "accept-new"),
                 "persistent": config.get("ssh_persistent", False),
             }
 

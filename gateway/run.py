@@ -1456,11 +1456,15 @@ from gateway.ssh_targets import (
     validate_ssh_target_for_runtime,
 )
 from gateway.ssh_bindings import (
+    add_ssh_yolo_alias,
     clear_ssh_binding,
     get_ssh_binding,
+    get_ssh_yolo_grant,
+    remove_ssh_yolo_alias,
     resolve_binding_task_overrides,
     resolve_binding_target,
     set_ssh_binding,
+    set_ssh_yolo_grant,
 )
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -10139,7 +10143,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "/ssh status — show this section's SSH binding\n"
                 "/ssh test <alias> — validate a target without changing binding\n"
                 "/ssh use <alias> [--cwd <remote-path>] — bind current Feishu Thread/Section to SSH\n"
-                "/ssh use <alias> --new-thread [--cwd <remote-path>] — create a Feishu Thread and bind it\n"
+                "/ssh use <alias> --new-thread|-t|--thread [--cwd <remote-path>] — create a Feishu Thread and bind it\n"
+                "/ssh yolo status|on|off [alias|all] — manage model auto-switch grants for this section\n"
                 "/ssh off — clear this section's SSH binding\n"
                 "/ssh local — same as /ssh off"
             )
@@ -10150,21 +10155,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         section_key = self._session_key_for_source(event.source)
 
         if action == "status":
+            grant = get_ssh_yolo_grant(section_key)
+            yolo_aliases = "all" if grant.allows_all else (", ".join(grant.aliases) if grant.aliases else "none")
+            yolo_lines = [
+                f"- yolo: {'on' if grant.enabled else 'off'}",
+                f"- yolo list: {yolo_aliases}",
+            ]
             resolved = resolve_binding_target(section_key, targets=load_ssh_targets())
             if resolved is None:
-                return (
-                    "SSH status:\n"
-                    "- current backend: local\n"
-                    "- section binding: none\n"
-                    f"- section key: {section_key}\n"
-                    "- use /ssh list to see targets"
-                )
+                return "\n".join([
+                    "SSH status:",
+                    "- current backend: local",
+                    "- section binding: none",
+                    f"- section key: {section_key}",
+                    *yolo_lines,
+                    "- use /ssh list to see targets",
+                ])
             binding, target = resolved
             lines = [
                 "SSH status:",
                 "- current backend: ssh",
                 f"- section binding: `{binding.alias}`",
+                f"- binding source: {binding.source}",
                 f"- section key: {section_key}",
+                *yolo_lines,
             ]
             if target.host:
                 lines.append(f"- host: {target.host}")
@@ -10178,6 +10192,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if target.identity_file:
                 lines.append("- identity: [REDACTED_PATH]")
             return "\n".join(lines)
+
+        if action == "yolo":
+            subaction = parts[1].lower() if len(parts) > 1 else "status"
+            alias = parts[2].strip() if len(parts) > 2 else ""
+            if event.source.platform == Platform.FEISHU and not event.source.thread_id:
+                return (
+                    "SSH YOLO is Thread-scoped. Open a Feishu Thread first, "
+                    "or use `/ssh use <alias> -t` to create a Thread and bind SSH there."
+                )
+            if subaction == "status":
+                grant = get_ssh_yolo_grant(section_key)
+                aliases = "all" if grant.allows_all else (", ".join(grant.aliases) if grant.aliases else "none")
+                return "\n".join([
+                    "SSH YOLO status:",
+                    f"- yolo: {'on' if grant.enabled else 'off'}",
+                    f"- yolo list: {aliases}",
+                    f"- section key: {section_key}",
+                ])
+            if subaction == "on":
+                targets = load_ssh_targets()
+                if alias and alias != "all" and find_ssh_target(targets, alias) is None:
+                    return f"Unknown SSH target: `{alias}`. YOLO was not changed. Use /ssh list to see targets."
+                if alias:
+                    grant = add_ssh_yolo_alias(section_key, alias)
+                else:
+                    grant = set_ssh_yolo_grant(
+                        section_key,
+                        enabled=True,
+                        aliases=get_ssh_yolo_grant(section_key).aliases,
+                    )
+                aliases = "all" if grant.allows_all else (", ".join(grant.aliases) if grant.aliases else "none")
+                return "\n".join([
+                    "SSH YOLO enabled for this section.",
+                    f"- yolo: {'on' if grant.enabled else 'off'}",
+                    f"- yolo list: {aliases}",
+                    f"- section key: {section_key}",
+                ])
+            if subaction == "off":
+                grant = remove_ssh_yolo_alias(section_key, alias or None)
+                aliases = "all" if grant.allows_all else (", ".join(grant.aliases) if grant.aliases else "none")
+                return "\n".join([
+                    "SSH YOLO updated for this section.",
+                    f"- yolo: {'on' if grant.enabled else 'off'}",
+                    f"- yolo list: {aliases}",
+                    f"- section key: {section_key}",
+                ])
+            return "Usage: /ssh yolo status|on|off [alias|all]"
 
         if action == "test":
             alias = parts[1].strip() if len(parts) > 1 else ""
@@ -10204,8 +10265,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if action == "use":
             alias = parts[1].strip() if len(parts) > 1 else ""
             if not alias:
-                return "Usage: /ssh use <alias> [--cwd <remote-path>] [--new-thread]"
-            new_thread = "--new-thread" in parts
+                return "Usage: /ssh use <alias> [--cwd <remote-path>] [--new-thread|-t|--thread]"
+            new_thread = any(flag in parts for flag in ("--new-thread", "--thread", "-t"))
             cwd = None
             if "--cwd" in parts:
                 idx = parts.index("--cwd")
@@ -10227,7 +10288,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if not new_thread:
                     return (
                         "Please run `/ssh use <alias>` inside a Feishu Thread, "
-                        "or use `/ssh use <alias> --new-thread` to create and bind a new Feishu Thread."
+                        "or use `/ssh use <alias> -t` / `/ssh use <alias> --thread` "
+                        "to create and bind a new Feishu Thread."
                     )
                 adapter = self.adapters.get(source.platform)
                 create_thread = getattr(adapter, "create_thread", None) if adapter else None

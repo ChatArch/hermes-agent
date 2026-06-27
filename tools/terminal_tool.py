@@ -955,6 +955,9 @@ _BACKEND_OVERRIDE_KEYS = frozenset({
     "ssh_user",
     "ssh_port",
     "ssh_key",
+    "ssh_identities_only",
+    "ssh_known_hosts",
+    "ssh_host_key_policy",
     "ssh_persistent",
 })
 
@@ -1215,6 +1218,9 @@ def _get_env_config() -> Dict[str, Any]:
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
         "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
         "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
+        "ssh_identities_only": os.getenv("TERMINAL_SSH_IDENTITIES_ONLY", "auto").lower() in {"true", "1", "yes", "on", "auto"},
+        "ssh_known_hosts": os.getenv("TERMINAL_SSH_KNOWN_HOSTS", ""),
+        "ssh_host_key_policy": os.getenv("TERMINAL_SSH_HOST_KEY_POLICY", "accept-new"),
         # Persistent shell: SSH defaults to the config-level persistent_shell
         # setting (true by default for non-local backends); local is always opt-in.
         # Per-backend env vars override if explicitly set.
@@ -1272,6 +1278,12 @@ def apply_task_env_overrides(config: Dict[str, Any], overrides: Dict[str, Any] |
         merged["ssh_user"] = str(ov.get("ssh_user") or "")
     if "ssh_key" in ov:
         merged["ssh_key"] = str(ov.get("ssh_key") or "")
+    if "ssh_identities_only" in ov:
+        merged["ssh_identities_only"] = bool(ov.get("ssh_identities_only"))
+    if "ssh_known_hosts" in ov:
+        merged["ssh_known_hosts"] = str(ov.get("ssh_known_hosts") or "")
+    if "ssh_host_key_policy" in ov:
+        merged["ssh_host_key_policy"] = str(ov.get("ssh_host_key_policy") or "")
     if "ssh_port" in ov:
         try:
             merged["ssh_port"] = int(ov.get("ssh_port") or 22)
@@ -1430,6 +1442,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             user=ssh_config["user"],
             port=ssh_config.get("port", 22),
             key_path=ssh_config.get("key", ""),
+            identities_only=ssh_config.get("identities_only", True),
+            known_hosts_path=ssh_config.get("known_hosts", ""),
+            host_key_policy=ssh_config.get("host_key_policy", "accept-new"),
             cwd=cwd,
             timeout=timeout,
         )
@@ -2072,6 +2087,9 @@ def terminal_tool(
                                 "user": config.get("ssh_user", ""),
                                 "port": config.get("ssh_port", 22),
                                 "key": config.get("ssh_key", ""),
+                                "identities_only": config.get("ssh_identities_only", True),
+                                "known_hosts": config.get("ssh_known_hosts", ""),
+                                "host_key_policy": config.get("ssh_host_key_policy", "accept-new"),
                                 "persistent": config.get("ssh_persistent", False),
                             }
 

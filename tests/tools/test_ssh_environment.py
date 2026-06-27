@@ -61,6 +61,46 @@ class TestBuildSSHCommand:
         env = SSHEnvironment(host="h", user="u", key_path="/k")
         cmd = env._build_ssh_command()
         assert "-i" in cmd and "/k" in cmd
+        assert "IdentitiesOnly=yes" in cmd
+
+    def test_known_hosts_and_host_key_policy(self, tmp_path):
+        known_hosts = tmp_path / "known_hosts"
+        env = SSHEnvironment(
+            host="h",
+            user="u",
+            known_hosts_path=known_hosts,
+            host_key_policy="strict",
+        )
+        cmd = env._build_ssh_command()
+        assert f"UserKnownHostsFile={known_hosts}" in cmd
+        assert "StrictHostKeyChecking=yes" in cmd
+        assert known_hosts.exists()
+
+    def test_host_key_policy_aliases(self):
+        assert ssh_env._normalize_host_key_policy("strict") == "yes"
+        assert ssh_env._normalize_host_key_policy("insecure") == "no"
+        assert ssh_env._normalize_host_key_policy("accept_new") == "accept-new"
+
+    def test_scp_uses_same_ssh_identity_options(self, monkeypatch, tmp_path):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            if cmd and cmd[0] == "scp":
+                captured["scp"] = cmd
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr("tools.environments.ssh.subprocess.run", fake_run)
+        env = SSHEnvironment(
+            host="h",
+            user="u",
+            key_path="/k",
+            known_hosts_path=tmp_path / "known_hosts",
+        )
+        env._scp_upload("/local/file", "/remote/file")
+        scp_cmd = captured["scp"]
+        assert "IdentitiesOnly=yes" in scp_cmd
+        assert "-i" in scp_cmd and "/k" in scp_cmd
+        assert f"UserKnownHostsFile={tmp_path / 'known_hosts'}" in scp_cmd
 
     def test_user_host_suffix(self):
         env = SSHEnvironment(host="h", user="u")
@@ -93,7 +133,7 @@ class TestControlSocketPath:
     _SSH_CONTROLMASTER_SUFFIX = 17
     _MAX_SUN_PATH = 103
 
-    def test_fits_under_macos_socket_limit_with_ipv6_host(self, monkeypatch):
+    def test_fits_under_macos_socket_limit_with_ipv6_host(self, monkeypatch, tmp_path):
         """A realistic macOS $TMPDIR + IPv6 host must still produce a
         control socket path that fits once SSH appends its ControlMaster
         suffix (see issue #11840)."""
@@ -111,6 +151,7 @@ class TestControlSocketPath:
             host="9373:9b91:4480:558d:708e:e601:24e8:d8d0",
             user="hermes",
             port=22,
+            known_hosts_path=tmp_path / "known_hosts",
         )
 
         total_len = len(str(env.control_socket)) + self._SSH_CONTROLMASTER_SUFFIX
@@ -160,6 +201,16 @@ class TestTerminalToolConfig:
         monkeypatch.setenv("TERMINAL_PERSISTENT_SHELL", "false")
         from tools.terminal_tool import _get_env_config
         assert _get_env_config()["ssh_persistent"] is False
+
+    def test_ssh_known_hosts_env_config(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_SSH_IDENTITIES_ONLY", "true")
+        monkeypatch.setenv("TERMINAL_SSH_KNOWN_HOSTS", "/tmp/hermes-known-hosts")
+        monkeypatch.setenv("TERMINAL_SSH_HOST_KEY_POLICY", "strict")
+        from tools.terminal_tool import _get_env_config
+        config = _get_env_config()
+        assert config["ssh_identities_only"] is True
+        assert config["ssh_known_hosts"] == "/tmp/hermes-known-hosts"
+        assert config["ssh_host_key_policy"] == "strict"
 
 
 class TestSSHPreflight:
