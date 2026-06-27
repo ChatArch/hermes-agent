@@ -113,6 +113,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("tasks",)),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
+    CommandDef("interrupt", "Interrupt the active run with a follow-up prompt", "Session",
+               gateway_only=True, args_hint="<prompt>"),
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
                args_hint="<prompt>"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
@@ -364,6 +366,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "commands",
         "deny",
         "help",
+        "interrupt",
         "new",
         "profile",
         "queue",
@@ -1069,9 +1072,10 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 # "Slack-via-/hermes" decision, not a silent clamp.
 #   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
+#   - interrupt: explicit one-shot mid-run control; reached via /hermes interrupt on Slack.
 #   - update: low-frequency maintenance surface; reached via /hermes update on Slack.
 #   - version: low-frequency info surface; reached via /hermes version on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "debug", "update", "version"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "debug", "interrupt", "update", "version"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
