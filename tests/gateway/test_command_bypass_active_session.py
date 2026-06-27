@@ -232,6 +232,25 @@ class TestCommandBypassActiveSession:
         )
 
     @pytest.mark.asyncio
+    async def test_interrupt_bypasses_guard(self):
+        """/interrupt must bypass the Level-1 active-session guard so it
+        reaches the gateway runner's explicit soft-interrupt handler instead
+        of being queued under busy_input_mode=queue.
+        """
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/interrupt stop that; do this now"))
+
+        assert sk not in adapter._pending_messages, (
+            "/interrupt was queued as a pending message instead of being dispatched"
+        )
+        assert any("handled:interrupt" in r for r in adapter.sent_responses), (
+            "/interrupt response was not sent back to the user"
+        )
+
+    @pytest.mark.asyncio
     async def test_help_bypasses_guard(self):
         """/help must bypass so it is not silently dropped as pending slash text."""
         adapter = _make_adapter()

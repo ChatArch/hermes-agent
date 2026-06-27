@@ -7157,6 +7157,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "restart":
                 return await self._handle_restart_command(event)
 
+            # /interrupt <prompt> is an explicit one-shot soft interrupt.
+            # It intentionally bypasses the configured busy_input_mode so a
+            # user can keep the default as queue/steer but still force this
+            # particular follow-up to interrupt the active run.
+            if _cmd_def_inner and _cmd_def_inner.name == "interrupt":
+                interrupt_text = event.get_command_args().strip()
+                if not interrupt_text:
+                    return "Usage: /interrupt <prompt>"
+                running_agent = self._running_agents.get(_quick_key)
+                if running_agent is _AGENT_PENDING_SENTINEL:
+                    return "Agent is still starting — use /stop to force-unlock, or try /interrupt again once it is running."
+                interrupt_method = getattr(running_agent, "interrupt", None)
+                if not running_agent or not callable(interrupt_method):
+                    return "No active agent is running — send the message normally instead."
+                try:
+                    interrupt_method(interrupt_text)
+                except Exception as exc:
+                    logger.warning("Interrupt failed for session %s: %s", _quick_key, exc)
+                    return "⚠️ Interrupt failed. The current run was not interrupted."
+                preview_source = " ".join(interrupt_text.split())
+                preview = preview_source[:60] + ("..." if len(preview_source) > 60 else "")
+                return f"⚡ Interrupted current run: '{preview}'"
+
             # /stop must hard-kill the session when an agent is running.
             # A soft interrupt (agent.interrupt()) doesn't help when the agent
             # is truly hung — the executor thread is blocked and never checks
@@ -7631,6 +7654,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         if canonical == "stop":
             return await self._handle_stop_command(event)
+
+        if canonical == "interrupt":
+            return "No active agent is running — /interrupt only works while Hermes is busy. Send the prompt normally instead."
         
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
