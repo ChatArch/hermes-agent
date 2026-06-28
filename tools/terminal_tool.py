@@ -31,6 +31,7 @@ Usage:
     result = terminal_tool("python server.py", background=True)
 """
 
+import hashlib
 import importlib.util
 import json
 import logging
@@ -1041,6 +1042,27 @@ def clear_task_env_overrides(task_id: str):
         evict_task_environment(task_id)
 
 
+_SESSION_ENV_KEY_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def _session_environment_key_from_raw(session_key: str) -> str:
+    """Return a deterministic backend-safe env key for a raw session key.
+
+    Gateway session keys are application identifiers, not backend resource names:
+    they may be long, include separators such as ``:``, or come from platform IDs
+    with characters that are awkward in host paths, Docker labels, Daytona names,
+    or cloud snapshot keys.  Keep a short readable slug for operators and append
+    a digest for collision resistance.
+    """
+    raw = str(session_key or "").strip()
+    if not raw:
+        return ""
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    slug = _SESSION_ENV_KEY_SAFE_RE.sub("_", raw).strip("._-") or "session"
+    slug = slug[:48].rstrip("._-") or "session"
+    return f"session-{slug}-{digest}"
+
+
 def _current_session_environment_key() -> str:
     """Return the terminal environment key for the active gateway session.
 
@@ -1058,10 +1080,7 @@ def _current_session_environment_key() -> str:
     except Exception:
         session_key = os.getenv("HERMES_SESSION_KEY", "")
 
-    session_key = str(session_key or "").strip()
-    if not session_key:
-        return ""
-    return f"session:{session_key}"
+    return _session_environment_key_from_raw(session_key)
 
 
 def _resolve_container_task_id(task_id: Optional[str]) -> str:

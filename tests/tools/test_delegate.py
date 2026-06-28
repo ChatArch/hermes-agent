@@ -1892,25 +1892,32 @@ class TestDelegateHeartbeat(unittest.TestCase):
             "last_activity_desc": "executing tool: terminal",
         }
 
+        enough_heartbeats = threading.Event()
+
+        def _touch(desc):
+            touch_calls.append(desc)
+            if len(touch_calls) >= 4:
+                enough_heartbeats.set()
+
+        parent._touch_activity = _touch
+
         def slow_run(**kwargs):
-            # Long enough to exceed the OLD idle threshold (5 cycles) at
-            # the patched interval, but shorter than the new in-tool
-            # threshold. Keep enough wall time for loaded CI runners to
-            # schedule more than six heartbeat touches when the heartbeat
-            # correctly uses the in-tool threshold.
-            time.sleep(0.8)
+            # Wait until the heartbeat thread has had enough chances to prove
+            # it did not apply the tight idle-stale threshold while a tool is
+            # active. Event-driven waiting avoids depending on a particular CI
+            # scheduler producing 7+ ticks inside a fixed 0.4s sleep.
+            enough_heartbeats.wait(timeout=1.0)
             return {"final_response": "done", "completed": True, "api_calls": 1}
 
         child.run_conversation.side_effect = slow_run
 
-        # Patch the interval and both stale ceilings so the test proves the
-        # in-tool branch takes effect without depending on exact scheduler
-        # timing. If a child inside a tool used the idle ceiling, the
-        # heartbeat would stop after two cycles; with the in-tool ceiling it
-        # keeps touching throughout the simulated slow tool.
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05), \
-             patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 2), \
-             patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IN_TOOL", 50):
+        # Force the old-bug path to fail quickly: if current_tool were ignored
+        # and the idle threshold were used, heartbeat would stop after two stale
+        # cycles and never reach the four touches waited for above. The in-tool
+        # threshold stays high, so the corrected behavior keeps touching.
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.02), patch(
+            "tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 2
+        ), patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IN_TOOL", 100):
             _run_single_child(
                 task_index=0,
                 goal="Test long-running tool",
@@ -1918,15 +1925,11 @@ class TestDelegateHeartbeat(unittest.TestCase):
                 parent_agent=parent,
             )
 
-        # If the stale monitor treated the in-tool child as idle, touches
-        # would cap at the patched idle ceiling (2). More than two touches
-        # demonstrates that the in-tool threshold is the active limit while
-        # avoiding a brittle assertion about the exact number of scheduled
-        # heartbeat cycles on loaded CI runners.
-        self.assertGreater(
-            len(touch_calls), 2,
+        self.assertGreaterEqual(
+            len(touch_calls),
+            4,
             f"Heartbeat stopped too early while child was inside a tool; "
-            f"got {len(touch_calls)} touches while idle ceiling was 2 cycles",
+            f"got {len(touch_calls)} touches",
         )
 
 

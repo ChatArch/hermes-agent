@@ -154,10 +154,12 @@ File tools need to resolve relative paths, live cwd, and remote backend operatio
 The environment key resolution rule is:
 
 1. If a task has a **hard runtime isolation override**, use the raw `task_id`.
-2. Otherwise, if there is an active `HERMES_SESSION_KEY`, use `session:<HERMES_SESSION_KEY>`.
+2. Otherwise, if there is an active `HERMES_SESSION_KEY`, derive a deterministic backend-safe key from it, shaped like `session-<readable-slug>-<hash>`.
 3. Otherwise, use `default` for legacy CLI/no-session behavior.
 
-In code, this is centered in `tools/terminal_tool.py::_resolve_container_task_id`.
+Hermes does not use the raw session key directly as the environment key. Session keys are application identifiers and can be long or contain platform-specific separators. The derived key keeps a short readable slug, appends a stable digest, and avoids characters that are awkward in host paths, Docker labels, Daytona sandbox names, or cloud snapshot keys.
+
+In code, this is centered in `tools/terminal_tool.py::_resolve_container_task_id` and `tools/terminal_tool.py::_session_environment_key_from_raw`.
 
 ### Hard runtime overrides
 
@@ -200,8 +202,8 @@ Both sessions share `_active_environments["default"]`.
 ### After
 
 ```text
-Session A terminal -> _resolve_container_task_id(None) -> session:<A>
-Session B terminal -> _resolve_container_task_id(None) -> session:<B>
+Session A terminal -> _resolve_container_task_id(None) -> session-agent_main_...-<hashA>
+Session B terminal -> _resolve_container_task_id(None) -> session-agent_main_...-<hashB>
 CLI terminal       -> _resolve_container_task_id(None) -> default
 SSH override task  -> _resolve_container_task_id(task) -> task
 ```
@@ -222,13 +224,10 @@ def _current_session_environment_key() -> str:
     except Exception:
         session_key = os.getenv("HERMES_SESSION_KEY", "")
 
-    session_key = str(session_key or "").strip()
-    if not session_key:
-        return ""
-    return f"session:{session_key}"
+    return _session_environment_key_from_raw(session_key)
 ```
 
-The fallback keeps legacy process-env entrypoints working, but ContextVar session state wins when present.
+The fallback keeps legacy process-env entrypoints working, but ContextVar session state wins when present. `_session_environment_key_from_raw()` sanitizes and hashes the raw session key before it becomes a backend resource key.
 
 ### Resolving the environment key
 
@@ -254,7 +253,7 @@ This is deliberately small. The main compatibility decision is the order:
 
 ### Resolving task overrides
 
-`resolve_task_overrides` still reads the raw task id first. That is important because `register_task_env_overrides` stores overrides under the raw id that the caller registered. If the environment key later resolves to `session:<key>`, the raw override must not disappear.
+`resolve_task_overrides` still reads the raw task id first. That is important because `register_task_env_overrides` stores overrides under the raw id that the caller registered. If the environment key later resolves to a session-derived key, the raw override must not disappear.
 
 The lookup order is:
 
@@ -286,7 +285,7 @@ tests/tools/test_terminal_session_isolation.py
 
 It covers:
 
-1. ContextVar session key maps to `session:<key>`.
+1. ContextVar session key maps to a backend-safe `session-<slug>-<hash>` key.
 2. Legacy process `HERMES_SESSION_KEY` fallback works in a fresh context.
 3. Different gateway sessions produce different environment keys.
 4. The same gateway session reuses the same environment key.

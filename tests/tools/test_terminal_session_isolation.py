@@ -22,6 +22,10 @@ def teardown_function():
         terminal_tool._last_activity.clear()
 
 
+def _expected_session_key(raw: str) -> str:
+    return terminal_tool._session_environment_key_from_raw(raw)
+
+
 def _resolve_in_session(session_key: str, task_id: str | None = None) -> str:
     """Resolve an environment key inside an isolated ContextVar context."""
     def _run() -> str:
@@ -38,14 +42,24 @@ def test_terminal_env_key_uses_gateway_session_key_from_contextvars(monkeypatch)
     """Gateway sessions should not collapse to the shared default env."""
     monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
 
-    assert _resolve_in_session("feishu:chat-a:thread-1") == "session:feishu:chat-a:thread-1"
+    assert _resolve_in_session("feishu:chat-a:thread-1") == _expected_session_key("feishu:chat-a:thread-1")
+
+
+def test_terminal_env_key_sanitizes_session_key_for_backend_resource_names():
+    key = terminal_tool._session_environment_key_from_raw("agent:main:platform:chat/thread with spaces")
+
+    assert key.startswith("session-agent_main_platform_chat_thread_with_spaces-")
+    assert "/" not in key
+    assert ":" not in key
+    assert " " not in key
+    assert len(key) <= len("session-") + 48 + 1 + 16
 
 
 def test_terminal_env_key_uses_process_session_key_when_context_is_unset(monkeypatch):
     """CLI/legacy entrypoints that expose HERMES_SESSION_KEY should isolate too."""
     monkeypatch.setenv("HERMES_SESSION_KEY", "cli-session-1")
 
-    assert contextvars.Context().run(terminal_tool._resolve_container_task_id, None) == "session:cli-session-1"
+    assert contextvars.Context().run(terminal_tool._resolve_container_task_id, None) == _expected_session_key("cli-session-1")
 
 
 def test_terminal_env_key_differs_between_gateway_sessions(monkeypatch):
@@ -54,8 +68,8 @@ def test_terminal_env_key_differs_between_gateway_sessions(monkeypatch):
     key_a = _resolve_in_session("feishu:chat-a:thread-1")
     key_b = _resolve_in_session("feishu:chat-b:thread-2")
 
-    assert key_a == "session:feishu:chat-a:thread-1"
-    assert key_b == "session:feishu:chat-b:thread-2"
+    assert key_a == _expected_session_key("feishu:chat-a:thread-1")
+    assert key_b == _expected_session_key("feishu:chat-b:thread-2")
     assert key_a != key_b
 
 
@@ -73,7 +87,7 @@ def test_terminal_env_key_reuses_same_gateway_session(monkeypatch):
             clear_session_vars(tokens)
 
     first, second = contextvars.Context().run(_run)
-    assert first == second == "session:feishu:chat-a:thread-1"
+    assert first == second == _expected_session_key("feishu:chat-a:thread-1")
 
 
 def test_terminal_env_key_without_session_stays_default(monkeypatch):
@@ -96,7 +110,7 @@ def test_cwd_only_override_uses_session_key_not_raw_task_id(monkeypatch):
     monkeypatch.setenv("HERMES_SESSION_KEY", "session-for-cwd")
     terminal_tool.register_task_env_overrides("task-cwd", {"cwd": "/workspace/project"})
 
-    assert contextvars.Context().run(terminal_tool._resolve_container_task_id, "task-cwd") == "session:session-for-cwd"
+    assert contextvars.Context().run(terminal_tool._resolve_container_task_id, "task-cwd") == _expected_session_key("session-for-cwd")
 
 
 class FakeEnv:
@@ -132,13 +146,12 @@ def test_terminal_tool_creates_separate_environments_for_separate_sessions(monke
 
     result_a = run_in_session("feishu:chat-a:thread-1")
     result_b = run_in_session("feishu:chat-b:thread-2")
+    key_a = _expected_session_key("feishu:chat-a:thread-1")
+    key_b = _expected_session_key("feishu:chat-b:thread-2")
 
-    assert result_a["output"] == "session:feishu:chat-a:thread-1"
-    assert result_b["output"] == "session:feishu:chat-b:thread-2"
-    assert created == [
-        "session:feishu:chat-a:thread-1",
-        "session:feishu:chat-b:thread-2",
-    ]
+    assert result_a["output"] == key_a
+    assert result_b["output"] == key_b
+    assert created == [key_a, key_b]
     assert set(terminal_tool._active_environments) == set(created)
 
 
@@ -162,10 +175,11 @@ def test_terminal_tool_reuses_environment_within_same_session(monkeypatch):
             clear_session_vars(tokens)
 
     first, second = contextvars.Context().run(_run)
+    key = _expected_session_key("feishu:chat-a:thread-1")
 
-    assert first["output"] == second["output"] == "session:feishu:chat-a:thread-1"
-    assert created == ["session:feishu:chat-a:thread-1"]
-    env = terminal_tool._active_environments["session:feishu:chat-a:thread-1"]
+    assert first["output"] == second["output"] == key
+    assert created == [key]
+    env = terminal_tool._active_environments[key]
     assert env.commands == ["printf first", "printf second"]
 
 
@@ -193,13 +207,12 @@ def test_code_execution_environment_uses_session_key(monkeypatch):
 
     env_a, type_a = get_env_for_session("feishu:chat-a:thread-1")
     env_b, type_b = get_env_for_session("feishu:chat-b:thread-2")
+    key_a = _expected_session_key("feishu:chat-a:thread-1")
+    key_b = _expected_session_key("feishu:chat-b:thread-2")
 
     assert type_a == type_b == "local"
     assert isinstance(env_a, FakeEnv)
     assert isinstance(env_b, FakeEnv)
-    assert env_a.task_id == "session:feishu:chat-a:thread-1"
-    assert env_b.task_id == "session:feishu:chat-b:thread-2"
-    assert created == [
-        "session:feishu:chat-a:thread-1",
-        "session:feishu:chat-b:thread-2",
-    ]
+    assert env_a.task_id == key_a
+    assert env_b.task_id == key_b
+    assert created == [key_a, key_b]
