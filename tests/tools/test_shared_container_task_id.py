@@ -94,12 +94,14 @@ def test_get_active_env_reads_shared_container_from_subagent_id():
 def test_get_active_env_honours_rl_override():
     rl_env = object()
     default_env = object()
+    terminal_tool.register_task_env_overrides("rl-42", {"docker_image": "x"})
     terminal_tool._active_environments["default"] = default_env
     terminal_tool._active_environments["rl-42"] = rl_env
-    terminal_tool.register_task_env_overrides("rl-42", {"docker_image": "x"})
     try:
-        # With an override registered, lookup returns the task's own env,
-        # not the shared "default" one.
+        # With an override registered before environment creation, lookup returns
+        # the task's own env, not the shared "default" one. If the backend/image
+        # override changes after creation, register_task_env_overrides evicts the
+        # old env so the next tool call can recreate it with the new runtime.
         assert terminal_tool.get_active_env("rl-42") is rl_env
     finally:
         terminal_tool.clear_task_env_overrides("rl-42")

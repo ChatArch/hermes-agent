@@ -31,6 +31,7 @@ Usage:
     result = terminal_tool("python server.py", background=True)
 """
 
+import hashlib
 import importlib.util
 import json
 import logging
@@ -951,6 +952,10 @@ _task_env_overrides: Dict[str, Dict[str, Any]] = {}
 
 _BACKEND_OVERRIDE_KEYS = frozenset({
     "env_type",
+    "docker_image",
+    "modal_image",
+    "singularity_image",
+    "daytona_image",
     "ssh_host",
     "ssh_user",
     "ssh_port",
@@ -967,7 +972,11 @@ def evict_task_environment(task_id: str):
 
     if not task_id:
         return
-    keys = {task_id, _resolve_container_task_id(task_id)}
+    keys = {
+        task_id,
+        _resolve_container_task_id(task_id),
+        _session_environment_key_from_raw(task_id),
+    }
     evicted = []
     with _env_lock:
         for key in keys:
@@ -1024,8 +1033,13 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     new_cwd = next_overrides.get("cwd")
     if isinstance(new_cwd, str) and new_cwd.strip():
         container_id = _resolve_container_task_id(task_id)
+        session_container_id = _session_environment_key_from_raw(task_id)
         with _env_lock:
-            env = _active_environments.get(task_id) or _active_environments.get(container_id)
+            env = (
+                _active_environments.get(task_id)
+                or _active_environments.get(container_id)
+                or _active_environments.get(session_container_id)
+            )
         if env is not None and getattr(env, "cwd", None) is not None:
             env.cwd = new_cwd
 
@@ -1041,29 +1055,70 @@ def clear_task_env_overrides(task_id: str):
         evict_task_environment(task_id)
 
 
+_SESSION_ENV_KEY_SAFE_RE = re.compile(r"[^a-z0-9-]+")
+
+
+def _session_environment_key_from_raw(session_key: str) -> str:
+    """Return a deterministic backend-safe env key for a raw session key.
+
+    Gateway session keys are application identifiers, not backend resource names:
+    they may be long, include separators such as ``:``, or come from platform IDs
+    with characters that are awkward in host paths, Docker labels, Daytona names,
+    or cloud snapshot keys.  Keep a short readable slug for operators and append
+    a digest for collision resistance.
+    """
+    raw = str(session_key or "").strip()
+    if not raw:
+        return ""
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    slug = _SESSION_ENV_KEY_SAFE_RE.sub("-", raw.lower()).strip("-") or "session"
+    # Keep the whole key <=57 chars so Docker labels are never truncated and
+    # Daytona's ``hermes-`` name prefix stays within a conservative 64-char
+    # resource-name budget.
+    slug = slug[:32].rstrip("-") or "session"
+    return f"session-{slug}-{digest}"
+
+
+def _current_session_environment_key() -> str:
+    """Return the terminal environment key for the active gateway session.
+
+    Conversation/session history is already keyed by ``HERMES_SESSION_KEY``.
+    Terminal environments must follow the same boundary so one Feishu/Slack/
+    Discord thread cannot leak ``PATH``/``VIRTUAL_ENV``/cwd into another via the
+    shared shell snapshot.  Use ``get_session_env`` so ContextVar-scoped gateway
+    sessions win over stale process-wide ``os.environ`` values, while CLI/cron
+    callers that only set the legacy env var still work.
+    """
+    try:
+        from gateway.session_context import get_session_env
+
+        session_key = get_session_env("HERMES_SESSION_KEY", "")
+    except Exception:
+        session_key = os.getenv("HERMES_SESSION_KEY", "")
+
+    return _session_environment_key_from_raw(session_key)
+
+
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     Map a tool-call ``task_id`` to the container/sandbox key used by
     ``_active_environments``.
 
-    The top-level agent passes ``task_id=None`` and lands on ``"default"``.
-    ``delegate_task`` children pass their own subagent ID so that
-    file-state tracking, the active-subagents registry, and TUI events stay
-    distinct per child -- but we deliberately collapse that ID back to
-    ``"default"`` here so subagents share the parent's long-lived container
-    (one bash, one /workspace, one set of installed packages).
+    Hard-isolated benchmark/runtime overrides keep using the raw ``task_id``.
+    Otherwise, gateway/ACP/legacy callers with ``HERMES_SESSION_KEY`` get a
+    session-scoped environment so separate chats/threads/sections do not share
+    a terminal snapshot.  Plain CLI calls without a session key keep the
+    historical ``"default"`` continuous-shell environment.
 
-    Exception: RL / benchmark environments (TerminalBench2, HermesSweEnv, ...)
-    call ``register_task_env_overrides(task_id, {...})`` to request a
-    per-task Docker/Modal image. When an override is registered for a
-    task_id, we honour it by returning the task_id unchanged -- those
-    rollouts need their own isolated sandbox, which is the whole point of
-    the override.
+    ``delegate_task`` children still collapse to the surrounding session unless
+    they register a backend/image override.  This preserves the useful
+    "one workspace, one set of installed packages" behavior inside a session
+    while preventing cross-session environment bleed.
 
-    CWD-only overrides (registered by the ACP adapter for workspace
-    tracking) are *not* isolation signals — they should not cause each
-    session to spin up its own container.  Only overrides containing
-    backend-specific image keys or ``env_type`` trigger isolation.
+    CWD-only overrides (registered by the ACP adapter for workspace tracking)
+    are *not* hard-isolation signals; they follow the active session key.  Only
+    overrides containing backend-specific image keys or ``env_type`` force raw
+    task-id isolation.
     """
     _ISOLATION_KEYS = frozenset({
         "docker_image", "modal_image", "singularity_image",
@@ -1073,27 +1128,50 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         overrides = _task_env_overrides[task_id]
         if set(overrides.keys()) & _ISOLATION_KEYS:
             return task_id
+
+    session_env_key = _current_session_environment_key()
+    if session_env_key:
+        return session_env_key
+
     return "default"
 
 
 def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
-    """Return the env overrides for *task_id*, raw key first then collapsed.
+    """Return the env overrides for *task_id*, raw key first then resolved key.
 
-    ``register_task_env_overrides`` writes under the *raw* task/session id, but
-    a CWD-only override collapses (:func:`_resolve_container_task_id`) to the
-    shared ``"default"`` container so per-session surfaces (ACP/gateway/
-    dashboard) don't each spin up their own sandbox. Callers that need the
-    override (terminal command setup, file-tool cwd resolution) must therefore
-    read the raw id FIRST and only fall back to the collapsed container id, or
-    the originating session's override is silently dropped. This is the single
-    source of that lookup so the terminal and file layers can't drift apart.
+    ``register_task_env_overrides`` writes under the *raw* task/session id.  The
+    resolved environment key may be a hard-isolated raw task id, a backend-safe
+    session key (``session-<slug>-<hash>``), or the historical ``default`` key for
+    non-session CLI work.  Callers that need overrides (terminal command setup,
+    file-tool cwd resolution, code_execution backend selection) must therefore
+    read the raw id FIRST and only fall back to the resolved environment id, or
+    the originating session's override can be silently dropped. This is the
+    single source of that lookup so the terminal, file, and code layers can't
+    drift apart.
     """
     raw = task_id or "default"
-    return (
-        _task_env_overrides.get(raw)
-        or _task_env_overrides.get(_resolve_container_task_id(raw))
-        or {}
-    )
+    keys = [raw, _resolve_container_task_id(raw), _session_environment_key_from_raw(raw)]
+    try:
+        from gateway.session_context import get_session_env
+
+        current_session_key = get_session_env("HERMES_SESSION_KEY", "")
+    except Exception:
+        current_session_key = os.getenv("HERMES_SESSION_KEY", "")
+    if current_session_key:
+        keys.extend([
+            current_session_key,
+            _session_environment_key_from_raw(current_session_key),
+        ])
+
+    seen = set()
+    for key in keys:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        overrides = _task_env_overrides.get(key)
+        if overrides:
+            return overrides
+    return {}
 
 
 # Configuration from environment variables
@@ -1558,8 +1636,13 @@ def _stop_cleanup_thread():
 def get_active_env(task_id: str):
     """Return the active BaseEnvironment for *task_id*, or None."""
     lookup = _resolve_container_task_id(task_id)
+    session_lookup = _session_environment_key_from_raw(task_id)
     with _env_lock:
-        return _active_environments.get(lookup) or _active_environments.get(task_id)
+        return (
+            _active_environments.get(lookup)
+            or _active_environments.get(task_id)
+            or _active_environments.get(session_lookup)
+        )
 
 
 def is_persistent_env(task_id: str) -> bool:
