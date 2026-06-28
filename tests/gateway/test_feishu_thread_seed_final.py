@@ -12,6 +12,7 @@ class _FeishuThreadAdapter:
     def __init__(self):
         self.created_threads = []
         self.edits = []
+        self.deletes = []
         self.released_guards = []
 
     async def create_thread(self, chat_id, content, *, reply_to, metadata=None):
@@ -36,19 +37,24 @@ class _FeishuThreadAdapter:
         )
         return SendResult(success=True, message_id=message_id)
 
+    async def delete_message(self, chat_id, message_id):
+        self.deletes.append({"chat_id": chat_id, "message_id": message_id})
+        return True
+
     def release_retargeted_session_guard(self, session_key):
         self.released_guards.append(session_key)
         return True
 
 
 @pytest.mark.asyncio
-async def test_feishu_thread_launcher_retracts_seed_and_returns_final_for_bottom_delivery():
-    """A /t-created Feishu thread must not leave the final answer in the top seed.
+async def test_feishu_thread_launcher_deletes_seed_and_returns_final_for_bottom_delivery():
+    """A /t-created Feishu thread must remove the technical top seed.
 
     Regression guard for the visible contract: the initial thread seed is a
-    temporary placeholder ("⏳"). After the agent finishes, that top message is
-    replaced with a short withdrawn marker, while the final answer is returned
-    to BasePlatformAdapter so the normal delivery path sends a fresh message at
+    temporary placeholder ("⏳") used only to create the native Feishu thread.
+    After the agent finishes, that top seed must be deleted/withdrawn rather
+    than edited into any visible marker text. The final answer is returned to
+    BasePlatformAdapter so the normal delivery path sends a fresh message at
     the bottom of the thread.
     """
     adapter = _FeishuThreadAdapter()
@@ -93,17 +99,11 @@ async def test_feishu_thread_launcher_retracts_seed_and_returns_final_for_bottom
             "metadata": None,
         }
     ]
-    assert adapter.edits == [
-        {
-            "chat_id": "oc_chat",
-            "message_id": "om_seed",
-            "content": "撤回",
-            "finalize": True,
-        }
-    ]
+    assert adapter.deletes == [{"chat_id": "oc_chat", "message_id": "om_seed"}]
+    assert adapter.edits == []
     assert result == "final answer"
 
     dispatched_event = dispatched["event"]
     assert dispatched_event.source.thread_id == "omt_thread"
-    assert dispatched_event.reply_to_message_id == "om_seed"
+    assert dispatched_event.reply_to_message_id == "om_command"
     assert dispatched["thread_key"].endswith(":omt_thread")

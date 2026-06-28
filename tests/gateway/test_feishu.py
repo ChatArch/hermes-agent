@@ -81,15 +81,99 @@ class TestConfigEnvOverrides(unittest.TestCase):
 
 
 class TestFeishuStreamingFinalization(unittest.TestCase):
-    def test_feishu_prefers_bottom_final_with_withdrawn_preview_marker(self):
+    def test_feishu_prefers_bottom_final_and_deletes_stale_preview(self):
         from gateway.platforms.feishu import FeishuAdapter
 
         adapter = object.__new__(FeishuAdapter)
         self.assertTrue(adapter.prefers_fresh_final_streaming("final summary"))
-        self.assertEqual(
-            adapter.fresh_final_preview_replacement_text("final summary"),
-            "撤回",
+        self.assertIsNone(adapter.fresh_final_preview_replacement_text("final summary"))
+
+    def test_thread_metadata_carries_feishu_reply_anchor(self):
+        from gateway.config import Platform
+        from gateway.platforms.base import _thread_metadata_for_source
+        from gateway.session import SessionSource
+
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_chat",
+            thread_id="omt_thread",
+            message_id="om_trigger",
         )
+
+        self.assertEqual(
+            _thread_metadata_for_source(source, reply_to_message_id="om_trigger"),
+            {"thread_id": "omt_thread", "reply_to_message_id": "om_trigger"},
+        )
+
+    def test_runner_thread_metadata_carries_feishu_reply_anchor(self):
+        from gateway.config import Platform
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        self.assertEqual(
+            runner._thread_metadata_for_target(
+                Platform.FEISHU,
+                "oc_chat",
+                "omt_thread",
+                reply_to_message_id="om_trigger",
+            ),
+            {"thread_id": "omt_thread", "reply_to_message_id": "om_trigger"},
+        )
+
+    def test_feishu_thread_final_send_uses_reply_api_not_thread_create(self):
+        """Thread final messages append by replying in thread, not create(thread_id)."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = object.__new__(FeishuAdapter)
+        reply_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="om_final", thread_id="omt_thread"),
+        )
+        reply = Mock(return_value=reply_response)
+        create = Mock(return_value=SimpleNamespace(success=lambda: True, data=SimpleNamespace()))
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace(reply=reply, create=create)))
+        )
+
+        captured = {}
+
+        def build_reply_body(*, content, msg_type, reply_in_thread, uuid_value):
+            captured["reply_body"] = {
+                "content": content,
+                "msg_type": msg_type,
+                "reply_in_thread": reply_in_thread,
+                "uuid": uuid_value,
+            }
+            return captured["reply_body"]
+
+        def build_reply_request(message_id, body):
+            captured["reply_request"] = {"message_id": message_id, "body": body}
+            return captured["reply_request"]
+
+        adapter._build_reply_message_body = Mock(side_effect=build_reply_body)
+        adapter._build_reply_message_request = Mock(side_effect=build_reply_request)
+        adapter._build_create_message_body = Mock(return_value={"create": True})
+        adapter._build_create_message_request = Mock(return_value={"create_request": True})
+
+        response = asyncio.run(
+            adapter._send_raw_message(
+                chat_id="oc_chat",
+                msg_type="text",
+                payload=json.dumps({"text": "final summary"}),
+                reply_to=None,
+                metadata={
+                    "thread_id": "omt_thread",
+                    "reply_to_message_id": "om_trigger",
+                    "notify": True,
+                },
+            )
+        )
+
+        self.assertIs(response, reply_response)
+        reply.assert_called_once_with(captured["reply_request"])
+        create.assert_not_called()
+        self.assertEqual(captured["reply_request"]["message_id"], "om_trigger")
+        self.assertTrue(captured["reply_body"]["reply_in_thread"])
 
 
 class TestFeishuMessageNormalization(unittest.TestCase):
@@ -616,6 +700,36 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             captured["calls"][1].request_body.content,
             json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
         )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_delete_message_deletes_existing_feishu_message(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def delete(self, request):
+                captured["request"] = request
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.delete_message("oc_chat", "om_seed"))
+
+        self.assertTrue(result)
+        self.assertEqual(captured["request"].message_id, "om_seed")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):

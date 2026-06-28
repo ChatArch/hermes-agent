@@ -123,10 +123,10 @@ class TestFreshFinalForLongLivedPreviews:
 
     @pytest.mark.asyncio
     async def test_adapter_can_replace_preview_instead_of_deleting_it(self):
-        """Feishu-style UX: send the final answer last, then mark preview withdrawn."""
+        """Adapters can opt into an explicit preview marker instead of deletion."""
         adapter = _make_adapter()
         adapter.prefers_fresh_final_streaming.return_value = True
-        adapter.fresh_final_preview_replacement_text.return_value = "撤回"
+        adapter.fresh_final_preview_replacement_text.return_value = "preview superseded"
         adapter.send.side_effect = [
             SimpleNamespace(success=True, message_id="initial_preview"),
             SimpleNamespace(success=True, message_id="fresh_final"),
@@ -143,10 +143,11 @@ class TestFreshFinalForLongLivedPreviews:
             "⏳ Working",
             "final summary",
         ]
+        assert adapter.send.call_args_list[1].kwargs.get("reply_to") == "initial_preview"
         adapter.edit_message.assert_awaited_once_with(
             chat_id="chat",
             message_id="initial_preview",
-            content="撤回",
+            content="preview superseded",
             finalize=False,
         )
         adapter.delete_message.assert_not_called()
@@ -158,7 +159,7 @@ class TestFreshFinalForLongLivedPreviews:
         """Fresh-final must not be bypassed by the identical-text fast path."""
         adapter = _make_adapter()
         adapter.prefers_fresh_final_streaming.return_value = True
-        adapter.fresh_final_preview_replacement_text.return_value = "撤回"
+        adapter.fresh_final_preview_replacement_text.return_value = "preview superseded"
         adapter.send.side_effect = [
             SimpleNamespace(success=True, message_id="initial_preview"),
             SimpleNamespace(success=True, message_id="fresh_final"),
@@ -172,10 +173,11 @@ class TestFreshFinalForLongLivedPreviews:
         await consumer._send_or_edit("final summary", finalize=True)
 
         assert adapter.send.call_count == 2
+        assert adapter.send.call_args_list[1].kwargs.get("reply_to") == "initial_preview"
         adapter.edit_message.assert_awaited_once_with(
             chat_id="chat",
             message_id="initial_preview",
-            content="撤回",
+            content="preview superseded",
             finalize=False,
         )
         assert consumer._message_id == "fresh_final"
