@@ -1291,6 +1291,7 @@ class GatewayStreamConsumer:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
+                reply_to=self._message_id,
                 metadata=self._metadata_for_send(final=True),
             )
         except Exception as e:
@@ -1305,9 +1306,8 @@ class GatewayStreamConsumer:
         # Successful fresh send — clean up the stale preview(s) so the user
         # doesn't see the old edit-stuck message(s) underneath.  Most platforms
         # best-effort delete them; platforms can request an edit-to-marker
-        # replacement (e.g. Feishu: "撤回") when keeping a short breadcrumb is
-        # clearer than silently deleting an earlier bubble.  Never touch the
-        # message we just sent.
+        # replacement only when keeping a short breadcrumb is explicitly better
+        # for that platform.  Never touch the message we just sent.
         preview_replacement = self._fresh_final_preview_replacement_text(text)
         if preview_replacement is not None:
             for stale_id in stale_ids:

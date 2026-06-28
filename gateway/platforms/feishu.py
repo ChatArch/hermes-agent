@@ -94,6 +94,7 @@ try:
         CreateImageRequestBody,
         CreateMessageRequest,
         CreateMessageRequestBody,
+        DeleteMessageRequest,
         GetChatRequest,
         GetMessageRequest,
         GetMessageResourceRequest,
@@ -1363,6 +1364,7 @@ def check_feishu_requirements() -> bool:
             CreateFileRequest, CreateFileRequestBody,
             CreateImageRequest, CreateImageRequestBody,
             CreateMessageRequest, CreateMessageRequestBody,
+            DeleteMessageRequest,
             GetChatRequest, GetMessageRequest, GetMessageResourceRequest,
             P2ImMessageMessageReadV1,
             ReplyMessageRequest, ReplyMessageRequestBody,
@@ -1385,6 +1387,7 @@ def check_feishu_requirements() -> bool:
             "CreateImageRequestBody": CreateImageRequestBody,
             "CreateMessageRequest": CreateMessageRequest,
             "CreateMessageRequestBody": CreateMessageRequestBody,
+            "DeleteMessageRequest": DeleteMessageRequest,
             "GetChatRequest": GetChatRequest,
             "GetMessageRequest": GetMessageRequest,
             "GetMessageResourceRequest": GetMessageResourceRequest,
@@ -1434,8 +1437,8 @@ class FeishuAdapter(BasePlatformAdapter):
         content: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
-        """Replace the old Feishu streaming preview with a compact marker."""
-        return "撤回"
+        """Use Feishu message deletion for stale streaming previews."""
+        return None
 
     MAX_MESSAGE_LENGTH = 8000
     # Max distinct chat IDs retained in _chat_locks before LRU eviction kicks in.
@@ -1928,6 +1931,28 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a previously sent Feishu message."""
+        if not self._client:
+            return False
+        if not message_id:
+            return False
+
+        try:
+            request = self._build_delete_message_request(message_id)
+            response = await asyncio.to_thread(self._client.im.v1.message.delete, request)
+            if self._response_succeeded(response):
+                return True
+            logger.warning(
+                "[Feishu] Failed to delete message %s: %s",
+                message_id,
+                getattr(response, "msg", None) or getattr(response, "error", None) or "delete failed",
+            )
+            return False
+        except Exception as exc:
+            logger.warning("[Feishu] Failed to delete message %s: %s", message_id, exc, exc_info=True)
+            return False
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
@@ -4959,6 +4984,13 @@ class FeishuAdapter(BasePlatformAdapter):
                 .build()
             )
         return SimpleNamespace(message_id=message_id, request_body=request_body)
+
+    @staticmethod
+    def _build_delete_message_request(message_id: str) -> Any:
+        request_cls = globals().get("DeleteMessageRequest")
+        if request_cls is not None:
+            return request_cls.builder().message_id(message_id).build()
+        return SimpleNamespace(message_id=message_id)
 
     @staticmethod
     def _build_create_message_body(*, receive_id: str, msg_type: str, content: str, uuid_value: str) -> Any:

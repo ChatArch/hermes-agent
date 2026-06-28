@@ -84,6 +84,7 @@ async def test_thread_command_in_normal_feishu_chat_creates_thread_and_runs_prom
         return_value=SendResult(success=True, message_id="om_seed", thread_id="omt_new")
     )
     adapter.edit_message = AsyncMock(return_value=SendResult(success=True, message_id="om_seed"))
+    adapter.delete_message = AsyncMock(return_value=True)
     adapter.release_retargeted_session_guard = MagicMock(return_value=True)
     runner.adapters = {Platform.FEISHU: adapter}
     event = _event("/thread summarize this")
@@ -93,18 +94,14 @@ async def test_thread_command_in_normal_feishu_chat_creates_thread_and_runs_prom
     assert result == "assistant answer"
     adapter.create_thread.assert_awaited_once_with("oc_chat", "⏳", reply_to="om_cmd")
     adapter.release_retargeted_session_guard.assert_called_once_with(build_session_key(_source()))
-    adapter.edit_message.assert_awaited_once_with(
-        "oc_chat",
-        "om_seed",
-        "撤回",
-        finalize=True,
-    )
+    adapter.delete_message.assert_awaited_once_with("oc_chat", "om_seed")
+    adapter.edit_message.assert_not_awaited()
     assert event.text == "summarize this"
     assert event.message_type == MessageType.TEXT
     assert event.source.thread_id == "omt_new"
     assert event.source.parent_chat_id == "oc_chat"
     assert event.message_id == "om_cmd"
-    assert event.reply_to_message_id == "om_seed"
+    assert event.reply_to_message_id == "om_cmd"
     runner._dispatch_event_to_agent.assert_awaited_once()
     dispatched_event, dispatched_source, dispatched_key = runner._dispatch_event_to_agent.await_args.args
     assert dispatched_event is event
