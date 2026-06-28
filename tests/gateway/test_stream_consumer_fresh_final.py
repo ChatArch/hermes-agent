@@ -143,6 +143,7 @@ class TestFreshFinalForLongLivedPreviews:
             "⏳ Working",
             "final summary",
         ]
+        assert adapter.send.call_args_list[1].kwargs.get("reply_to") == "initial_preview"
         adapter.edit_message.assert_awaited_once_with(
             chat_id="chat",
             message_id="initial_preview",
@@ -172,6 +173,7 @@ class TestFreshFinalForLongLivedPreviews:
         await consumer._send_or_edit("final summary", finalize=True)
 
         assert adapter.send.call_count == 2
+        assert adapter.send.call_args_list[1].kwargs.get("reply_to") == "initial_preview"
         adapter.edit_message.assert_awaited_once_with(
             chat_id="chat",
             message_id="initial_preview",

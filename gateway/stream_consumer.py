@@ -1291,6 +1291,7 @@ class GatewayStreamConsumer:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
+                reply_to=self._message_id,
                 metadata=self._metadata_for_send(final=True),
             )
         except Exception as e:
