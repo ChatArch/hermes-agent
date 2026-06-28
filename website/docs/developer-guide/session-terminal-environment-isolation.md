@@ -157,7 +157,7 @@ The environment key resolution rule is:
 2. Otherwise, if there is an active `HERMES_SESSION_KEY`, derive a deterministic backend-safe key from it, shaped like `session-<readable-slug>-<hash>`.
 3. Otherwise, use `default` for legacy CLI/no-session behavior.
 
-Hermes does not use the raw session key directly as the environment key. Session keys are application identifiers and can be long or contain platform-specific separators. The derived key keeps a short readable slug, appends a stable digest, and avoids characters that are awkward in host paths, Docker labels, Daytona sandbox names, or cloud snapshot keys.
+Hermes does not use the raw session key directly as the environment key. Session keys are application identifiers and can be long or contain platform-specific separators. The derived key keeps a short lowercase slug, appends a stable digest, and uses only `[a-z0-9-]` characters. The key is kept at or below 57 characters so Docker labels are not truncated and Daytona's `hermes-` sandbox-name prefix still fits a conservative 64-character resource-name budget.
 
 In code, this is centered in `tools/terminal_tool.py::_resolve_container_task_id` and `tools/terminal_tool.py::_session_environment_key_from_raw`.
 

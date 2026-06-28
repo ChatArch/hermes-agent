@@ -968,7 +968,11 @@ def evict_task_environment(task_id: str):
 
     if not task_id:
         return
-    keys = {task_id, _resolve_container_task_id(task_id)}
+    keys = {
+        task_id,
+        _resolve_container_task_id(task_id),
+        _session_environment_key_from_raw(task_id),
+    }
     evicted = []
     with _env_lock:
         for key in keys:
@@ -1025,8 +1029,13 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     new_cwd = next_overrides.get("cwd")
     if isinstance(new_cwd, str) and new_cwd.strip():
         container_id = _resolve_container_task_id(task_id)
+        session_container_id = _session_environment_key_from_raw(task_id)
         with _env_lock:
-            env = _active_environments.get(task_id) or _active_environments.get(container_id)
+            env = (
+                _active_environments.get(task_id)
+                or _active_environments.get(container_id)
+                or _active_environments.get(session_container_id)
+            )
         if env is not None and getattr(env, "cwd", None) is not None:
             env.cwd = new_cwd
 
@@ -1042,7 +1051,7 @@ def clear_task_env_overrides(task_id: str):
         evict_task_environment(task_id)
 
 
-_SESSION_ENV_KEY_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+_SESSION_ENV_KEY_SAFE_RE = re.compile(r"[^a-z0-9-]+")
 
 
 def _session_environment_key_from_raw(session_key: str) -> str:
@@ -1058,8 +1067,11 @@ def _session_environment_key_from_raw(session_key: str) -> str:
     if not raw:
         return ""
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-    slug = _SESSION_ENV_KEY_SAFE_RE.sub("_", raw).strip("._-") or "session"
-    slug = slug[:48].rstrip("._-") or "session"
+    slug = _SESSION_ENV_KEY_SAFE_RE.sub("-", raw.lower()).strip("-") or "session"
+    # Keep the whole key <=57 chars so Docker labels are never truncated and
+    # Daytona's ``hermes-`` name prefix stays within a conservative 64-char
+    # resource-name budget.
+    slug = slug[:32].rstrip("-") or "session"
     return f"session-{slug}-{digest}"
 
 
@@ -1124,8 +1136,8 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
     """Return the env overrides for *task_id*, raw key first then resolved key.
 
     ``register_task_env_overrides`` writes under the *raw* task/session id.  The
-    resolved environment key may be a hard-isolated raw task id, a session-scoped
-    key (``session:<HERMES_SESSION_KEY>``), or the historical ``default`` key for
+    resolved environment key may be a hard-isolated raw task id, a backend-safe
+    session key (``session-<slug>-<hash>``), or the historical ``default`` key for
     non-session CLI work.  Callers that need overrides (terminal command setup,
     file-tool cwd resolution, code_execution backend selection) must therefore
     read the raw id FIRST and only fall back to the resolved environment id, or
@@ -1603,8 +1615,13 @@ def _stop_cleanup_thread():
 def get_active_env(task_id: str):
     """Return the active BaseEnvironment for *task_id*, or None."""
     lookup = _resolve_container_task_id(task_id)
+    session_lookup = _session_environment_key_from_raw(task_id)
     with _env_lock:
-        return _active_environments.get(lookup) or _active_environments.get(task_id)
+        return (
+            _active_environments.get(lookup)
+            or _active_environments.get(task_id)
+            or _active_environments.get(session_lookup)
+        )
 
 
 def is_persistent_env(task_id: str) -> bool:

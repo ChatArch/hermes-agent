@@ -48,11 +48,22 @@ def test_terminal_env_key_uses_gateway_session_key_from_contextvars(monkeypatch)
 def test_terminal_env_key_sanitizes_session_key_for_backend_resource_names():
     key = terminal_tool._session_environment_key_from_raw("agent:main:platform:chat/thread with spaces")
 
-    assert key.startswith("session-agent_main_platform_chat_thread_with_spaces-")
+    assert key.startswith("session-agent-main-platform-chat-thread-")
     assert "/" not in key
     assert ":" not in key
     assert " " not in key
-    assert len(key) <= len("session-") + 48 + 1 + 16
+    assert "_" not in key
+    assert len(key) <= 57
+    assert len(f"hermes-{key}") <= 64
+
+
+def test_terminal_env_key_truncates_slug_before_docker_label_limit():
+    raw = "agent:main:feishu:dm:" + "x" * 200
+    key = terminal_tool._session_environment_key_from_raw(raw)
+
+    assert len(key) <= 57
+    assert key.startswith("session-agent-main-feishu-dm-xxxxxxxx")
+    assert key.endswith(terminal_tool.hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16])
 
 
 def test_terminal_env_key_uses_process_session_key_when_context_is_unset(monkeypatch):
@@ -122,6 +133,35 @@ class FakeEnv:
     def execute(self, command: str, **_kwargs):
         self.commands.append(command)
         return {"output": self.task_id, "returncode": 0}
+
+
+def test_cwd_override_updates_existing_session_env_when_registered_outside_context():
+    """TUI/Desktop can register a session cwd by raw session id outside ContextVars."""
+    session_key = "agent:main:local:dm:tui-session"
+    env_key = _expected_session_key(session_key)
+    env = FakeEnv(env_key)
+    env.cwd = "/old"
+
+    with terminal_tool._env_lock:
+        terminal_tool._active_environments[env_key] = env
+
+    terminal_tool.register_task_env_overrides(session_key, {"cwd": "/new"})
+
+    assert env.cwd == "/new"
+
+
+def test_evict_task_environment_removes_session_key_when_called_without_context():
+    session_key = "agent:main:local:dm:tui-session"
+    env_key = _expected_session_key(session_key)
+
+    with terminal_tool._env_lock:
+        terminal_tool._active_environments[env_key] = FakeEnv(env_key)
+        terminal_tool._last_activity[env_key] = 1.0
+
+    terminal_tool.evict_task_environment(session_key)
+
+    assert env_key not in terminal_tool._active_environments
+    assert env_key not in terminal_tool._last_activity
 
 
 def test_terminal_tool_creates_separate_environments_for_separate_sessions(monkeypatch):
