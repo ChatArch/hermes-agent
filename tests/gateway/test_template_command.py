@@ -69,6 +69,7 @@ def _adapter():
         return_value=SendResult(success=True, message_id="om_seed", thread_id="omt_new")
     )
     adapter.edit_message = AsyncMock(return_value=SendResult(success=True, message_id="om_seed"))
+    adapter.delete_message = AsyncMock(return_value=True)
     adapter.release_retargeted_session_guard = MagicMock(return_value=True)
     return adapter
 
@@ -173,15 +174,11 @@ Write a concise PRD with goals, constraints, solution, and acceptance criteria.
     assert result == "assistant answer"
     adapter.create_thread.assert_awaited_once_with("oc_chat", "⏳", reply_to="om_cmd")
     adapter.release_retargeted_session_guard.assert_called_once_with(build_session_key(_source()))
-    adapter.edit_message.assert_awaited_once_with(
-        "oc_chat",
-        "om_seed",
-        "撤回",
-        finalize=True,
-    )
+    adapter.delete_message.assert_awaited_once_with("oc_chat", "om_seed")
+    adapter.edit_message.assert_not_awaited()
     assert event.source.thread_id == "omt_new"
     assert event.source.parent_chat_id == "oc_chat"
-    assert event.reply_to_message_id == "om_seed"
+    assert event.reply_to_message_id == "om_cmd"
     assert "invoked the \"prd\" template" in event.text
     assert "Write mobile-readable PRDs" in event.text
     assert "User instruction: draft a PRD" in event.text
