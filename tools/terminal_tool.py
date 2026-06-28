@@ -952,6 +952,10 @@ _task_env_overrides: Dict[str, Dict[str, Any]] = {}
 
 _BACKEND_OVERRIDE_KEYS = frozenset({
     "env_type",
+    "docker_image",
+    "modal_image",
+    "singularity_image",
+    "daytona_image",
     "ssh_host",
     "ssh_user",
     "ssh_port",
@@ -1146,11 +1150,28 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
     drift apart.
     """
     raw = task_id or "default"
-    return (
-        _task_env_overrides.get(raw)
-        or _task_env_overrides.get(_resolve_container_task_id(raw))
-        or {}
-    )
+    keys = [raw, _resolve_container_task_id(raw), _session_environment_key_from_raw(raw)]
+    try:
+        from gateway.session_context import get_session_env
+
+        current_session_key = get_session_env("HERMES_SESSION_KEY", "")
+    except Exception:
+        current_session_key = os.getenv("HERMES_SESSION_KEY", "")
+    if current_session_key:
+        keys.extend([
+            current_session_key,
+            _session_environment_key_from_raw(current_session_key),
+        ])
+
+    seen = set()
+    for key in keys:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        overrides = _task_env_overrides.get(key)
+        if overrides:
+            return overrides
+    return {}
 
 
 # Configuration from environment variables

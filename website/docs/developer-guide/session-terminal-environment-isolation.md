@@ -202,8 +202,8 @@ Both sessions share `_active_environments["default"]`.
 ### After
 
 ```text
-Session A terminal -> _resolve_container_task_id(None) -> session-agent_main_...-<hashA>
-Session B terminal -> _resolve_container_task_id(None) -> session-agent_main_...-<hashB>
+Session A terminal -> _resolve_container_task_id(None) -> session-agent-main-...-<hashA>
+Session B terminal -> _resolve_container_task_id(None) -> session-agent-main-...-<hashB>
 CLI terminal       -> _resolve_container_task_id(None) -> default
 SSH override task  -> _resolve_container_task_id(task) -> task
 ```
@@ -258,10 +258,10 @@ This is deliberately small. The main compatibility decision is the order:
 The lookup order is:
 
 ```python
-raw task id -> resolved environment id -> {}
+raw task id -> resolved environment id -> raw id as session key -> current session key -> {}
 ```
 
-This keeps terminal, file, and code execution layers aligned.
+This keeps terminal, file, and code execution layers aligned even when a turn-local/internal transcript id differs from the stable gateway session key (for example after context compression or in TUI/ACP adapters).
 
 ## SSH mode compatibility
 
@@ -294,7 +294,12 @@ It covers:
 7. CWD-only override follows the active session key.
 8. `terminal_tool()` actually creates separate environment objects across sessions.
 9. `terminal_tool()` reuses an environment inside one session.
-10. `code_execution` uses the same session-scoped environment keying.
+10. Thread-derived session keys isolate different Feishu threads while sharing one env within a thread.
+11. Compression/session-id rotation keeps the same gateway session environment.
+12. SSH/backend hard overrides still win over session-scoped default envs.
+13. Session-level cwd overrides are visible to transient tool task ids.
+14. File tools, terminal, and `code_execution` share the same session environment.
+15. Backend image override changes evict existing hard-isolated environments.
 
 The tests intentionally use fresh `contextvars.Context()` helpers so they do not pollute existing approval or sudo fallback tests. This matters because `clear_session_vars()` marks ContextVars as explicitly empty to suppress stale `os.environ` fallback.
 
