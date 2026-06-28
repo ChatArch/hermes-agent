@@ -10005,7 +10005,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         original_session_key = self._session_key_for_source(source)
         adapter = self.adapters.get(source.platform)
         thread_source = source
-        seed_message_id = getattr(event, "message_id", None)
+        original_message_id = getattr(event, "message_id", None)
+        reply_anchor_message_id = getattr(event, "reply_to_message_id", None) or original_message_id
+        seed_message_id = original_message_id
         created_thread_seed_message_id = None
 
         if source.thread_id:
@@ -10042,7 +10044,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source,
                 thread_id=str(thread_id),
                 parent_chat_id=source.chat_id,
-                message_id=seed_message_id,
+                message_id=original_message_id,
             )
             release_retargeted = getattr(adapter, "release_retargeted_session_guard", None)
             if release_retargeted is not None:
@@ -10051,34 +10053,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event.text = payload
         event.message_type = MessageType.TEXT
         event.source = thread_source
-        event.reply_to_message_id = seed_message_id
+        event.reply_to_message_id = reply_anchor_message_id
         event.reply_to_text = reply_text
 
         thread_key = self._session_key_for_source(thread_source)
         agent_result = await self._dispatch_event_to_agent(event, thread_source, thread_key)
 
         if created_thread_seed_message_id:
-            final_text = ""
-            if isinstance(agent_result, dict):
-                final_text = str(agent_result.get("final_response") or "")
-            elif isinstance(agent_result, str):
-                final_text = agent_result
-            if final_text.strip():
-                edit_message = getattr(adapter, "edit_message", None) if adapter else None
-                if edit_message is not None:
-                    edit_result = await edit_message(
-                        source.chat_id,
-                        str(created_thread_seed_message_id),
-                        "撤回",
-                        finalize=True,
+            delete_message = getattr(adapter, "delete_message", None) if adapter else None
+            if delete_message is not None:
+                try:
+                    deleted = await delete_message(source.chat_id, str(created_thread_seed_message_id))
+                except Exception as exc:
+                    deleted = False
+                    logger.warning(
+                        "Feishu /%s seed delete failed for %s: %s",
+                        command_name,
+                        created_thread_seed_message_id,
+                        exc,
+                        exc_info=True,
                     )
-                    if not getattr(edit_result, "success", False):
-                        logger.warning(
-                            "Feishu /%s seed retraction edit failed for %s: %s",
-                            command_name,
-                            created_thread_seed_message_id,
-                            getattr(edit_result, "error", "unknown error"),
-                        )
+                if not deleted:
+                    logger.warning(
+                        "Feishu /%s seed delete failed for %s",
+                        command_name,
+                        created_thread_seed_message_id,
+                    )
             return agent_result
 
         return agent_result
@@ -12196,11 +12196,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 metadata["direct_messages_topic_id"] = tid
             if reply_to_message_id is not None:
                 metadata["telegram_reply_to_message_id"] = str(reply_to_message_id)
-        if platform == Platform.FEISHU and reply_to_message_id is not None:
-            # Feishu topic messages must use reply(reply_in_thread=True) to keep
-            # the message in the active Thread and ordered after the current turn.
-            # A bare create(thread_id) can render at an unexpected anchor/top.
-            metadata["reply_to_message_id"] = str(reply_to_message_id)
         return metadata
 
     @staticmethod
