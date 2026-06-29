@@ -164,7 +164,7 @@ def _request_local(ctx: dict[str, str], args: dict[str, Any], task_id: str | Non
             protected=True,
             alias=binding.alias,
             source=binding.source,
-            message="Current SSH binding was created by the user; use /ssh off or /ssh local to clear it.",
+            message="Current SSH binding was created by the user; use /ssh local to clear it (/ssh off is a compatibility alias).",
         )
     clear_ssh_binding(session_key)
     try:

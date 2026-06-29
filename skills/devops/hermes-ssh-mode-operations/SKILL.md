@@ -25,7 +25,7 @@ Use this skill when:
 
 - A user asks what SSH targets Hermes can use.
 - A user wants selected OpenSSH hosts copied into Hermes' SSH target list.
-- `/ssh list`, `/ssh status`, `/ssh test`, `/ssh use`, or `/ssh off` needs validation.
+- `/ssh list`, `/ssh status`, `/ssh test`, `/ssh use`, or `/ssh local` needs validation.
 - A gateway section should be moved to SSH backend temporarily and then returned to local mode.
 - A one-off SSH Mode procedure needs to be turned into durable operating knowledge.
 
@@ -111,7 +111,7 @@ In a gateway section or thread, use:
 /ssh test <alias>
 /ssh use <alias> --cwd <remote-path>
 /ssh status
-/ssh off
+/ssh local
 /ssh status
 ```
 
@@ -122,7 +122,7 @@ Expected behavior:
 - `/ssh test <alias>` validates configuration and does not change binding.
 - `/ssh use <alias> --cwd <remote-path>` binds the current section to SSH backend. In a Feishu parent chat, it creates a new thread by default and binds that thread; `-t` / `--thread` is accepted as an explicit form but is not required.
 - The next `/ssh status` shows backend `ssh`, selected alias, host/user/port, cwd, and redacted identity.
-- `/ssh off` or `/ssh local` clears the binding and returns to local backend.
+- `/ssh local` clears the binding and returns to local backend. `/ssh off` is a compatibility alias only.
 
 ## Command Side Effects
 
@@ -136,20 +136,28 @@ Use this matrix when validating that SSH Mode changed the intended state and not
 | `/ssh use <alias> [--cwd <remote-path>]` inside an existing section/thread | Target registry; current section key | `~/.hermes/ssh/bindings.json` via `set_ssh_binding()` | Registers section-scoped terminal overrides under the durable session key, evicts cached agent for that section, and causes the next turn's prompt plus terminal/file/code tools to use backend `ssh` | Must not modify `~/.ssh/config`; must not read private key contents; must not affect other sections |
 | `/ssh use <alias> [--cwd <remote-path>]` from a Feishu parent chat | Target registry; parent message metadata | `~/.hermes/ssh/bindings.json` for the newly created thread's section key | Creates a Feishu thread by default, binds that thread to SSH, and leaves the parent chat unbound | Must not require `-t`; must not bind the parent chat silently |
 | `/ssh use <alias> -t` / `--thread` | Same as parent-chat default use | Same as parent-chat default use | Explicit form of the default parent-chat behavior | Must not create different semantics from plain parent-chat `/ssh use` |
-| `/ssh off` / `/ssh local` | Current section key | `~/.hermes/ssh/bindings.json` via `clear_ssh_binding()` | Clears section-scoped terminal override, evicts cached agent, and returns future prompt/tool execution to local/session default backend | Must not delete targets from the registry |
+| `/ssh local` | Current section key | `~/.hermes/ssh/bindings.json` via `clear_ssh_binding()` | Clears section-scoped terminal override, evicts cached agent, and returns future prompt/tool execution to local/session default backend | Must not delete targets from the registry |
+| `/ssh off` | Current section key | Same as `/ssh local` | Compatibility alias for `/ssh local` | Must not be documented as the primary exit command |
 | `/ssh yolo status` | `~/.hermes/ssh/bindings.json` yolo grant section | None | None | Must not switch backend |
 | `/ssh yolo on [alias|all]` | Target registry when an alias is provided; yolo grant section | `~/.hermes/ssh/bindings.json` yolo grant section | Allows model-initiated SSH switching only for the current section and configured aliases | Must not grant globally across sessions unless the section key itself is shared |
 | `/ssh yolo off [alias]` | Yolo grant section | `~/.hermes/ssh/bindings.json` yolo grant section | Removes one alias grant or disables section yolo entirely | Must not clear the SSH binding itself |
 
-Runtime note: system-level SSH Mode is `terminal.backend=ssh` plus `TERMINAL_SSH_*` config. Section-level SSH Mode must be equivalent from the model/tool perspective: `build_environment_hints()` should report `Terminal backend: ssh`, and `terminal`, `read_file`/`write_file`/`patch`/`search_files`, and `execute_code` should all resolve the same SSH environment for the section until `/ssh off` or `/ssh local` clears it.
+Runtime note: system-level SSH Mode is `terminal.backend=ssh` plus `TERMINAL_SSH_*` config. Section-level SSH Mode must be equivalent from the model/tool perspective: `build_environment_hints()` should report `Terminal backend: ssh`, and `terminal`, `read_file`/`write_file`/`patch`/`search_files`, and `execute_code` should all resolve the same SSH environment for the section until `/ssh local` clears it.
 
 ## SSH Mode Test Strategy
 
 A complete SSH Mode change needs three kinds of validation:
 
-1. **Interaction mock tests**: simulate Feishu parent chat and thread events. Assert `/ssh use <alias>` without `-t` creates a thread by default, writes exactly the new thread binding, and does not require the user to remember a flag.
-2. **Backend-equivalence mock tests**: register section-scoped SSH overrides and assert prompt building plus terminal/file/code tools behave as if system-level `terminal.backend=ssh` were active. Also assert `/ssh off`/`local` returns to local/session default behavior.
+1. **Interaction mock tests**: simulate Feishu parent chat and thread events. Assert `/ssh use <alias>` without `-t` creates a thread by default, writes exactly the new thread binding, and does not require the user to remember a flag. Also simulate an existing Feishu thread and assert `/ssh use <other-alias>` rewrites that thread's binding without touching the parent chat or other threads.
+2. **Backend-equivalence mock tests**: register section-scoped SSH overrides and assert prompt building plus terminal/file/code tools behave as if system-level `terminal.backend=ssh` were active. This must include: model environment hints reporting `Terminal backend: ssh`; terminal commands creating an SSH env; file tools using that same env for read/write/search/patch; `execute_code` using that same env; and `/ssh local` returning all future work to local/session-default behavior.
 3. **Live read-only smoke**: when a permitted target exists, run a short `pwd && whoami && hostname` or `printf ok` through the Hermes terminal SSH backend. Use raw `ssh` only as a control, not as proof that Hermes tool routing works.
+
+Minimum acceptance scenarios:
+
+- **From scratch in a Feishu parent chat**: `/ssh use <alias>` creates a thread, writes only the new thread's binding, returns a message that says future tools in that thread use SSH, and subsequent work in the parent chat remains local.
+- **Inside an existing Feishu thread**: `/ssh use <alias>` updates the current thread binding; `/ssh status` reports backend `ssh`; the next prompt build and terminal/file/code tools all see SSH.
+- **Switching targets inside a thread**: a second `/ssh use <other-alias>` replaces the binding, refreshes runtime overrides, evicts the cached agent for that section, and future tools use the new target.
+- **Return to local**: `/ssh local` clears the binding, clears runtime overrides, evicts the cached agent, and `/ssh status` plus future tools return to local/session-default behavior. `/ssh off` may do the same only as a compatibility alias.
 
 ## Gateway Restart Check
 
@@ -176,7 +184,7 @@ The repo-bundled skill should teach the operating procedure. It should not ship 
 2. **Leaking private key paths.** Store paths only if needed for runtime, but render them as `[REDACTED_PATH]` in summaries.
 3. **Treating one host timeout as a Hermes failure.** Check other targets and use `ssh -G` to separate config resolution from network reachability.
 4. **Assuming parent-chat `/ssh use` should fail without `-t`.** In Feishu parent chats, `/ssh use <alias>` should create a thread by default and bind SSH there; `-t` / `--thread` is only the explicit form.
-5. **Skipping `/ssh off`.** Always verify that returning to local mode clears the section binding.
+5. **Skipping `/ssh local`.** Always verify that returning to local mode clears the section binding. Treat `/ssh off` only as a compatibility alias.
 
 ## Verification Checklist
 
@@ -188,5 +196,5 @@ The repo-bundled skill should teach the operating procedure. It should not ship 
 - [ ] `validate_ssh_target_for_runtime()` reports no missing host/user.
 - [ ] `ssh -G <alias>` resolves expected host/user/port.
 - [ ] Read-only smoke checks were run when appropriate.
-- [ ] `/ssh list/status/test/use/off/status` flow was verified.
+- [ ] `/ssh list/status/test/use/local/status` flow was verified.
 - [ ] Any repo-bundled change is on a branch and contains no private target list.

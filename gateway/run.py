@@ -10144,8 +10144,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "/ssh use <alias> [--cwd <remote-path>] — bind current section to SSH; in a Feishu parent chat, create a Thread by default\n"
                 "/ssh use <alias> --new-thread|-t|--thread [--cwd <remote-path>] — explicitly create a Feishu Thread and bind it\n"
                 "/ssh yolo status|on|off [alias|all] — manage model auto-switch grants for this section\n"
-                "/ssh off — clear this section's SSH binding\n"
-                "/ssh local — same as /ssh off"
+                "/ssh local — return this section to local backend\n"
+                "/ssh off — alias for /ssh local"
             )
 
         if action == "list":
@@ -10259,7 +10259,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
             self._evict_cached_agent(section_key)
-            return "SSH disabled for this section. Current backend: local."
+            return "SSH binding cleared for this section. Current backend: local."
 
         if action == "use":
             alias = parts[1].strip() if len(parts) > 1 else ""

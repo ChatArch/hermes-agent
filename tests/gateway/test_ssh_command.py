@@ -271,18 +271,47 @@ async def test_ssh_use_in_parent_chat_defaults_to_new_thread(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_ssh_off_clears_current_thread_binding(monkeypatch, tmp_path):
+async def test_ssh_help_prefers_local_and_keeps_off_as_alias():
+    runner = _runner()
+    event = _event("/ssh help", thread_id="omt_thread")
+
+    result = await runner._handle_ssh_command(event)
+
+    assert "/ssh local — return this section to local backend" in result
+    assert "/ssh off — alias for /ssh local" in result
+    assert result.index("/ssh local") < result.index("/ssh off")
+
+
+@pytest.mark.asyncio
+async def test_ssh_local_clears_current_thread_binding(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from gateway.ssh_bindings import set_ssh_binding, get_ssh_binding
 
     section_key = build_session_key(_source(thread_id="omt_thread"))
-    set_ssh_binding(section_key, alias="rex.oray", cwd="/srv/app")
+    set_ssh_binding(section_key, alias="demo.remote", cwd="/srv/app")
+    runner = _runner()
+    event = _event("/ssh local", thread_id="omt_thread")
+
+    result = await runner._handle_ssh_command(event)
+
+    assert "Current backend: local" in result
+    assert "SSH binding cleared" in result
+    assert get_ssh_binding(section_key) is None
+
+
+@pytest.mark.asyncio
+async def test_ssh_off_is_compatibility_alias_for_local(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.ssh_bindings import set_ssh_binding, get_ssh_binding
+
+    section_key = build_session_key(_source(thread_id="omt_thread"))
+    set_ssh_binding(section_key, alias="demo.remote", cwd="/srv/app")
     runner = _runner()
     event = _event("/ssh off", thread_id="omt_thread")
 
     result = await runner._handle_ssh_command(event)
 
-    assert "SSH disabled" in result
+    assert "Current backend: local" in result
     assert get_ssh_binding(section_key) is None
 
 
