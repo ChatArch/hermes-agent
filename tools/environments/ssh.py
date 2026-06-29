@@ -62,7 +62,7 @@ class SSHEnvironment(BaseEnvironment):
                  timeout: int = 60, port: int = 22, key_path: str = "",
                  identities_only: bool = True, known_hosts_path: str | Path = "",
                  host_key_policy: str = "accept-new", persistent: bool = True,
-                 sync_back_on_cleanup: bool = False):
+                 sync_back_on_cleanup: bool = True):
         super().__init__(cwd=cwd, timeout=timeout)
         self._persistent = bool(persistent)
         # SSH is a live remote machine, not an ephemeral container filesystem.
