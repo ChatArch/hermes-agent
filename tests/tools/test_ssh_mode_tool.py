@@ -40,6 +40,21 @@ def test_ssh_mode_status_and_list_are_read_only(monkeypatch, tmp_path):
     assert "/secret/key" not in json.dumps(targets)
 
 
+def test_ssh_mode_tool_is_model_visible_in_default_and_terminal_toolsets():
+    """The model cannot autonomously switch SSH if the tool is not in schema."""
+    import toolsets
+    from tools.ssh_mode_tool import SSH_MODE_SCHEMA
+
+    assert "ssh_mode" in toolsets._HERMES_CORE_TOOLS
+    assert "ssh_mode" in toolsets.TOOLSETS["terminal"]["tools"]
+    assert "request_use" in SSH_MODE_SCHEMA["parameters"]["properties"]["action"]["enum"]
+    assert "request_local" in SSH_MODE_SCHEMA["parameters"]["properties"]["action"]["enum"]
+    schema_text = json.dumps(SSH_MODE_SCHEMA, ensure_ascii=False)
+    assert "/ssh yolo on <alias>" in schema_text
+    assert "/ssh local" in schema_text
+    assert "/ssh use <alias>" in schema_text
+
+
 def test_ssh_mode_request_use_requires_yolo_in_thread(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     import tools.ssh_mode_tool as ssh_mode_tool
@@ -149,4 +164,5 @@ def test_ssh_mode_request_use_rejects_feishu_mainthread(monkeypatch, tmp_path):
 
     assert result["ok"] is False
     assert result["approval_required"] is True
-    assert "MainThread" in result["reason"]
+    assert "/ssh use <alias>" in result["reason"]
+    assert "-t" not in result["reason"]

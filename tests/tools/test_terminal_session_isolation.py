@@ -408,3 +408,97 @@ def test_code_execution_environment_uses_session_key(monkeypatch):
     assert env_a.task_id == key_a
     assert env_b.task_id == key_b
     assert created == [key_a, key_b]
+
+
+
+def test_session_key_ssh_override_drives_terminal_file_code_without_transcript_registration(monkeypatch):
+    """Section-scoped SSH must behave like system-level SSH for all tool families.
+
+    `/ssh use` persists and registers the backend under the durable gateway
+    session key.  Future tool calls may carry transient transcript/tool task ids;
+    they must still create an SSH backend from the section binding rather than a
+    local session-derived environment.
+    """
+    from tools import code_execution_tool as code_exec
+    from tools import file_tools
+
+    created: list[dict] = []
+
+    class FakeTypedEnv(FakeEnv):
+        def __init__(self, task_id: str, env_type: str, cwd: str):
+            super().__init__(task_id)
+            self.env_type = env_type
+            self.cwd = cwd
+
+    def fake_create_environment(**kwargs):
+        created.append(kwargs)
+        return FakeTypedEnv(kwargs["task_id"], kwargs["env_type"], kwargs["cwd"])
+
+    monkeypatch.setattr(terminal_tool, "_create_environment", fake_create_environment)
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    session_key = "agent:main:feishu:group:oc_chat:omt_thread"
+    ssh_overrides = {
+        "env_type": "ssh",
+        "ssh_host": "example.invalid",
+        "ssh_user": "hermes",
+        "ssh_port": 2222,
+        "cwd": "/srv/app",
+    }
+    terminal_tool.register_task_env_overrides(session_key, ssh_overrides)
+
+    def _run():
+        tokens = set_session_vars(session_key=session_key, session_id="transcript-a")
+        try:
+            terminal_result = json.loads(terminal_tool.terminal_tool("pwd", task_id="terminal-turn"))
+            file_ops = file_tools._get_file_ops("file-turn")
+            code_env, code_env_type = code_exec._get_or_create_env("code-turn")
+            return terminal_result, file_ops.env, code_env, code_env_type
+        finally:
+            clear_session_vars(tokens)
+
+    terminal_result, file_env, code_env, code_env_type = contextvars.Context().run(_run)
+
+    assert created, "expected an SSH environment to be created"
+    assert created[0]["env_type"] == "ssh"
+    assert created[0]["ssh_config"]["host"] == "example.invalid"
+    assert created[0]["ssh_config"]["user"] == "hermes"
+    assert created[0]["ssh_config"]["port"] == 2222
+    assert created[0]["cwd"] == "/srv/app"
+    assert terminal_result["output"] == created[0]["task_id"]
+    assert file_env is code_env is terminal_tool._active_environments[created[0]["task_id"]]
+    assert code_env_type == "ssh"
+
+
+def test_prompt_backend_uses_session_key_ssh_override_when_transcript_override_missing(monkeypatch):
+    """Model environment hints must notice section-scoped SSH bindings."""
+    from agent import prompt_builder
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setattr(prompt_builder, "_probe_remote_backend", lambda backend: "  user: hermes")
+    prompt_builder._clear_backend_probe_cache()
+
+    session_key = "agent:main:feishu:group:oc_chat:omt_thread"
+    terminal_tool.register_task_env_overrides(
+        session_key,
+        {
+            "env_type": "ssh",
+            "ssh_host": "example.invalid",
+            "ssh_user": "hermes",
+            "ssh_port": 2222,
+        },
+    )
+
+    def _run():
+        tokens = set_session_vars(session_key=session_key, session_id="transcript-a")
+        try:
+            return prompt_builder.build_environment_hints()
+        finally:
+            clear_session_vars(tokens)
+
+    hints = contextvars.Context().run(_run)
+
+    assert "Terminal backend: ssh" in hints
+    assert "read_file" in hints
+    assert "NOT on the machine where Hermes itself is running" in hints
+    assert "Host: macOS" not in hints
+    assert "User home directory:" not in hints

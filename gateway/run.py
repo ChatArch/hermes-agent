@@ -10141,11 +10141,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "/ssh list — list SSH targets\n"
                 "/ssh status — show this section's SSH binding\n"
                 "/ssh test <alias> — validate a target without changing binding\n"
-                "/ssh use <alias> [--cwd <remote-path>] — bind current Feishu Thread/Section to SSH\n"
-                "/ssh use <alias> --new-thread|-t|--thread [--cwd <remote-path>] — create a Feishu Thread and bind it\n"
+                "/ssh use <alias> [--cwd <remote-path>] — bind current section to SSH; in a Feishu parent chat, create a Thread by default\n"
+                "/ssh use <alias> --new-thread|-t|--thread [--cwd <remote-path>] — explicitly create a Feishu Thread and bind it\n"
                 "/ssh yolo status|on|off [alias|all] — manage model auto-switch grants for this section\n"
-                "/ssh off — clear this section's SSH binding\n"
-                "/ssh local — same as /ssh off"
+                "/ssh local — return this section to local backend\n"
+                "/ssh off — alias for /ssh local"
             )
 
         if action == "list":
@@ -10259,7 +10259,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
             self._evict_cached_agent(section_key)
-            return "SSH disabled for this section. Current backend: local."
+            return "SSH binding cleared for this section. Current backend: local."
 
         if action == "use":
             alias = parts[1].strip() if len(parts) > 1 else ""
@@ -10284,12 +10284,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             source = event.source
             bind_source = source
             if not source.thread_id:
-                if not new_thread:
-                    return (
-                        "Please run `/ssh use <alias>` inside a Feishu Thread, "
-                        "or use `/ssh use <alias> -t` / `/ssh use <alias> --thread` "
-                        "to create and bind a new Feishu Thread."
-                    )
+                if source.platform != Platform.FEISHU:
+                    return "Please run `/ssh use <alias>` inside a thread/section that supports SSH bindings."
+                # Feishu parent-chat UX: default to creating a thread. Mobile
+                # users should not have to remember `-t`; explicit `-t` remains
+                # accepted but is no longer required.
                 adapter = self.adapters.get(source.platform)
                 create_thread = getattr(adapter, "create_thread", None) if adapter else None
                 if create_thread is None:

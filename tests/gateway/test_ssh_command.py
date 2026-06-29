@@ -242,38 +242,76 @@ async def test_ssh_use_binds_current_thread(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ssh_use_in_parent_chat_requires_new_thread(monkeypatch):
+async def test_ssh_use_in_parent_chat_defaults_to_new_thread(monkeypatch, tmp_path):
     import gateway.run as gateway_run
     from gateway.ssh_targets import SshTarget
 
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(
         gateway_run,
         "load_ssh_targets",
-        lambda: [SshTarget(alias="rex.oray", host="rexwzh.oray", user="rexwzh")],
+        lambda: [SshTarget(alias="demo.remote", host="example.invalid", user="hermes")],
         raising=False,
     )
     runner = _runner()
-    event = _event("/ssh use rex.oray", thread_id=None)
+    runner.adapters[Platform.FEISHU] = SimpleNamespace(  # type: ignore[assignment]
+        create_thread=AsyncMock(return_value=SimpleNamespace(success=True, thread_id="omt_default", message_id="om_default"))
+    )
+    event = _event("/ssh use demo.remote", thread_id=None)
 
     result = await runner._handle_ssh_command(event)
 
-    assert "Feishu Thread" in result
-    assert "--thread" in result
+    from gateway.ssh_bindings import get_ssh_binding
+    section_key = build_session_key(_source(thread_id="omt_default"))
+    binding = get_ssh_binding(section_key)
+    assert "SSH enabled" in result
+    assert binding is not None
+    assert binding.alias == "demo.remote"
+    runner.adapters[Platform.FEISHU].create_thread.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_ssh_off_clears_current_thread_binding(monkeypatch, tmp_path):
+async def test_ssh_help_prefers_local_and_keeps_off_as_alias():
+    runner = _runner()
+    event = _event("/ssh help", thread_id="omt_thread")
+
+    result = await runner._handle_ssh_command(event)
+
+    assert "/ssh local — return this section to local backend" in result
+    assert "/ssh off — alias for /ssh local" in result
+    assert result.index("/ssh local") < result.index("/ssh off")
+
+
+@pytest.mark.asyncio
+async def test_ssh_local_clears_current_thread_binding(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from gateway.ssh_bindings import set_ssh_binding, get_ssh_binding
 
     section_key = build_session_key(_source(thread_id="omt_thread"))
-    set_ssh_binding(section_key, alias="rex.oray", cwd="/srv/app")
+    set_ssh_binding(section_key, alias="demo.remote", cwd="/srv/app")
+    runner = _runner()
+    event = _event("/ssh local", thread_id="omt_thread")
+
+    result = await runner._handle_ssh_command(event)
+
+    assert "Current backend: local" in result
+    assert "SSH binding cleared" in result
+    assert get_ssh_binding(section_key) is None
+
+
+@pytest.mark.asyncio
+async def test_ssh_off_is_compatibility_alias_for_local(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.ssh_bindings import set_ssh_binding, get_ssh_binding
+
+    section_key = build_session_key(_source(thread_id="omt_thread"))
+    set_ssh_binding(section_key, alias="demo.remote", cwd="/srv/app")
     runner = _runner()
     event = _event("/ssh off", thread_id="omt_thread")
 
     result = await runner._handle_ssh_command(event)
 
-    assert "SSH disabled" in result
+    assert "Current backend: local" in result
     assert get_ssh_binding(section_key) is None
 
 
@@ -365,7 +403,7 @@ async def test_ssh_test_unknown_alias_does_not_change_binding(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ssh_use_thread_alias_creates_thread_and_binds(monkeypatch, tmp_path):
+async def test_ssh_use_explicit_thread_alias_creates_thread_and_binds(monkeypatch, tmp_path):
     import gateway.run as gateway_run
     from gateway.ssh_targets import SshTarget
 
@@ -400,7 +438,7 @@ async def test_ssh_yolo_is_thread_scoped_in_feishu_parent_chat():
     result = await runner._handle_ssh_command(event)
 
     assert "Thread-scoped" in result
-    assert "/ssh use <alias> -t" in result
+    assert "/ssh use <alias>" in result
 
 
 @pytest.mark.asyncio

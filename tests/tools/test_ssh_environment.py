@@ -339,3 +339,94 @@ class TestPersistentSSH:
         assert len(lines) == 1000
         assert lines[0] == "1"
         assert lines[-1] == "1000"
+
+
+
+def test_ssh_environment_records_persistence_and_can_skip_cleanup_sync_back(monkeypatch):
+    monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+    monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+    monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/alice")
+    monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
+    monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+
+    calls = {"sync": 0, "sync_back": 0, "run": []}
+
+    class Manager:
+        def sync(self, **_kwargs):
+            calls["sync"] += 1
+
+        def sync_back(self, **_kwargs):
+            calls["sync_back"] += 1
+
+    monkeypatch.setattr(ssh_env, "FileSyncManager", lambda **_kwargs: Manager())
+
+    def fake_run(cmd, **_kwargs):
+        calls["run"].append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(ssh_env.subprocess, "run", fake_run)
+
+    env = ssh_env.SSHEnvironment(
+        host="example.com",
+        user="alice",
+        persistent=True,
+        sync_back_on_cleanup=False,
+    )
+
+    class FakeSocket:
+        def exists(self):
+            return True
+
+        def __fspath__(self):
+            return "/tmp/hermes-ssh/fake.sock"
+
+        def __str__(self):
+            return "/tmp/hermes-ssh/fake.sock"
+
+        def unlink(self):
+            calls["unlinked"] = calls.get("unlinked", 0) + 1
+
+    env.control_socket = FakeSocket()
+
+    assert env._persistent is True
+    env.cleanup()
+
+    assert calls["sync_back"] == 0
+    assert any("-O" in cmd and "exit" in cmd for cmd in calls["run"])
+    assert calls["unlinked"] == 1
+
+
+def test_create_environment_passes_ssh_persistence_to_environment(monkeypatch):
+    import tools.terminal_tool as terminal_tool
+
+    captured = {}
+
+    class FakeSSH:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(terminal_tool, "_SSHEnvironment", FakeSSH)
+
+    terminal_tool._create_environment(
+        env_type="ssh",
+        image="",
+        cwd="/srv/app",
+        timeout=30,
+        ssh_config={
+            "host": "example.com",
+            "user": "alice",
+            "port": 2222,
+            "key": "~/.ssh/id_example",
+            "identities_only": True,
+            "known_hosts": "~/.ssh/known_hosts",
+            "host_key_policy": "accept-new",
+            "persistent": False,
+        },
+        task_id="ssh-task",
+    )
+
+    assert captured["host"] == "example.com"
+    assert captured["user"] == "alice"
+    assert captured["port"] == 2222
+    assert captured["persistent"] is False
+    assert captured["sync_back_on_cleanup"] is False

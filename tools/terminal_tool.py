@@ -1523,6 +1523,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             identities_only=ssh_config.get("identities_only", True),
             known_hosts_path=ssh_config.get("known_hosts", ""),
             host_key_policy=ssh_config.get("host_key_policy", "accept-new"),
+            persistent=ssh_config.get("persistent", True),
+            sync_back_on_cleanup=ssh_config.get("sync_back_on_cleanup", False),
             cwd=cwd,
             timeout=timeout,
         )
