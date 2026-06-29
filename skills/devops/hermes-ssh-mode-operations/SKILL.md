@@ -120,7 +120,7 @@ Expected behavior:
 - `/ssh list` shows the Hermes-owned target registry, with identity paths redacted.
 - `/ssh status` starts as local/no binding unless already configured.
 - `/ssh test <alias>` validates configuration and does not change binding.
-- `/ssh use <alias> --cwd <remote-path>` binds the current section to SSH backend.
+- `/ssh use <alias> --cwd <remote-path>` binds the current section to SSH backend. In a Feishu parent chat, it creates a new thread by default and binds that thread; `-t` / `--thread` is accepted as an explicit form but is not required.
 - The next `/ssh status` shows backend `ssh`, selected alias, host/user/port, cwd, and redacted identity.
 - `/ssh off` or `/ssh local` clears the binding and returns to local backend.
 
@@ -148,7 +148,7 @@ The repo-bundled skill should teach the operating procedure. It should not ship 
 1. **Assuming `/ssh list` reads `~/.ssh/config`.** It does not. Import selected hosts into the Hermes registry first.
 2. **Leaking private key paths.** Store paths only if needed for runtime, but render them as `[REDACTED_PATH]` in summaries.
 3. **Treating one host timeout as a Hermes failure.** Check other targets and use `ssh -G` to separate config resolution from network reachability.
-4. **Testing in a parent chat when a thread is required.** Bind SSH in the intended section/thread, or create one through the supported `/ssh use <alias> --thread` flow.
+4. **Assuming parent-chat `/ssh use` should fail without `-t`.** In Feishu parent chats, `/ssh use <alias>` should create a thread by default and bind SSH there; `-t` / `--thread` is only the explicit form.
 5. **Skipping `/ssh off`.** Always verify that returning to local mode clears the section binding.
 
 ## Verification Checklist

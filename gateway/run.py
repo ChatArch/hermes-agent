@@ -10284,12 +10284,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             source = event.source
             bind_source = source
             if not source.thread_id:
-                if not new_thread:
-                    return (
-                        "Please run `/ssh use <alias>` inside a Feishu Thread, "
-                        "or use `/ssh use <alias> -t` / `/ssh use <alias> --thread` "
-                        "to create and bind a new Feishu Thread."
-                    )
+                if source.platform != Platform.FEISHU:
+                    return "Please run `/ssh use <alias>` inside a thread/section that supports SSH bindings."
+                # Feishu parent-chat UX: default to creating a thread. Mobile
+                # users should not have to remember `-t`; explicit `-t` remains
+                # accepted but is no longer required.
                 adapter = self.adapters.get(source.platform)
                 create_thread = getattr(adapter, "create_thread", None) if adapter else None
                 if create_thread is None:
