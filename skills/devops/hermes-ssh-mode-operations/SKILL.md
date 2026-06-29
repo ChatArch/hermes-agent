@@ -124,6 +124,33 @@ Expected behavior:
 - The next `/ssh status` shows backend `ssh`, selected alias, host/user/port, cwd, and redacted identity.
 - `/ssh off` or `/ssh local` clears the binding and returns to local backend.
 
+## Command Side Effects
+
+Use this matrix when validating that SSH Mode changed the intended state and nothing else.
+
+| Command | Reads | Writes files | Runtime side effects | Must not do |
+|---|---|---|---|---|
+| `/ssh list` | `~/.hermes/ssh/targets.yaml` through `load_ssh_targets()` | None | None; does not create terminal environments or change bindings | Must not read private key contents or implicit-import `~/.ssh/config` |
+| `/ssh status` | `~/.hermes/ssh/bindings.json`; target registry only to resolve the current alias | None | None; reports backend `local` when no binding exists, `ssh` when the section key resolves | Must not change binding or create an SSH environment |
+| `/ssh test <alias>` | Target registry | None | Validates that target metadata is complete; no connection is required by the command itself | Must not change binding or yolo grant |
+| `/ssh use <alias> [--cwd <remote-path>]` inside an existing section/thread | Target registry; current section key | `~/.hermes/ssh/bindings.json` via `set_ssh_binding()` | Registers section-scoped terminal overrides under the durable session key, evicts cached agent for that section, and causes the next turn's prompt plus terminal/file/code tools to use backend `ssh` | Must not modify `~/.ssh/config`; must not read private key contents; must not affect other sections |
+| `/ssh use <alias> [--cwd <remote-path>]` from a Feishu parent chat | Target registry; parent message metadata | `~/.hermes/ssh/bindings.json` for the newly created thread's section key | Creates a Feishu thread by default, binds that thread to SSH, and leaves the parent chat unbound | Must not require `-t`; must not bind the parent chat silently |
+| `/ssh use <alias> -t` / `--thread` | Same as parent-chat default use | Same as parent-chat default use | Explicit form of the default parent-chat behavior | Must not create different semantics from plain parent-chat `/ssh use` |
+| `/ssh off` / `/ssh local` | Current section key | `~/.hermes/ssh/bindings.json` via `clear_ssh_binding()` | Clears section-scoped terminal override, evicts cached agent, and returns future prompt/tool execution to local/session default backend | Must not delete targets from the registry |
+| `/ssh yolo status` | `~/.hermes/ssh/bindings.json` yolo grant section | None | None | Must not switch backend |
+| `/ssh yolo on [alias|all]` | Target registry when an alias is provided; yolo grant section | `~/.hermes/ssh/bindings.json` yolo grant section | Allows model-initiated SSH switching only for the current section and configured aliases | Must not grant globally across sessions unless the section key itself is shared |
+| `/ssh yolo off [alias]` | Yolo grant section | `~/.hermes/ssh/bindings.json` yolo grant section | Removes one alias grant or disables section yolo entirely | Must not clear the SSH binding itself |
+
+Runtime note: system-level SSH Mode is `terminal.backend=ssh` plus `TERMINAL_SSH_*` config. Section-level SSH Mode must be equivalent from the model/tool perspective: `build_environment_hints()` should report `Terminal backend: ssh`, and `terminal`, `read_file`/`write_file`/`patch`/`search_files`, and `execute_code` should all resolve the same SSH environment for the section until `/ssh off` or `/ssh local` clears it.
+
+## SSH Mode Test Strategy
+
+A complete SSH Mode change needs three kinds of validation:
+
+1. **Interaction mock tests**: simulate Feishu parent chat and thread events. Assert `/ssh use <alias>` without `-t` creates a thread by default, writes exactly the new thread binding, and does not require the user to remember a flag.
+2. **Backend-equivalence mock tests**: register section-scoped SSH overrides and assert prompt building plus terminal/file/code tools behave as if system-level `terminal.backend=ssh` were active. Also assert `/ssh off`/`local` returns to local/session default behavior.
+3. **Live read-only smoke**: when a permitted target exists, run a short `pwd && whoami && hostname` or `printf ok` through the Hermes terminal SSH backend. Use raw `ssh` only as a control, not as proof that Hermes tool routing works.
+
 ## Gateway Restart Check
 
 If `/ssh` is unrecognized after code or command registry changes, check gateway logs and restart state. A valid check looks for both:
