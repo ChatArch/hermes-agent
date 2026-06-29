@@ -93,8 +93,9 @@ def _request_use(ctx: dict[str, str], args: dict[str, Any], task_id: str | None)
             ok=False,
             approval_required=True,
             reason=(
-                "Feishu MainThread/root chat cannot directly enter SSH mode. "
-                "Create a Thread first, for example with /ssh use <alias> -t."
+                "Feishu parent chats cannot directly enter SSH mode from the model tool. "
+                "Ask the user to run /ssh use <alias>; Hermes will create a Thread "
+                "by default and bind SSH there."
             ),
         )
 
@@ -199,11 +200,15 @@ def ssh_mode_tool(args: dict[str, Any], **kw) -> str:
 SSH_MODE_SCHEMA = {
     "name": "ssh_mode",
     "description": (
-        "Inspect or request the current gateway session's SSH backend. "
-        "Read-only status/list actions need no authorization. request_use only "
-        "switches when this session has a YOLO grant for the target; otherwise "
-        "it reports approval_required. request_local may clear only model-created "
-        "SSH bindings, never user-created sticky /ssh use bindings."
+        "Inspect or request the current gateway session's SSH backend. Use this "
+        "when the user asks you to check SSH state, list SSH targets, enter an "
+        "SSH target, or return to local mode. Read-only status/list actions need "
+        "no authorization. request_use switches only when this session has a "
+        "YOLO grant for the target; otherwise it reports approval_required and "
+        "the user should run /ssh yolo on <alias> or manually run /ssh use <alias> "
+        "(in a Feishu parent chat, /ssh use <alias> creates a Thread by default). "
+        "request_local is the model-facing equivalent of /ssh local, but may clear "
+        "only model-created SSH bindings, never user-created sticky /ssh use bindings."
     ),
     "parameters": {
         "type": "object",

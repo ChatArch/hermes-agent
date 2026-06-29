@@ -144,13 +144,29 @@ Use this matrix when validating that SSH Mode changed the intended state and not
 
 Runtime note: system-level SSH Mode is `terminal.backend=ssh` plus `TERMINAL_SSH_*` config. Section-level SSH Mode must be equivalent from the model/tool perspective: `build_environment_hints()` should report `Terminal backend: ssh`, and `terminal`, `read_file`/`write_file`/`patch`/`search_files`, and `execute_code` should all resolve the same SSH environment for the section until `/ssh local` clears it.
 
+## Model-Facing SSH Control
+
+Slash commands are user-facing. The model-facing surface is the `ssh_mode` tool, which must be in the default/core tool schema and in the `terminal` toolset. Use it when the user asks the model to inspect SSH state, list targets, enter a target, or return to local mode.
+
+`ssh_mode` actions:
+
+- `status`: read current section SSH binding and YOLO grant state.
+- `list_targets`: list Hermes-managed SSH target aliases with paths redacted.
+- `request_use`: ask to enter a target. It may switch only when the current section has a matching `/ssh yolo on <alias>` or `/ssh yolo on all` grant. Without that grant it returns `approval_required`, so the model should ask the user to either run `/ssh yolo on <alias>` for autonomous switching or run `/ssh use <alias>` manually.
+- `request_local`: model-facing equivalent of `/ssh local`. It may clear model-created bindings (`agent-yolo` / `agent-once`) but must not clear a user-created sticky `/ssh use` binding; for those, tell the user to run `/ssh local`.
+
+Important Feishu parent-chat boundary: the model tool cannot create Feishu Threads by itself. In a parent chat, `request_use` should report approval/instruction rather than silently binding the parent. Tell the user to run `/ssh use <alias>`; Hermes creates a Thread by default and binds SSH there.
+
+This mirrors the broader Hermes affordance pattern: slash commands are explicit user controls, while model-visible tools are how the model discovers safe actions it may initiate. SSH needs both, or the model will not know how to enter/exit even if `/ssh` works.
+
 ## SSH Mode Test Strategy
 
 A complete SSH Mode change needs three kinds of validation:
 
 1. **Interaction mock tests**: simulate Feishu parent chat and thread events. Assert `/ssh use <alias>` without `-t` creates a thread by default, writes exactly the new thread binding, and does not require the user to remember a flag. Also simulate an existing Feishu thread and assert `/ssh use <other-alias>` rewrites that thread's binding without touching the parent chat or other threads.
 2. **Backend-equivalence mock tests**: register section-scoped SSH overrides and assert prompt building plus terminal/file/code tools behave as if system-level `terminal.backend=ssh` were active. This must include: model environment hints reporting `Terminal backend: ssh`; terminal commands creating an SSH env; file tools using that same env for read/write/search/patch; `execute_code` using that same env; and `/ssh local` returning all future work to local/session-default behavior.
-3. **Live read-only smoke**: when a permitted target exists, run a short `pwd && whoami && hostname` or `printf ok` through the Hermes terminal SSH backend. Use raw `ssh` only as a control, not as proof that Hermes tool routing works.
+3. **Model-affordance tests**: assert `ssh_mode` appears in the default/core tool schema and in the `terminal` toolset; assert its schema mentions `request_use`, `request_local`, `/ssh yolo on <alias>`, `/ssh use <alias>`, and `/ssh local` so the model can discover how to enter and exit.
+4. **Live read-only smoke**: when a permitted target exists, run a short `pwd && whoami && hostname` or `printf ok` through the Hermes terminal SSH backend. Use raw `ssh` only as a control, not as proof that Hermes tool routing works.
 
 Minimum acceptance scenarios:
 
