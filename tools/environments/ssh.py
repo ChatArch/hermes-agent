@@ -61,8 +61,18 @@ class SSHEnvironment(BaseEnvironment):
     def __init__(self, host: str, user: str, cwd: str = "~",
                  timeout: int = 60, port: int = 22, key_path: str = "",
                  identities_only: bool = True, known_hosts_path: str | Path = "",
-                 host_key_policy: str = "accept-new"):
+                 host_key_policy: str = "accept-new", persistent: bool = True,
+                 sync_back_on_cleanup: bool = False):
         super().__init__(cwd=cwd, timeout=timeout)
+        self._persistent = bool(persistent)
+        # SSH is a live remote machine, not an ephemeral container filesystem.
+        # Pulling the whole remote ~/.hermes tree back during normal section
+        # switch/off or interpreter shutdown can block for minutes after the
+        # user's command has already completed. File tools operate directly over
+        # the SSH environment, so cleanup should only close the ControlMaster by
+        # default; callers can opt into sync-back explicitly if needed.
+        self._sync_back_on_cleanup = bool(sync_back_on_cleanup)
+        self._cleaned = False
         self.host = host
         self.user = user
         self.port = port
@@ -393,7 +403,11 @@ class SSHEnvironment(BaseEnvironment):
         return _popen_bash(cmd, stdin_data)
 
     def cleanup(self):
-        if self._sync_manager:
+        if getattr(self, "_cleaned", False):
+            return
+        self._cleaned = True
+
+        if self._sync_manager and self._sync_back_on_cleanup:
             logger.info("SSH: syncing files from sandbox...")
             self._sync_manager.sync_back()
 
