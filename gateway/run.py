@@ -15800,6 +15800,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 set_current_session_key,
                 unregister_gateway_notify,
             )
+            from tools.ssh_mode_tool import (
+                register_gateway_ssh_grant_notify,
+                resolve_gateway_ssh_grant,
+                unregister_gateway_ssh_grant_notify,
+            )
 
             def _approval_notify_sync(approval_data: dict) -> None:
                 """Send the approval request to the user from the agent thread.
@@ -15880,6 +15885,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _approval_send_fut.result(timeout=15)
                 except Exception as _e:
                     logger.error("Failed to send approval request: %s", _e)
+
+            def _ssh_grant_notify_sync(grant_data: dict) -> None:
+                """Send model-initiated SSH authorization prompts to the user."""
+                _status_adapter.pause_typing_for_chat(_status_chat_id)
+                alias = str(grant_data.get("alias") or "")
+                reason_text = str(grant_data.get("reason") or "")
+                cwd = grant_data.get("cwd") or None
+
+                send_ssh_grant_approval: Any = getattr(_status_adapter, "send_ssh_grant_approval", None)
+                if not callable(send_ssh_grant_approval):
+                    logger.warning(
+                        "SSH grant approval card unavailable for this adapter; returning approval-required guidance for %s",
+                        alias,
+                    )
+                    raise RuntimeError("SSH grant approval card unavailable for this adapter")
+
+                try:
+                    _grant_fut = safe_schedule_threadsafe(
+                        send_ssh_grant_approval(
+                            chat_id=_status_chat_id,
+                            session_key=_approval_session_key,
+                            alias=alias,
+                            reason=reason_text,
+                            cwd=cwd,
+                            metadata=_status_thread_metadata,
+                        ),
+                        _loop_for_step,
+                        logger=logger,
+                        log_message="send_ssh_grant_approval scheduling error",
+                    )
+                    if _grant_fut is None:
+                        raise RuntimeError("send_ssh_grant_approval: loop unavailable")
+                    _grant_result = _grant_fut.result(timeout=15)
+                    if _grant_result.success:
+                        return
+                    raise RuntimeError(str(_grant_result.error or "send_ssh_grant_approval failed"))
+                except Exception as _e:
+                    logger.warning(
+                        "Button-based SSH grant approval unavailable; returning approval-required guidance for %s: %s",
+                        alias,
+                        _e,
+                    )
+                    raise
 
             # Keep real user text separate from API-only recovery guidance.  If
             # an auto-continue note is prepended below, persist the original
@@ -15981,6 +16029,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            register_gateway_ssh_grant_notify(_approval_session_key, _ssh_grant_notify_sync)
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -16030,6 +16079,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)
+                unregister_gateway_ssh_grant_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
                 # threads don't hang past the end of the run (interrupt,
                 # completion, gateway shutdown).  Idempotent.

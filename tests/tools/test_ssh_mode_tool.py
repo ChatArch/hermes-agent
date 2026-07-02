@@ -82,6 +82,171 @@ def test_ssh_mode_request_use_requires_yolo_in_thread(monkeypatch, tmp_path):
     assert get_ssh_binding(session_key) is None
 
 
+def test_ssh_mode_request_use_can_wait_for_gateway_card_allow_current(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import tools.ssh_mode_tool as ssh_mode_tool
+    from gateway.ssh_bindings import get_ssh_yolo_grant
+    from tools.terminal_tool import clear_task_env_overrides
+
+    monkeypatch.setattr(
+        ssh_mode_tool,
+        "load_ssh_targets",
+        lambda: [
+            SshTarget(
+                alias="cubebot",
+                host="127.0.0.1",
+                user="cubebot",
+                cwd="/home/cubebot/Playground",
+            )
+        ],
+    )
+    session_key = "agent:main:feishu:group:oc_chat:omt_thread"
+    clear_task_env_overrides("session-1")
+    seen = []
+
+    def _notify(data):
+        seen.append(data)
+        ssh_mode_tool.resolve_gateway_ssh_grant(session_key, "allow_current")
+
+    ssh_mode_tool.register_gateway_ssh_grant_notify(session_key, _notify)
+    tokens = set_session_vars(
+        platform="feishu",
+        chat_id="oc_chat",
+        thread_id="omt_thread",
+        session_key=session_key,
+        session_id="session-1",
+    )
+    try:
+        result = _call({"action": "request_use", "alias": "cubebot", "reason": "test"})
+    finally:
+        ssh_mode_tool.unregister_gateway_ssh_grant_notify(session_key)
+        clear_session_vars(tokens)
+        clear_task_env_overrides("session-1")
+
+    assert seen == [
+        {
+            "kind": "ssh_grant",
+            "session_key": session_key,
+            "alias": "cubebot",
+            "reason": "test",
+            "cwd": None,
+        }
+    ]
+    assert result["ok"] is True
+    assert result["backend"] == "ssh"
+    assert get_ssh_binding(session_key).alias == "cubebot"
+    assert get_ssh_yolo_grant(session_key).allows("cubebot") is True
+
+
+def test_ssh_mode_request_use_gateway_card_allow_all_grants_all(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import tools.ssh_mode_tool as ssh_mode_tool
+    from gateway.ssh_bindings import get_ssh_yolo_grant
+    from tools.terminal_tool import clear_task_env_overrides
+
+    monkeypatch.setattr(
+        ssh_mode_tool,
+        "load_ssh_targets",
+        lambda: [SshTarget(alias="cubebot", host="127.0.0.1", user="cubebot")],
+    )
+    session_key = "agent:main:feishu:group:oc_chat:omt_thread"
+
+    def _notify(_data):
+        ssh_mode_tool.resolve_gateway_ssh_grant(session_key, "allow_all")
+
+    ssh_mode_tool.register_gateway_ssh_grant_notify(session_key, _notify)
+    tokens = set_session_vars(
+        platform="feishu",
+        chat_id="oc_chat",
+        thread_id="omt_thread",
+        session_key=session_key,
+        session_id="session-1",
+    )
+    try:
+        result = _call({"action": "request_use", "alias": "cubebot"})
+    finally:
+        ssh_mode_tool.unregister_gateway_ssh_grant_notify(session_key)
+        clear_session_vars(tokens)
+        clear_task_env_overrides("session-1")
+
+    assert result["ok"] is True
+    grant = get_ssh_yolo_grant(session_key)
+    assert grant.allows_all is True
+    assert grant.allows("some-other-target") is True
+
+
+def test_ssh_mode_request_use_gateway_card_deny_does_not_bind(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import tools.ssh_mode_tool as ssh_mode_tool
+    from tools.terminal_tool import clear_task_env_overrides
+
+    monkeypatch.setattr(
+        ssh_mode_tool,
+        "load_ssh_targets",
+        lambda: [SshTarget(alias="cubebot", host="127.0.0.1", user="cubebot")],
+    )
+    session_key = "agent:main:feishu:group:oc_chat:omt_thread"
+
+    def _notify(_data):
+        ssh_mode_tool.resolve_gateway_ssh_grant(session_key, "deny")
+
+    ssh_mode_tool.register_gateway_ssh_grant_notify(session_key, _notify)
+    tokens = set_session_vars(
+        platform="feishu",
+        chat_id="oc_chat",
+        thread_id="omt_thread",
+        session_key=session_key,
+        session_id="session-1",
+    )
+    try:
+        result = _call({"action": "request_use", "alias": "cubebot"})
+    finally:
+        ssh_mode_tool.unregister_gateway_ssh_grant_notify(session_key)
+        clear_session_vars(tokens)
+        clear_task_env_overrides("session-1")
+
+    assert result["ok"] is False
+    assert result["denied"] is True
+    assert get_ssh_binding(session_key) is None
+
+
+def test_ssh_mode_request_use_gateway_card_unavailable_falls_back_to_guidance(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import tools.ssh_mode_tool as ssh_mode_tool
+    from tools.terminal_tool import clear_task_env_overrides
+
+    monkeypatch.setattr(
+        ssh_mode_tool,
+        "load_ssh_targets",
+        lambda: [SshTarget(alias="cubebot", host="127.0.0.1", user="cubebot")],
+    )
+    session_key = "agent:main:slack:channel:C123:T456"
+
+    def _notify(_data):
+        raise RuntimeError("card unavailable")
+
+    ssh_mode_tool.register_gateway_ssh_grant_notify(session_key, _notify)
+    tokens = set_session_vars(
+        platform="slack",
+        chat_id="C123",
+        thread_id="T456",
+        session_key=session_key,
+        session_id="session-1",
+    )
+    try:
+        result = _call({"action": "request_use", "alias": "cubebot"})
+    finally:
+        ssh_mode_tool.unregister_gateway_ssh_grant_notify(session_key)
+        clear_session_vars(tokens)
+        clear_task_env_overrides("session-1")
+
+    assert result["ok"] is False
+    assert result["approval_required"] is True
+    assert "denied" not in result
+    assert "no YOLO grant" in result["reason"]
+    assert get_ssh_binding(session_key) is None
+
+
 def test_ssh_mode_request_use_switches_when_yolo_allows(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     import tools.ssh_mode_tool as ssh_mode_tool

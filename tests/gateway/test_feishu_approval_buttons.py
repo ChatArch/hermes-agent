@@ -58,6 +58,7 @@ def _make_card_action_data(
     action_value: dict,
     chat_id: str = "oc_12345",
     open_id: str = "ou_user1",
+    user_id: str = "",
     token: str = "tok_abc",
 ) -> SimpleNamespace:
     """Create a mock Feishu card action callback data object."""
@@ -65,7 +66,7 @@ def _make_card_action_data(
         event=SimpleNamespace(
             token=token,
             context=SimpleNamespace(open_chat_id=chat_id),
-            operator=SimpleNamespace(open_id=open_id),
+            operator=SimpleNamespace(open_id=open_id, user_id=user_id),
             action=SimpleNamespace(
                 tag="button",
                 value=action_value,
@@ -209,6 +210,82 @@ class TestFeishuExecApproval:
 
 
 # ===========================================================================
+# send_ssh_grant_approval — SSH mode authorization card
+# ===========================================================================
+
+class TestFeishuSshGrantApproval:
+    """Test model-initiated SSH grant approval cards."""
+
+    @pytest.mark.asyncio
+    async def test_sends_interactive_ssh_grant_card(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_ssh_001"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            result = await adapter.send_ssh_grant_approval(
+                chat_id="oc_12345",
+                session_key="agent:main:feishu:group:oc_12345:omt_thread",
+                alias="cubebot",
+                reason="need to inspect logs",
+                cwd="/home/cubebot/Playground",
+                metadata={"thread_id": "omt_thread"},
+            )
+
+        assert result.success is True
+        assert result.message_id == "msg_ssh_001"
+        kwargs = mock_send.call_args[1]
+        assert kwargs["chat_id"] == "oc_12345"
+        assert kwargs["msg_type"] == "interactive"
+        assert kwargs["metadata"] == {"thread_id": "omt_thread"}
+
+        card = json.loads(kwargs["payload"])
+        assert card["header"]["template"] == "orange"
+        assert "SSH Authorization Required" in card["header"]["title"]["content"]
+        content = card["elements"][0]["content"]
+        assert "cubebot" in content
+        assert "need to inspect logs" in content
+        assert "/home/cubebot/Playground" in content
+
+        actions = card["elements"][1]["actions"]
+        assert [a["value"]["hermes_ssh_grant_action"] for a in actions] == [
+            "allow_current", "allow_all", "deny"
+        ]
+        assert all("ssh_grant_id" in a["value"] for a in actions)
+
+    @pytest.mark.asyncio
+    async def test_stores_ssh_grant_state(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_ssh_002"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            await adapter.send_ssh_grant_approval(
+                chat_id="oc_12345",
+                session_key="my-session-key",
+                alias="cubebot",
+            )
+
+        assert len(adapter._ssh_grant_state) == 1
+        grant_id = list(adapter._ssh_grant_state.keys())[0]
+        state = adapter._ssh_grant_state[grant_id]
+        assert state["session_key"] == "my-session-key"
+        assert state["message_id"] == "msg_ssh_002"
+        assert state["chat_id"] == "oc_12345"
+        assert state["alias"] == "cubebot"
+
+
+# ===========================================================================
 # send_update_prompt — interactive card with buttons
 # ===========================================================================
 
@@ -313,6 +390,7 @@ class TestResolveApproval:
     @pytest.mark.asyncio
     async def test_resolves_once(self):
         adapter = _make_adapter()
+        adapter._allowed_group_users = {"ou_user1"}
         adapter._approval_state[1] = {
             "session_key": "agent:main:feishu:group:oc_12345",
             "message_id": "msg_001",
@@ -328,6 +406,7 @@ class TestResolveApproval:
     @pytest.mark.asyncio
     async def test_resolves_deny(self):
         adapter = _make_adapter()
+        adapter._allowed_group_users = {"ou_user1"}
         adapter._approval_state[2] = {
             "session_key": "some-session",
             "message_id": "msg_002",
@@ -342,6 +421,7 @@ class TestResolveApproval:
     @pytest.mark.asyncio
     async def test_resolves_session(self):
         adapter = _make_adapter()
+        adapter._allowed_group_users = {"ou_user1"}
         adapter._approval_state[3] = {
             "session_key": "sess-3",
             "message_id": "msg_003",
@@ -356,6 +436,7 @@ class TestResolveApproval:
     @pytest.mark.asyncio
     async def test_resolves_always(self):
         adapter = _make_adapter()
+        adapter._allowed_group_users = {"ou_user1"}
         adapter._approval_state[4] = {
             "session_key": "sess-4",
             "message_id": "msg_004",
@@ -379,6 +460,8 @@ class TestResolveApproval:
     @pytest.mark.asyncio
     async def test_unauthorized_click_does_not_resolve(self):
         adapter = _make_adapter()
+        adapter._group_policy = "allowlist"
+        adapter._default_group_policy = "allowlist"
         adapter._admins = {"ou_admin"}
         adapter._approval_state[5] = {
             "session_key": "sess-5",
@@ -406,6 +489,72 @@ class TestResolveApproval:
 
         mock_resolve.assert_not_called()
         assert 6 in adapter._approval_state
+
+
+    @pytest.mark.asyncio
+    async def test_admin_user_id_resolves_approval(self):
+        adapter = _make_adapter()
+        adapter._group_policy = "allowlist"
+        adapter._default_group_policy = "allowlist"
+        adapter._admins = {"user_admin"}
+        adapter._approval_state[7] = {
+            "session_key": "sess-user-admin",
+            "message_id": "msg_007",
+            "chat_id": "oc_12345",
+        }
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._resolve_approval(
+                7,
+                "once",
+                "Admin",
+                open_id="ou_not_admin",
+                user_id="user_admin",
+                chat_id="oc_12345",
+            )
+
+        mock_resolve.assert_called_once_with("sess-user-admin", "once")
+        assert 7 not in adapter._approval_state
+
+
+class TestResolveSshGrant:
+    """Test _resolve_ssh_grant pops state and calls resolve_gateway_ssh_grant."""
+
+    @pytest.mark.asyncio
+    async def test_resolves_allow_current(self):
+        adapter = _make_adapter()
+        adapter._allowed_group_users = {"ou_user1"}
+        adapter._ssh_grant_state[1] = {
+            "session_key": "sess-ssh",
+            "message_id": "msg_ssh",
+            "chat_id": "oc_12345",
+            "alias": "cubebot",
+        }
+
+        with patch("tools.ssh_mode_tool.resolve_gateway_ssh_grant", return_value=1) as mock_resolve:
+            await adapter._resolve_ssh_grant(1, "allow_current", "Norbert", open_id="ou_user1", chat_id="oc_12345")
+
+        mock_resolve.assert_called_once_with("sess-ssh", "allow_current")
+        assert 1 not in adapter._ssh_grant_state
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_click_does_not_resolve(self):
+        adapter = _make_adapter()
+        adapter._group_policy = "allowlist"
+        adapter._default_group_policy = "allowlist"
+        adapter._admins = {"ou_admin"}
+        adapter._ssh_grant_state[2] = {
+            "session_key": "sess-ssh",
+            "message_id": "msg_ssh",
+            "chat_id": "oc_12345",
+            "alias": "cubebot",
+        }
+
+        with patch("tools.ssh_mode_tool.resolve_gateway_ssh_grant") as mock_resolve:
+            await adapter._resolve_ssh_grant(2, "allow_all", "Mallory", open_id="ou_intruder", chat_id="oc_12345")
+
+        mock_resolve.assert_not_called()
+        assert 2 in adapter._ssh_grant_state
 
 # ===========================================================================
 # _handle_card_action_event — non-approval card actions
@@ -524,6 +673,133 @@ class TestCardActionCallbackResponse:
         assert card["header"]["template"] == "red"
         assert "Denied" in card["header"]["title"]["content"]
 
+    def test_returns_card_for_ssh_grant_action(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_user1"}
+        adapter._ssh_grant_state[7] = {
+            "session_key": "sess-ssh",
+            "message_id": "msg-ssh",
+            "chat_id": "oc_12345",
+            "alias": "cubebot",
+        }
+        data = _make_card_action_data(
+            {"hermes_ssh_grant_action": "allow_all", "ssh_grant_id": 7},
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response.card is not None
+        card = response.card.data
+        assert card["header"]["template"] == "green"
+        assert "SSH access allowed" in card["header"]["title"]["content"]
+        assert "all" in card["elements"][0]["content"]
+
+    def test_open_policy_allows_ssh_grant_card_without_global_allowlist(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._group_policy = "open"
+        adapter._default_group_policy = "open"
+        adapter._allowed_group_users = set()
+        adapter._admins = set()
+        adapter._ssh_grant_state[8] = {
+            "session_key": "sess-ssh-open",
+            "message_id": "msg-ssh-open",
+            "chat_id": "oc_12345",
+            "alias": "cubebot",
+        }
+        data = _make_card_action_data(
+            {"hermes_ssh_grant_action": "allow_current", "ssh_grant_id": 8},
+            open_id="ou_anyone",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response.card is not None
+        card = response.card.data
+        assert card["header"]["template"] == "green"
+        assert "SSH access allowed" in card["header"]["title"]["content"]
+
+    def test_admin_user_id_allows_approval_card_click(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._default_group_policy = "admin_only"
+        adapter._admins = {"user_admin"}
+        adapter._allowed_group_users = set()
+        adapter._approval_state[8] = {
+            "session_key": "sess-admin-user-id",
+            "message_id": "msg-admin-user-id",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 8},
+            open_id="ou_not_admin",
+            user_id="user_admin",
+        )
+        adapter._sender_name_cache["ou_not_admin"] = ("Admin", 9999999999)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response.card is not None
+        card = response.card.data
+        assert card["header"]["template"] == "green"
+        assert "Approved once" in card["header"]["title"]["content"]
+
+    def test_admin_only_policy_blocks_allowlisted_non_admin_card_click(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._group_policy = "admin_only"
+        adapter._default_group_policy = "admin_only"
+        adapter._allowed_group_users = {"ou_allowed"}
+        adapter._admins = {"ou_admin"}
+        adapter._approval_state[9] = {
+            "session_key": "sess-admin-only",
+            "message_id": "msg-admin-only",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 9},
+            open_id="ou_allowed",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+
+    def test_disabled_policy_blocks_allowlisted_card_click(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._group_policy = "disabled"
+        adapter._default_group_policy = "disabled"
+        adapter._allowed_group_users = {"ou_allowed"}
+        adapter._approval_state[10] = {
+            "session_key": "sess-disabled",
+            "message_id": "msg-disabled",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 10},
+            open_id="ou_allowed",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+
     def test_ignores_missing_approval_id(self, _patch_callback_card_types):
         adapter = _make_adapter()
         adapter._loop = MagicMock()
@@ -597,6 +873,8 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._group_policy = "allowlist"
+        adapter._default_group_policy = "allowlist"
         adapter._allowed_group_users = {"ou_allowed"}
         adapter._approval_state[5] = {
             "session_key": "sess-5",
@@ -739,6 +1017,8 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._group_policy = "allowlist"
+        adapter._default_group_policy = "allowlist"
         adapter._update_prompt_state[1] = {
             "session_key": "sess-up-1",
             "message_id": "msg_up_006",
@@ -761,6 +1041,8 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._group_policy = "allowlist"
+        adapter._default_group_policy = "allowlist"
         adapter._update_prompt_state[7] = {
             "session_key": "sess-up-7",
             "message_id": "msg_up_007",
