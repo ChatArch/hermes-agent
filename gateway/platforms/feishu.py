@@ -1496,6 +1496,9 @@ class FeishuAdapter(BasePlatformAdapter):
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
+        # SSH grant button state (grant_id → {session_key, message_id, chat_id, alias})
+        self._ssh_grant_state: Dict[int, Dict[str, str]] = {}
+        self._ssh_grant_counter = itertools.count(1)
         # Update prompt button state (prompt_id → {session_key, message_id, chat_id})
         self._update_prompt_state: Dict[int, Dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
@@ -1617,6 +1620,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._allowed_group_users = set(settings.allowed_group_users)
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
+        self._has_explicit_default_group_policy = bool(settings.default_group_policy)
         self._group_rules = settings.group_rules
         self._bot_open_id = settings.bot_open_id
         self._bot_user_id = settings.bot_user_id
@@ -2022,6 +2026,80 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
+    async def send_ssh_grant_approval(
+        self,
+        chat_id: str,
+        session_key: str,
+        alias: str,
+        reason: str = "",
+        cwd: str | None = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive card asking for model-initiated SSH authorization."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            grant_id = next(self._ssh_grant_counter)
+
+            def _btn(label: str, action_name: str, btn_type: str = "default") -> dict:
+                return {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": label},
+                    "type": btn_type,
+                    "value": {
+                        "hermes_ssh_grant_action": action_name,
+                        "ssh_grant_id": grant_id,
+                    },
+                }
+
+            body_lines = [
+                f"**Target:** `{alias}`",
+            ]
+            if cwd:
+                body_lines.append(f"**Remote cwd:** `{cwd}`")
+            if reason:
+                body_lines.append(f"**Reason:** {reason}")
+            body_lines.append("\nChoose how much SSH access to grant for this Thread.")
+            card = {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"content": "🔐 SSH Authorization Required", "tag": "plain_text"},
+                    "template": "orange",
+                },
+                "elements": [
+                    {"tag": "markdown", "content": "\n".join(body_lines)},
+                    {
+                        "tag": "action",
+                        "actions": [
+                            _btn("✅ Allow Current", "allow_current", "primary"),
+                            _btn("✅ Allow All", "allow_all"),
+                            _btn("❌ Deny", "deny", "danger"),
+                        ],
+                    },
+                ],
+            }
+
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=json.dumps(card, ensure_ascii=False),
+                reply_to=None,
+                metadata=metadata,
+            )
+            result = self._finalize_send_result(response, "send_ssh_grant_approval failed")
+            if result.success:
+                self._ssh_grant_state[grant_id] = {
+                    "session_key": session_key,
+                    "message_id": result.message_id or "",
+                    "chat_id": chat_id,
+                    "alias": alias,
+                }
+            return result
+        except Exception as exc:
+            logger.warning("[Feishu] send_ssh_grant_approval failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
     @staticmethod
     def _build_update_prompt_card(*, prompt: str, default: str, prompt_id: int) -> Dict[str, Any]:
         default_hint = f"\n\nDefault: `{default}`" if default else ""
@@ -2106,6 +2184,30 @@ class FeishuAdapter(BasePlatformAdapter):
                     "tag": "markdown",
                     "content": f"{icon} **{label}** by {user_name}",
                 },
+            ],
+        }
+
+    @staticmethod
+    def _build_resolved_ssh_grant_card(*, choice: str, user_name: str, alias: str = "") -> Dict[str, Any]:
+        denied = choice == "deny"
+        if choice == "allow_all":
+            label = "SSH access allowed for all targets"
+            detail = "all targets"
+        elif choice == "allow_current":
+            label = "SSH access allowed"
+            detail = f"target `{alias}`" if alias else "the requested target"
+        else:
+            label = "SSH access denied"
+            detail = f"target `{alias}`" if alias else "the requested target"
+        icon = "❌" if denied else "✅"
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": f"{icon} {label}", "tag": "plain_text"},
+                "template": "red" if denied else "green",
+            },
+            "elements": [
+                {"tag": "markdown", "content": f"{icon} **{label}** for {detail} by {user_name}"},
             ],
         }
 
@@ -2629,9 +2731,15 @@ class FeishuAdapter(BasePlatformAdapter):
             action_value.get("hermes_update_prompt_action")
             if isinstance(action_value, dict) else None
         )
+        ssh_grant_action = (
+            action_value.get("hermes_ssh_grant_action")
+            if isinstance(action_value, dict) else None
+        )
 
         if hermes_action:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
+        if ssh_grant_action:
+            return self._handle_ssh_grant_card_action(event=event, action_value=action_value, loop=loop)
         if update_prompt_action:
             return self._handle_update_prompt_card_action(
                 event=event,
@@ -2663,15 +2771,82 @@ class FeishuAdapter(BasePlatformAdapter):
         future.add_done_callback(self._log_background_failure)
         return True
 
-    def _is_interactive_operator_authorized(self, open_id: str) -> bool:
-        """Return whether this card-action operator may answer gated prompts."""
-        normalized = str(open_id or "").strip()
-        if not normalized:
+    def _is_interactive_operator_authorized(self, sender_id: Any, chat_id: str) -> bool:
+        """Return whether this card-action operator may answer gated prompts.
+
+        Card callbacks do not pass through the normal inbound message guard, so
+        they must enforce the same group/admin policy here.  Keep the default
+        fail-closed unless the operator is explicitly allowed/admin, a per-chat
+        rule allows them, or the operator configured an explicit open/blacklist
+        policy for this chat class.
+        """
+        sender_open_id = str(getattr(sender_id, "open_id", "") or "").strip()
+        sender_user_id = str(getattr(sender_id, "user_id", "") or "").strip()
+        sender_ids = {sender_open_id, sender_user_id} - {""}
+        if not sender_ids:
             return False
-        allowed_ids = set(self._admins) | set(self._allowed_group_users)
-        if not allowed_ids:
+        if "*" in self._admins or "*" in self._allowed_group_users:
             return True
-        return "*" in allowed_ids or normalized in allowed_ids
+        if self._admins and (sender_ids & self._admins):
+            return True
+        return self._allow_group_message(sender_id, chat_id, is_bot=False)
+
+    def _handle_ssh_grant_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
+        """Schedule SSH grant resolution and build the synchronous callback response."""
+        grant_id = action_value.get("ssh_grant_id")
+        if grant_id is None:
+            logger.debug("[Feishu] SSH grant card action missing ssh_grant_id, ignoring")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        state = self._ssh_grant_state.get(grant_id)
+        if not state:
+            logger.debug("[Feishu] SSH grant %s already resolved or unknown", grant_id)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        choice = str(action_value.get("hermes_ssh_grant_action") or "deny").strip().lower()
+        if choice not in {"allow_current", "allow_all", "deny"}:
+            choice = "deny"
+
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        user_id = str(getattr(operator, "user_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
+        if not self._is_interactive_operator_authorized(sender_id, state.get("chat_id", "")):
+            logger.warning("[Feishu] Unauthorized SSH grant click by %s", open_id or "<unknown>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
+            logger.warning(
+                "[Feishu] SSH grant callback chat mismatch for %s (expected=%s, got=%s)",
+                grant_id,
+                expected_chat_id,
+                callback_chat_id,
+            )
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        user_name = self._get_cached_sender_name(open_id) or open_id
+        if not self._submit_on_loop(
+            loop,
+            self._resolve_ssh_grant(
+                grant_id=grant_id,
+                choice=choice,
+                user_name=user_name,
+                open_id=open_id,
+                user_id=user_id,
+                chat_id=callback_chat_id,
+            ),
+        ):
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = self._build_resolved_ssh_grant_card(choice=choice, user_name=user_name, alias=state.get("alias", ""))
+            response.card = card
+        return response
 
     def _handle_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
         """Schedule approval resolution and build the synchronous callback response."""
@@ -2687,8 +2862,9 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
-        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+        user_id = str(getattr(operator, "user_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
+        if not self._is_interactive_operator_authorized(sender_id, state.get("chat_id", "")):
             logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -2714,6 +2890,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 choice=choice,
                 user_name=user_name,
                 open_id=open_id,
+                user_id=user_id,
                 chat_id=chat_id,
             ),
         ):
@@ -2747,8 +2924,9 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
-        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+        user_id = str(getattr(operator, "user_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
+        if not self._is_interactive_operator_authorized(sender_id, state.get("chat_id", "")):
             logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -2771,6 +2949,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 answer,
                 user_name,
                 open_id=open_id,
+                user_id=user_id,
                 chat_id=callback_chat_id,
             ),
         ):
@@ -2786,6 +2965,45 @@ class FeishuAdapter(BasePlatformAdapter):
             response.card = card
         return response
 
+    async def _resolve_ssh_grant(
+        self,
+        grant_id: Any,
+        choice: str,
+        user_name: str,
+        *,
+        open_id: str = "",
+        user_id: str = "",
+        chat_id: str = "",
+    ) -> None:
+        """Pop SSH grant state and unblock the waiting ssh_mode tool call."""
+        state = self._ssh_grant_state.get(grant_id)
+        if not state:
+            logger.debug("[Feishu] SSH grant %s already resolved or unknown", grant_id)
+            return
+        if not self._is_interactive_operator_authorized(SimpleNamespace(open_id=open_id, user_id=user_id), state.get("chat_id", "")):
+            logger.warning("[Feishu] Unauthorized SSH grant click by %s for grant %s", open_id or "<unknown>", grant_id)
+            return
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if expected_chat_id and chat_id and expected_chat_id != chat_id:
+            logger.warning(
+                "[Feishu] SSH grant %s chat mismatch (expected=%s, got=%s)",
+                grant_id, expected_chat_id, chat_id,
+            )
+            return
+        state = self._ssh_grant_state.pop(grant_id, None)
+        if not state:
+            logger.debug("[Feishu] SSH grant %s already resolved while validating callback", grant_id)
+            return
+        try:
+            from tools.ssh_mode_tool import resolve_gateway_ssh_grant
+            count = resolve_gateway_ssh_grant(state["session_key"], choice)
+            logger.info(
+                "Feishu SSH grant button resolved %d request(s) for session %s (choice=%s, alias=%s, user=%s)",
+                count, state["session_key"], choice, state.get("alias", ""), user_name,
+            )
+        except Exception as exc:
+            logger.error("Failed to resolve SSH grant from Feishu button: %s", exc)
+
     async def _resolve_approval(
         self,
         approval_id: Any,
@@ -2793,6 +3011,7 @@ class FeishuAdapter(BasePlatformAdapter):
         user_name: str,
         *,
         open_id: str = "",
+        user_id: str = "",
         chat_id: str = "",
     ) -> None:
         """Pop approval state and unblock the waiting agent thread."""
@@ -2800,7 +3019,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not state:
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
             return
-        if not self._is_interactive_operator_authorized(open_id):
+        if not self._is_interactive_operator_authorized(SimpleNamespace(open_id=open_id, user_id=user_id), state.get("chat_id", "")):
             logger.warning("[Feishu] Unauthorized approval click by %s for approval %s", open_id or "<unknown>", approval_id)
             return
         expected_chat_id = str(state.get("chat_id", "") or "")
@@ -2831,6 +3050,7 @@ class FeishuAdapter(BasePlatformAdapter):
         user_name: str,
         *,
         open_id: str = "",
+        user_id: str = "",
         chat_id: str = "",
     ) -> None:
         """Persist an update prompt answer for the detached update process."""
@@ -2839,8 +3059,8 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Update prompt %s already resolved or unknown", prompt_id)
             return
         if open_id:
-            sender_id = SimpleNamespace(open_id=open_id, user_id="")
-            if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+            sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
+            if not self._is_interactive_operator_authorized(sender_id, state.get("chat_id", "")):
                 logger.warning("[Feishu] Unauthorized update prompt click by %s for prompt %s", open_id, prompt_id)
                 return
         expected_chat_id = str(state.get("chat_id", "") or "")

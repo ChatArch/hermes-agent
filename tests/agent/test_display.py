@@ -137,6 +137,27 @@ class TestBuildToolPreview:
         assert build_tool_preview("terminal", "") is None
         assert build_tool_preview("terminal", []) is None
 
+    def test_ssh_mode_request_use_preview_is_actionable_and_redacted(self):
+        result = build_tool_preview(
+            "ssh_mode",
+            {
+                "action": "request_use",
+                "alias": "tencent.am",
+                "cwd": "/home/zhihong/Playground",
+                "identity_file": "/Users/rexwzh/.ssh/private-key",
+                "ssh_key": "/Users/rexwzh/.ssh/private-key",
+            },
+        )
+
+        assert result == "request_use tencent.am cwd=/home/zhihong/Playground"
+        assert "private-key" not in result
+        assert "/Users/rexwzh/.ssh" not in result
+
+    def test_ssh_mode_request_local_preview_mentions_return_to_local(self):
+        result = build_tool_preview("ssh_mode", {"action": "request_local", "reason": "done"})
+
+        assert result == "request_local -> local"
+
 
 class TestCuteToolMessagePreviewLength:
     def test_terminal_preview_unlimited_when_config_is_zero(self):

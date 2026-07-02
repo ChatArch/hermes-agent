@@ -7,10 +7,13 @@ switch only when the user has granted YOLO for the target.
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
+import threading
 
 from gateway.session_context import get_session_env
 from gateway.ssh_bindings import (
+    add_ssh_yolo_alias,
     clear_ssh_binding,
     get_ssh_binding,
     get_ssh_yolo_grant,
@@ -23,6 +26,86 @@ from tools.terminal_tool import check_terminal_requirements
 
 
 _AGENT_BINDING_SOURCES = {"agent-once", "agent-yolo"}
+_SSH_GRANT_TIMEOUT_SECONDS = 300
+
+
+@dataclass
+class _SshGrantEntry:
+    data: dict[str, Any]
+    event: threading.Event
+    result: str | None = None
+
+
+_grant_lock = threading.RLock()
+_gateway_grant_queues: dict[str, list[_SshGrantEntry]] = {}
+_gateway_grant_notify_cbs: dict[str, Callable[[dict[str, Any]], None]] = {}
+
+
+def register_gateway_ssh_grant_notify(session_key: str, cb) -> None:
+    """Register a per-session callback for model-initiated SSH grants."""
+    if not session_key:
+        return
+    with _grant_lock:
+        _gateway_grant_notify_cbs[session_key] = cb
+
+
+def unregister_gateway_ssh_grant_notify(session_key: str) -> None:
+    """Unregister SSH grant callback and release any blocked waiters."""
+    if not session_key:
+        return
+    with _grant_lock:
+        _gateway_grant_notify_cbs.pop(session_key, None)
+        entries = _gateway_grant_queues.pop(session_key, [])
+    for entry in entries:
+        entry.result = "deny"
+        entry.event.set()
+
+
+def resolve_gateway_ssh_grant(session_key: str, choice: str) -> int:
+    """Resolve the oldest pending SSH grant request for *session_key*."""
+    if not session_key:
+        return 0
+    clean = str(choice or "").strip().lower()
+    if clean not in {"allow_current", "allow_all", "deny"}:
+        clean = "deny"
+    with _grant_lock:
+        queue = _gateway_grant_queues.get(session_key)
+        if not queue:
+            return 0
+        entry = queue.pop(0)
+        if not queue:
+            _gateway_grant_queues.pop(session_key, None)
+    entry.result = clean
+    entry.event.set()
+    return 1
+
+
+def _await_gateway_ssh_grant(session_key: str, data: dict[str, Any]) -> str | None:
+    with _grant_lock:
+        notify_cb = _gateway_grant_notify_cbs.get(session_key)
+        if notify_cb is None:
+            return None
+        entry = _SshGrantEntry(data=data, event=threading.Event())
+        _gateway_grant_queues.setdefault(session_key, []).append(entry)
+    try:
+        notify_cb(data)
+    except Exception:
+        with _grant_lock:
+            queue = _gateway_grant_queues.get(session_key, [])
+            if entry in queue:
+                queue.remove(entry)
+            if not queue:
+                _gateway_grant_queues.pop(session_key, None)
+        return None
+    if not entry.event.wait(_SSH_GRANT_TIMEOUT_SECONDS):
+        with _grant_lock:
+            queue = _gateway_grant_queues.get(session_key, [])
+            if entry in queue:
+                queue.remove(entry)
+            if not queue:
+                _gateway_grant_queues.pop(session_key, None)
+        return "timeout"
+    return entry.result or "deny"
 
 
 def _current_context(task_id: str | None = None) -> dict[str, str]:
@@ -115,16 +198,41 @@ def _request_use(ctx: dict[str, str], args: dict[str, Any], task_id: str | None)
 
     grant = get_ssh_yolo_grant(session_key)
     if not grant.allows(alias):
-        return tool_result(
-            ok=False,
-            approval_required=True,
-            alias=alias,
-            reason=(
-                "This session has no YOLO grant for the requested SSH target. "
-                f"Ask the user to run /ssh yolo on {alias}, or /ssh yolo on all, inside this Thread."
-            ),
-            yolo=_yolo_summary(session_key),
+        decision = _await_gateway_ssh_grant(
+            session_key,
+            {
+                "kind": "ssh_grant",
+                "session_key": session_key,
+                "alias": alias,
+                "reason": reason,
+                "cwd": cwd,
+            },
         )
+        if decision == "allow_current":
+            add_ssh_yolo_alias(session_key, alias)
+        elif decision == "allow_all":
+            add_ssh_yolo_alias(session_key, "all")
+        elif decision in {"deny", "timeout"}:
+            return tool_result(
+                ok=False,
+                approval_required=True,
+                denied=True,
+                alias=alias,
+                reason="User denied SSH authorization." if decision == "deny" else "Timed out waiting for SSH authorization.",
+                yolo=_yolo_summary(session_key),
+            )
+        else:
+            return tool_result(
+                ok=False,
+                approval_required=True,
+                alias=alias,
+                reason=(
+                    "This session has no YOLO grant for the requested SSH target. "
+                    f"Ask the user to run /ssh yolo on {alias}, or /ssh yolo on all, inside this Thread."
+                ),
+                yolo=_yolo_summary(session_key),
+            )
+        grant = get_ssh_yolo_grant(session_key)
 
     binding = set_ssh_binding(
         session_key,
@@ -204,8 +312,10 @@ SSH_MODE_SCHEMA = {
         "when the user asks you to check SSH state, list SSH targets, enter an "
         "SSH target, or return to local mode. Read-only status/list actions need "
         "no authorization. request_use switches only when this session has a "
-        "YOLO grant for the target; otherwise it reports approval_required and "
-        "the user should run /ssh yolo on <alias> or manually run /ssh use <alias> "
+        "YOLO grant for the target; otherwise it asks the gateway to prompt the "
+        "user with an SSH authorization card when supported (allow current, allow all, deny). "
+        "If no card flow is available it reports approval_required and the user "
+        "should run /ssh yolo on <alias> or manually run /ssh use <alias> "
         "(in a Feishu parent chat, /ssh use <alias> creates a Thread by default). "
         "request_local is the model-facing equivalent of /ssh local, but may clear "
         "only model-created SSH bindings, never user-created sticky /ssh use bindings."

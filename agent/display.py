@@ -229,6 +229,21 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         preview = _oneline(str(goal))
         return _truncate_preview(preview, max_len) if preview else None
 
+    if tool_name == "ssh_mode":
+        action = _oneline(str(args.get("action") or "status"))
+        if action == "request_use":
+            parts = [action]
+            alias = _oneline(str(args.get("alias") or ""))
+            cwd = _oneline(str(args.get("cwd") or ""))
+            if alias:
+                parts.append(alias)
+            if cwd:
+                parts.append(f"cwd={cwd}")
+            return _truncate_preview(" ".join(parts), max_len)
+        if action == "request_local":
+            return "request_local -> local"
+        return _truncate_preview(action, max_len)
+
     if tool_name == "process":
         action = args.get("action", "")
         sid = args.get("session_id", "")
