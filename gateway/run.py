@@ -9556,7 +9556,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _media_adapter = self.adapters.get(source.platform)
                     if _media_adapter:
                         await self._deliver_media_from_response(
-                            response, event, _media_adapter,
+                            response,
+                            event,
+                            _media_adapter,
+                            streamed_message_id=agent_result.get("stream_message_id"),
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
@@ -11103,6 +11106,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         response: str,
         event: MessageEvent,
         adapter,
+        *,
+        streamed_message_id: Optional[str] = None,
     ) -> None:
         """Extract MEDIA: tags and local file paths from a response and deliver them.
 
@@ -11132,10 +11137,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # producing false-positive bare-path matches with the MEDIA: prefix
             # glued on. This matches the chain order in gateway/platforms/base.py.
             _, cleaned = adapter.extract_images(cleaned)
-            local_files, _ = adapter.extract_local_files(cleaned)
+            local_files, cleaned = adapter.extract_local_files(cleaned)
             local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
-            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            _reply_anchor = self._reply_anchor_for_event(event)
+            _thread_meta = self._thread_metadata_for_source(event.source, _reply_anchor)
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -11165,12 +11171,64 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if image_paths:
                 try:
-                    images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(
-                        chat_id=event.source.chat_id,
-                        images=images,
-                        metadata=_thread_meta,
-                    )
+                    # Feishu/Lark inline image semantics require a post message:
+                    # upload image -> image_key -> {tag: img} inside the post
+                    # body.  The generic send_multiple_images() path sends a
+                    # standalone msg_type=image with no caption, which can fail
+                    # with field-validation errors in Feishu topic/reply contexts
+                    # and never produces the desired text+inline-image message.
+                    # If the streamed response has explanatory text plus one
+                    # image, use the adapter's caption path; FeishuAdapter
+                    # implements that as a rich post containing both text and img.
+                    platform_value = getattr(event.source.platform, "value", event.source.platform)
+                    cleaned_caption = (cleaned or "").strip()
+                    if (
+                        str(platform_value).lower() == "feishu"
+                        and len(image_paths) == 1
+                        and cleaned_caption
+                        and hasattr(adapter, "send_image_file")
+                    ):
+                        img_result = await adapter.send_image_file(
+                            chat_id=event.source.chat_id,
+                            image_path=image_paths[0],
+                            caption=cleaned_caption,
+                            reply_to=_reply_anchor,
+                            metadata=_thread_meta,
+                        )
+                        if img_result is not None and getattr(img_result, "success", True) is False:
+                            logger.warning(
+                                "[%s] Post-stream inline image delivery failed: %s",
+                                adapter.name,
+                                getattr(img_result, "error", "send returned success=False"),
+                            )
+                        elif (
+                            streamed_message_id
+                            and getattr(img_result, "success", False) is True
+                            and hasattr(adapter, "delete_message")
+                        ):
+                            # Streaming already showed the textual response before
+                            # the final MEDIA tag was known.  Replace that preview
+                            # with the rich Feishu post so the final chat history
+                            # contains one natural text+inline-image message rather
+                            # than a duplicate text bubble plus an image bubble.
+                            try:
+                                await adapter.delete_message(
+                                    event.source.chat_id,
+                                    streamed_message_id,
+                                )
+                            except Exception as delete_exc:
+                                logger.debug(
+                                    "[%s] Failed to delete streamed text after inline image delivery: %s",
+                                    adapter.name,
+                                    delete_exc,
+                                )
+                    else:
+                        images = [(f"file://{_quote(p)}", "") for p in image_paths]
+                        await adapter.send_multiple_images(
+                            chat_id=event.source.chat_id,
+                            images=images,
+                            metadata=_thread_meta,
+                        )
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
 
@@ -12179,6 +12237,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if thread_id is None:
             return None
         metadata: Dict[str, Any] = {"thread_id": thread_id}
+        platform_value = getattr(platform, "value", platform)
+        if platform_value == Platform.FEISHU.value and reply_to_message_id is not None:
+            metadata["reply_to_message_id"] = str(reply_to_message_id)
         if self._is_telegram_dm_topic_target(
             platform,
             chat_id,
@@ -16960,6 +17021,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _content_delivered,
                 )
                 response["already_sent"] = True
+                if _sc and getattr(_sc, "message_id", None):
+                    response["stream_message_id"] = str(_sc.message_id)
             elif not _is_empty_sentinel and _transformed and _sc is not None:
                 # Plugin hooks transformed the response after streaming — edit the
                 # existing streamed message instead of sending a duplicate.

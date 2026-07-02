@@ -66,7 +66,8 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     if thread_id is None:
         return None
     metadata = {"thread_id": thread_id}
-    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
+    platform = _platform_name(getattr(source, "platform", None))
+    if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         tid = str(thread_id)
         if tid and tid not in {"", "1"}:
@@ -74,6 +75,13 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
         anchor = reply_to_message_id or getattr(source, "message_id", None)
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
+    elif platform == "feishu":
+        # Feishu native topics need a real reply anchor for in-thread rich
+        # posts.  A bare thread_id create payload can fail validation for
+        # inline-image posts or land outside the current topic.
+        anchor = reply_to_message_id or getattr(source, "message_id", None)
+        if anchor is not None:
+            metadata["reply_to_message_id"] = str(anchor)
     return metadata
 
 
@@ -4329,6 +4337,54 @@ class BasePlatformAdapter(ABC):
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
 
+                _reply_anchor = _reply_anchor_for_event(event)
+                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
+                _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+
+                # Feishu supports a rich ``post`` message containing text and
+                # an inline uploaded image.  Use that natural path for the
+                # common final-response shape ``text + MEDIA:/path`` before
+                # the generic pipeline splits text and images into separate
+                # messages.  In native topics, keep both reply_to and metadata
+                # so the adapter can use reply-in-thread instead of a bare
+                # thread_id create payload.
+                if (
+                    self.platform == Platform.FEISHU
+                    and text_content
+                    and len(media_files) == 1
+                    and not images
+                    and not local_files
+                    and not force_document_attachments
+                ):
+                    _inline_media_path, _inline_is_voice = media_files[0]
+                    _inline_ext = Path(_inline_media_path).suffix.lower()
+                    if _inline_ext in _IMAGE_EXTS and not _inline_is_voice:
+                        try:
+                            inline_result = await self.send_image_file(
+                                chat_id=event.source.chat_id,
+                                image_path=_inline_media_path,
+                                caption=text_content,
+                                reply_to=_reply_anchor,
+                                metadata=_final_thread_metadata,
+                            )
+                            _record_delivery(inline_result)
+                            if getattr(inline_result, "success", False):
+                                text_content = ""
+                                media_files = []
+                            else:
+                                logger.warning(
+                                    "[%s] Feishu inline image delivery failed: %s",
+                                    self.name,
+                                    getattr(inline_result, "error", "send returned success=False"),
+                                )
+                        except Exception as inline_err:
+                            logger.warning(
+                                "[%s] Error sending Feishu inline image post: %s",
+                                self.name,
+                                inline_err,
+                                exc_info=True,
+                            )
+
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
@@ -4382,7 +4438,6 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
-                    _reply_anchor = _reply_anchor_for_event(event)
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
@@ -4424,8 +4479,6 @@ class BasePlatformAdapter(ABC):
 
 
                 # Send extracted media files — route by file type
-                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
-                _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
                 # Partition images out of media_files + local_files so they
                 # can be sent as a single batch (Signal RPC). When
