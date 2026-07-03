@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import posixpath
 import threading
 from pathlib import Path
 
@@ -245,6 +246,70 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     return (_resolve_base_dir(task_id) / p).resolve()
 
 
+def _is_remote_backend_task(task_id: str = "default") -> bool:
+    """Return True when the active task/session file operations run remotely.
+
+    Local path resolution is correct for the local backend, where file-tool
+    bookkeeping and shell execution share the same filesystem.  For SSH,
+    Docker, Modal, Daytona, etc. the Python host and backend filesystem differ:
+    a backend path such as ``/home/user/project`` must not be resolved through
+    host ``Path.resolve()`` and then handed to the backend shell.
+    """
+    try:
+        from tools.terminal_tool import (
+            _get_env_config,
+            apply_task_env_overrides,
+            resolve_task_overrides,
+        )
+
+        config = apply_task_env_overrides(
+            _get_env_config(), resolve_task_overrides(task_id)
+        )
+        return config.get("env_type") != "local"
+    except Exception:
+        return False
+
+
+def _remote_display_path_for_task(filepath: str, task_id: str = "default") -> str:
+    """Return a stable backend-path key for remote file-tool bookkeeping.
+
+    This is deliberately lexical/posix-style, not ``Path.resolve()``.  The host
+    process cannot resolve symlinks or home directories inside an SSH/container
+    backend.  Shell execution still receives the caller's original path so the
+    backend can expand ``~`` and resolve relative paths against its live cwd.
+    """
+    raw = str(filepath or "")
+    if raw.startswith("~"):
+        return raw
+    if posixpath.isabs(raw):
+        return posixpath.normpath(raw)
+    root = _authoritative_workspace_root(task_id)
+    if root and not str(root).startswith("~"):
+        return posixpath.normpath(posixpath.join(str(root), raw))
+    return posixpath.normpath(raw)
+
+
+def _file_tool_paths_for_task(filepath: str, task_id: str = "default") -> tuple[str, str, str]:
+    """Return ``(lock_key, shell_path, display_path)`` for a file-tool path.
+
+    - local backend: relative paths resolve against the authoritative task cwd;
+      absolute inputs remain lexical absolute paths instead of resolving host
+      symlinks such as macOS ``/tmp -> /private/tmp``.
+    - remote backend: shell_path is the original backend path, while lock and
+      display use a lexical backend-path key.  This preserves the system-level
+      backend contract after SSH Mode moves backend selection to the session.
+    """
+    if _is_remote_backend_task(task_id):
+        display_path = _remote_display_path_for_task(filepath, task_id)
+        return display_path, filepath, display_path
+    expanded = Path(filepath).expanduser()
+    if expanded.is_absolute():
+        absolute = os.path.abspath(str(expanded))
+        return absolute, absolute, absolute
+    resolved = str(_resolve_path_for_task(filepath, task_id))
+    return resolved, resolved, resolved
+
+
 def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
     """Warn when a relative path resolved OUTSIDE the task's workspace root.
 
@@ -361,15 +426,11 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
-    for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
-            return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
-        return _err
     # Prevent agents from modifying the Hermes config file directly.
     # approvals.mode and other security settings live here; a malicious or
     # prompt-injected agent could silently disable exec approval by writing to
-    # this file.
+    # this file.  Check this before broad system-prefix guards so tests and
+    # temp HERMES_HOME values under macOS /var/folders get the precise error.
     hermes_config = _get_hermes_config_resolved()
     if hermes_config and (resolved == hermes_config or normalized == hermes_config):
         return (
@@ -377,6 +438,22 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
         )
+    input_is_absolute = os.path.isabs(normalized)
+    temp_roots = (
+        "/var/folders/",
+        "/private/var/folders/",
+        "/var/tmp/",
+        "/private/var/tmp/",
+    )
+    normalized_is_temp = normalized.startswith(temp_roots)
+    resolved_is_temp = resolved.startswith(temp_roots)
+    for prefix in _SENSITIVE_PATH_PREFIXES:
+        if normalized.startswith(prefix) and not normalized_is_temp:
+            return _err
+        if input_is_absolute and resolved.startswith(prefix) and not resolved_is_temp:
+            return _err
+    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+        return _err
     return None
 
 
@@ -1205,15 +1282,15 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             "Re-read the file or reconstruct the intended file contents before writing."
         )
     try:
-        # Resolve once for the registry lock + stale check.  Failures here
-        # fall back to the legacy path — write proceeds, per-task staleness
-        # check below still runs.
+        # Resolve once for the registry lock + stale check.  For remote
+        # backends, keep the shell path as the original backend path; host
+        # Path.resolve() must never be handed to an SSH/container shell.
         try:
-            _resolved = str(_resolve_path_for_task(path, task_id))
+            _lock_key, _shell_path, _display_path = _file_tool_paths_for_task(path, task_id)
         except Exception:
-            _resolved = None
+            _lock_key = _shell_path = _display_path = None
 
-        if _resolved is None:
+        if _lock_key is None:
             stale_warning = _check_file_staleness(path, task_id)
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(path, content)
@@ -1222,35 +1299,39 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 result_dict["_warning"] = stale_warning
             _update_read_timestamp(path, task_id)
             return json.dumps(result_dict, ensure_ascii=False)
+        assert _shell_path is not None
+        assert _display_path is not None
 
         # Serialize the read→modify→write region per-path so concurrent
         # subagents can't interleave on the same file.  Different paths
         # remain fully parallel.
-        with file_state.lock_path(_resolved):
+        with file_state.lock_path(_lock_key):
             # Cross-agent staleness wins over per-task warning when both
             # fire — its message names the sibling subagent.
-            cross_warning = file_state.check_stale(task_id, _resolved)
+            cross_warning = file_state.check_stale(task_id, _lock_key)
             stale_warning = _check_file_staleness(path, task_id)
             # Workspace-divergence warning: relative path resolving outside the
-            # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
-            cwd_warning = _path_resolution_warning(path, Path(_resolved), task_id)
+            # terminal's cwd (the worktree-cwd bug). Only meaningful for local
+            # backend paths, where Path.resolve() describes the execution FS.
+            cwd_warning = None
+            if not _is_remote_backend_task(task_id):
+                cwd_warning = _path_resolution_warning(path, Path(_lock_key), task_id)
             file_ops = _get_file_ops(task_id)
-            result = file_ops.write_file(_resolved, content)
+            result = file_ops.write_file(_shell_path, content)
             result_dict = result.to_dict()
             effective_warning = cross_warning or stale_warning or cwd_warning
             if effective_warning:
                 result_dict["_warning"] = effective_warning
-            # Always report the ABSOLUTE path actually written, so a wrong-cwd
-            # mismatch is visible in the response instead of silently routing
-            # the edit to the wrong checkout.
-            result_dict["resolved_path"] = _resolved
+            # Always report the backend path actually targeted, so a wrong-cwd
+            # mismatch is visible without leaking host-resolved paths into SSH.
+            result_dict["resolved_path"] = _display_path
             if not result_dict.get("error"):
-                result_dict["files_modified"] = [_resolved]
+                result_dict["files_modified"] = [_display_path]
             # Refresh stamps after the successful write so consecutive
             # writes by this task don't trigger false staleness warnings.
             _update_read_timestamp(path, task_id)
             if not result_dict.get("error"):
-                file_state.note_write(task_id, _resolved)
+                file_state.note_write(task_id, _lock_key)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -1307,14 +1388,22 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         # multi-file V4A patches.
         _resolved_paths: list[str] = []
         _seen: set[str] = set()
+        _path_to_lock: dict[str, str | None] = {}
+        _path_to_shell: dict[str, str] = {}
+        _path_to_display: dict[str, str] = {}
         for _p in _paths_to_check:
             try:
-                _r = str(_resolve_path_for_task(_p, task_id))
+                _lock, _shell, _display = _file_tool_paths_for_task(_p, task_id)
             except Exception:
-                _r = None
-            if _r and _r not in _seen:
-                _resolved_paths.append(_r)
-                _seen.add(_r)
+                _lock = None
+                _shell = _p
+                _display = _p
+            _path_to_lock[_p] = _lock
+            _path_to_shell[_p] = _shell
+            _path_to_display[_p] = _display
+            if _lock and _lock not in _seen:
+                _resolved_paths.append(_lock)
+                _seen.add(_lock)
         _resolved_paths.sort()
 
         # Acquire per-path locks in sorted order via ExitStack.  On single
@@ -1328,18 +1417,15 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             # Collect warnings — cross-agent registry first (names sibling),
             # then per-task tracker as a fallback.
             stale_warnings: list[str] = []
-            _path_to_resolved: dict[str, str] = {}
             for _p in _paths_to_check:
-                try:
-                    _r = str(_resolve_path_for_task(_p, task_id))
-                except Exception:
-                    _r = None
-                _path_to_resolved[_p] = _r
+                _r = _path_to_lock.get(_p)
                 _cross = file_state.check_stale(task_id, _r) if _r else None
                 _sw = _cross or _check_file_staleness(_p, task_id)
-                if not _sw and _r:
+                if not _sw and _r and not _is_remote_backend_task(task_id):
                     # Workspace-divergence warning (worktree-cwd bug): relative
-                    # path resolving outside the terminal's cwd.
+                    # path resolving outside the terminal's cwd. Only meaningful
+                    # on the local backend where the Python host and execution
+                    # filesystem are the same.
                     _sw = _path_resolution_warning(_p, Path(_r), task_id)
                 if _sw:
                     stale_warnings.append(_sw)
@@ -1351,12 +1437,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     return tool_error("path required")
                 if old_string is None or new_string is None:
                     return tool_error("old_string and new_string required")
-                # Pass the resolved ABSOLUTE path to the shell layer so it
-                # operates on the exact file the tool layer resolved — the
-                # shell's own cwd may differ (worktree-cwd bug), and a relative
-                # path would let the two layers disagree about which file is
-                # being edited.
-                _replace_target = _path_to_resolved.get(path) or path
+                # Local backend passes the host-resolved path to preserve
+                # worktree-cwd safety. Remote backends pass the original backend
+                # path so host Path.resolve() cannot pollute SSH/container I/O.
+                _replace_target = _path_to_shell.get(path) or path
                 result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
             elif mode == "patch":
                 if not patch:
@@ -1368,11 +1452,11 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             result_dict = result.to_dict()
             if stale_warnings:
                 result_dict["_warning"] = stale_warnings[0] if len(stale_warnings) == 1 else " | ".join(stale_warnings)
-            # Report the ABSOLUTE path(s) actually patched so a wrong-cwd
-            # mismatch (e.g. a worktree session editing the main checkout) is
-            # visible in the response instead of silently landing elsewhere.
+            # Report the backend path(s) actually patched.  On local backends
+            # this is the absolute host path; on remote backends it is the
+            # backend path, not a host-resolved macOS/container path.
             _resolved_modified = [
-                _path_to_resolved.get(_p) or _p for _p in _paths_to_check
+                _path_to_display.get(_p) or _p for _p in _paths_to_check
             ]
             # Refresh stored timestamps for all successfully-patched paths so
             # consecutive edits by this task don't trigger false warnings.
@@ -1382,14 +1466,14 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     result_dict["resolved_path"] = _resolved_modified[0]
                 for _p in _paths_to_check:
                     _update_read_timestamp(_p, task_id)
-                    _r = _path_to_resolved.get(_p)
+                    _r = _path_to_lock.get(_p)
                     if _r:
                         file_state.note_write(task_id, _r)
                 # Successful patch: clear any prior consecutive-failure
                 # counters for the touched paths so a future failure on
                 # the same path starts the escalation cycle fresh.
                 _reset_patch_failures(task_id, [
-                    _r for _r in (_path_to_resolved.get(_p) for _p in _paths_to_check) if _r
+                    _r for _r in (_path_to_lock.get(_p) for _p in _paths_to_check) if _r
                 ])
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
@@ -1402,7 +1486,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             # are far rarer and the existing _hint covers them adequately.
             failure_count = 0
             if mode == "replace" and path:
-                resolved = _path_to_resolved.get(path) or path
+                resolved = _path_to_lock.get(path) or path
                 failure_count = _record_patch_failure(task_id, resolved)
 
             if failure_count >= 3:
