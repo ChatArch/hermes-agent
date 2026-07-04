@@ -1,8 +1,7 @@
+import asyncio
 import json
 import sys
 from types import ModuleType, SimpleNamespace
-
-import pytest
 
 from gateway.config import Platform
 from plugins.feishu_card.tools import feishu_card_tool, feishu_card_tool_async
@@ -75,8 +74,7 @@ def test_feishu_card_tool_schema_describes_flexible_card_dsl():
     assert "raw_feishu" in result["schema"]["escape_hatches"]
 
 
-@pytest.mark.asyncio
-async def test_feishu_card_tool_send_uses_live_feishu_adapter(monkeypatch):
+def test_feishu_card_tool_send_uses_live_feishu_adapter(monkeypatch):
     sent = []
 
     class Adapter:
@@ -88,18 +86,20 @@ async def test_feishu_card_tool_send_uses_live_feishu_adapter(monkeypatch):
     fake_gateway_run._gateway_runner_ref = lambda: SimpleNamespace(adapters={Platform.FEISHU: Adapter()})
     monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
 
-    raw = await feishu_card_tool_async(
-        {
-            "action": "send",
-            "chat_id": "oc_chat",
-            "thread_id": "omt_root",
-            "reply_to": "om_root",
-            "session_key": "session-send",
-            "card": {
-                "header": {"title": "发送卡片", "color": "green"},
-                "elements": [{"type": "markdown", "content": "live send"}],
+    raw = asyncio.run(
+        feishu_card_tool_async(
+            {
+                "action": "send",
+                "chat_id": "oc_chat",
+                "thread_id": "omt_root",
+                "reply_to": "om_root",
+                "session_key": "session-send",
+                "card": {
+                    "header": {"title": "发送卡片", "color": "green"},
+                    "elements": [{"type": "markdown", "content": "live send"}],
+                },
             },
-        }
+        )
     )
     result = json.loads(raw)
 

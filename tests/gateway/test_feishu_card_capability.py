@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -69,8 +70,7 @@ def test_render_feishu_card_supports_composable_authorization_shape():
     }
 
 
-@pytest.mark.asyncio
-async def test_feishu_adapter_send_card_sends_interactive_payload(monkeypatch):
+def test_feishu_adapter_send_card_sends_interactive_payload(monkeypatch):
     adapter = FeishuAdapter.__new__(FeishuAdapter)
     adapter._client = object()
     calls = []
@@ -93,7 +93,7 @@ async def test_feishu_adapter_send_card_sends_interactive_payload(monkeypatch):
         Card(header=CardHeader(title="自定义", color="purple"), elements=[Markdown("内容")])
     )
 
-    result = await adapter.send_card("oc_chat", card, metadata={"thread_id": "omt_root"})
+    result = asyncio.run(adapter.send_card("oc_chat", card, metadata={"thread_id": "omt_root"}))
 
     assert result.success is True
     assert result.message_id == "om_card"
@@ -125,8 +125,7 @@ def test_build_feishu_authorization_card_is_generic_card_composition():
     assert buttons[1]["elements"][0]["value"]["action"] == "auth.cancel"
 
 
-@pytest.mark.asyncio
-async def test_card_action_registry_routes_registered_handlers():
+def test_card_action_registry_routes_registered_handlers():
     registry = CardActionRegistry()
 
     async def authorize(ctx: CardActionContext) -> CardActionResponse:
@@ -136,14 +135,16 @@ async def test_card_action_registry_routes_registered_handlers():
 
     registry.register("auth.authorize", authorize)
 
-    response = await registry.dispatch(
-        CardActionContext(
-            action="auth.authorize",
-            payload={"flow_id": "flow-3"},
-            user_id="ou_user",
-            chat_id="oc_chat",
-            message_id="om_msg",
-            session_key="session-3",
+    response = asyncio.run(
+        registry.dispatch(
+            CardActionContext(
+                action="auth.authorize",
+                payload={"flow_id": "flow-3"},
+                user_id="ou_user",
+                chat_id="oc_chat",
+                message_id="om_msg",
+                session_key="session-3",
+            )
         )
     )
 
@@ -152,18 +153,19 @@ async def test_card_action_registry_routes_registered_handlers():
     assert response.card.elements[0].content == "flow-3"
 
 
-@pytest.mark.asyncio
-async def test_card_action_registry_rejects_unknown_action():
+def test_card_action_registry_rejects_unknown_action():
     registry = CardActionRegistry()
 
     with pytest.raises(KeyError, match="No card action handler registered"):
-        await registry.dispatch(
-            CardActionContext(
-                action="missing.action",
-                payload={},
-                user_id="ou_user",
-                chat_id="oc_chat",
-                message_id="om_msg",
-                session_key="session-4",
+        asyncio.run(
+            registry.dispatch(
+                CardActionContext(
+                    action="missing.action",
+                    payload={},
+                    user_id="ou_user",
+                    chat_id="oc_chat",
+                    message_id="om_msg",
+                    session_key="session-4",
+                )
             )
         )
