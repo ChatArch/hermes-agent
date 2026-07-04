@@ -54,6 +54,105 @@ def _register_ssh_task(terminal_tool, task_id):
     )
 
 
+def _configure_system_ssh_backend(monkeypatch):
+    """Configure the original process/global terminal backend as SSH."""
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_SSH_HOST", "example.internal")
+    monkeypatch.setenv("TERMINAL_SSH_USER", "rex")
+    monkeypatch.setenv("TERMINAL_SSH_KEY", "/redacted/key")
+    monkeypatch.setenv("TERMINAL_CWD", "/home/rex/work")
+
+
+def test_write_file_system_ssh_backend_passes_backend_path_not_host_resolved(monkeypatch):
+    """The original system-level terminal SSH backend has the same path contract."""
+    from tools import file_tools
+
+    requested = "/home/rex/work/report.md"
+    host_resolved = "/System/Volumes/Data/home/rex/work/report.md"
+    ops = _RecordingFileOps()
+    _configure_system_ssh_backend(monkeypatch)
+    _install_common_stubs(monkeypatch, file_tools, requested, host_resolved, ops)
+
+    result = json.loads(file_tools.write_file_tool(requested, "hello\n"))
+
+    assert not result.get("error"), result
+    assert ops.write_calls == [(requested, "hello\n")]
+    assert result["resolved_path"] == requested
+    assert result["files_modified"] == [requested]
+
+
+def test_patch_replace_system_ssh_backend_passes_backend_path_not_host_resolved(monkeypatch):
+    """replace-mode patch also follows system-level terminal SSH backend paths."""
+    from tools import file_tools
+
+    requested = "/home/rex/work/report.md"
+    host_resolved = "/System/Volumes/Data/home/rex/work/report.md"
+    ops = _RecordingFileOps()
+    _configure_system_ssh_backend(monkeypatch)
+    _install_common_stubs(monkeypatch, file_tools, requested, host_resolved, ops)
+
+    result = json.loads(
+        file_tools.patch_tool(
+            mode="replace",
+            path=requested,
+            old_string="before",
+            new_string="after",
+        )
+    )
+
+    assert not result.get("error"), result
+    assert result["success"] is True
+    assert ops.patch_calls == [(requested, "before", "after", False)]
+    assert result["resolved_path"] == requested
+    assert result["files_modified"] == [requested]
+
+
+def test_write_file_system_ssh_backend_keeps_relative_backend_path(monkeypatch):
+    """System-level terminal SSH resolves display lexically but writes relative backend path."""
+    from tools import file_tools
+
+    requested = "report.md"
+    host_resolved = "/System/Volumes/Data/home/rex/work/report.md"
+    display_path = "/home/rex/work/report.md"
+    ops = _RecordingFileOps()
+    _configure_system_ssh_backend(monkeypatch)
+    _install_common_stubs(monkeypatch, file_tools, requested, host_resolved, ops)
+
+    result = json.loads(file_tools.write_file_tool(requested, "hello\n"))
+
+    assert not result.get("error"), result
+    assert ops.write_calls == [(requested, "hello\n")]
+    assert result["resolved_path"] == display_path
+    assert result["files_modified"] == [display_path]
+
+
+def test_patch_replace_system_ssh_backend_keeps_relative_backend_path(monkeypatch):
+    """System-level terminal SSH patch keeps relative backend path for shell I/O."""
+    from tools import file_tools
+
+    requested = "report.md"
+    host_resolved = "/System/Volumes/Data/home/rex/work/report.md"
+    display_path = "/home/rex/work/report.md"
+    ops = _RecordingFileOps()
+    _configure_system_ssh_backend(monkeypatch)
+    _install_common_stubs(monkeypatch, file_tools, requested, host_resolved, ops)
+
+    result = json.loads(
+        file_tools.patch_tool(
+            mode="replace",
+            path=requested,
+            old_string="before",
+            new_string="after",
+        )
+    )
+
+    assert not result.get("error"), result
+    assert result["success"] is True
+    assert ops.patch_calls == [(requested, "before", "after", False)]
+    assert result["resolved_path"] == display_path
+    assert result["files_modified"] == [display_path]
+
+
 def test_write_file_ssh_session_passes_backend_path_not_host_resolved(monkeypatch):
     """write_file must not pass local/macOS-resolved paths to an SSH backend."""
     from tools import file_tools
@@ -109,3 +208,62 @@ def test_patch_replace_ssh_session_passes_backend_path_not_host_resolved(monkeyp
     assert ops.patch_calls == [(requested, "before", "after", False)]
     assert result["resolved_path"] == requested
     assert result["files_modified"] == [requested]
+
+
+def test_write_file_ssh_session_keeps_relative_backend_path(monkeypatch):
+    """Section/session SSH Mode resolves display lexically but writes relative backend path."""
+    from tools import file_tools
+    from tools import terminal_tool
+
+    task_id = "ssh-write-session-relative"
+    requested = "report.md"
+    host_resolved = "/System/Volumes/Data/home/rex/work/report.md"
+    display_path = "/home/rex/work/report.md"
+    ops = _RecordingFileOps()
+    _install_common_stubs(monkeypatch, file_tools, requested, host_resolved, ops)
+    _register_ssh_task(terminal_tool, task_id)
+
+    try:
+        result = json.loads(file_tools.write_file_tool(requested, "hello\n", task_id=task_id))
+    finally:
+        terminal_tool.clear_task_env_overrides(task_id)
+        file_tools.clear_file_ops_cache(task_id)
+
+    assert not result.get("error"), result
+    assert ops.write_calls == [(requested, "hello\n")]
+    assert result["resolved_path"] == display_path
+    assert result["files_modified"] == [display_path]
+
+
+def test_patch_replace_ssh_session_keeps_relative_backend_path(monkeypatch):
+    """Section/session SSH Mode patch keeps relative backend path for shell I/O."""
+    from tools import file_tools
+    from tools import terminal_tool
+
+    task_id = "ssh-patch-session-relative"
+    requested = "report.md"
+    host_resolved = "/System/Volumes/Data/home/rex/work/report.md"
+    display_path = "/home/rex/work/report.md"
+    ops = _RecordingFileOps()
+    _install_common_stubs(monkeypatch, file_tools, requested, host_resolved, ops)
+    _register_ssh_task(terminal_tool, task_id)
+
+    try:
+        result = json.loads(
+            file_tools.patch_tool(
+                mode="replace",
+                path=requested,
+                old_string="before",
+                new_string="after",
+                task_id=task_id,
+            )
+        )
+    finally:
+        terminal_tool.clear_task_env_overrides(task_id)
+        file_tools.clear_file_ops_cache(task_id)
+
+    assert not result.get("error"), result
+    assert result["success"] is True
+    assert ops.patch_calls == [(requested, "before", "after", False)]
+    assert result["resolved_path"] == display_path
+    assert result["files_modified"] == [display_path]
