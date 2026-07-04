@@ -128,6 +128,8 @@ except ImportError:
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
+from gateway.cards.actions import CardActionContext, CardActionResponse, get_card_action_registry
+from gateway.cards.renderers.feishu import render_feishu_card
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -2759,6 +2761,7 @@ class FeishuAdapter(BasePlatformAdapter):
             action_value.get("hermes_ssh_grant_action")
             if isinstance(action_value, dict) else None
         )
+        generic_card_action = action_value.get("action") if isinstance(action_value, dict) else None
 
         if hermes_action:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
@@ -2770,11 +2773,72 @@ class FeishuAdapter(BasePlatformAdapter):
                 action_value=action_value,
                 loop=loop,
             )
+        if generic_card_action and get_card_action_registry().get(str(generic_card_action)):
+            return self._handle_registered_card_action(
+                event=event,
+                action_value=action_value,
+                action=str(generic_card_action),
+                loop=loop,
+            )
 
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         if P2CardActionTriggerResponse is None:
             return None
         return P2CardActionTriggerResponse()
+
+    def _handle_registered_card_action(
+        self,
+        *,
+        event: Any,
+        action_value: Dict[str, Any],
+        action: str,
+        loop: Any,
+    ) -> Any:
+        """Route a generic Hermes card action through CardActionRegistry.
+
+        Feishu card replacement must be returned synchronously from the SDK
+        callback.  We therefore submit the async registry dispatch to the
+        adapter loop and wait briefly for the handler response.
+        """
+        registry = get_card_action_registry()
+        if registry.get(action) is None:
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        user_id = str(getattr(operator, "user_id", "") or "")
+        context = getattr(event, "context", None)
+        chat_id = str(getattr(context, "open_chat_id", "") or "")
+        message_id = str(getattr(context, "open_message_id", "") or "")
+        session_key = action_value.get("session_key")
+        payload = {str(k): v for k, v in action_value.items() if k != "action"}
+        action_context = CardActionContext(
+            action=action,
+            payload=payload,
+            user_id=open_id or user_id,
+            chat_id=chat_id,
+            message_id=message_id,
+            session_key=str(session_key) if session_key is not None else None,
+        )
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(registry.dispatch(action_context), loop)
+            result = future.result(timeout=5)
+        except Exception as exc:
+            logger.warning("[Feishu] Generic card action %s failed: %s", action, exc)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if not isinstance(result, CardActionResponse):
+            return response
+        if result.kind == "replace_card" and result.card is not None and CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = render_feishu_card(result.card, session_key=action_context.session_key)
+            response.card = card
+        return response
 
     @staticmethod
     def _loop_accepts_callbacks(loop: Any) -> bool:

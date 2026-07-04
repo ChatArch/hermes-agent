@@ -1466,8 +1466,12 @@ def _get_platform_tools(
             elif pts in _DEFAULT_OFF_TOOLSETS:
                 # Opt-in plugin toolset — stay off until user picks it
                 continue
-            elif pts not in known_for_platform:
+            elif pts not in known_for_platform and not has_explicit_config:
                 # New plugin not yet seen by hermes tools — default enabled
+                # only when the platform has no explicit toolset override.
+                # Once the user writes platform_toolsets.<platform>, that
+                # saved list is authoritative unless the plugin toolset is
+                # explicitly included above.
                 enabled_toolsets.add(pts)
             # else: known but not in config = user disabled it
 
