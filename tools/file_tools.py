@@ -438,7 +438,6 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
         )
-    input_is_absolute = os.path.isabs(normalized)
     temp_roots = (
         "/var/folders/",
         "/private/var/folders/",
@@ -450,7 +449,12 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if normalized.startswith(prefix) and not normalized_is_temp:
             return _err
-        if input_is_absolute and resolved.startswith(prefix) and not resolved_is_temp:
+        # Check resolved paths for all inputs, including relative paths and
+        # symlinks inside the workspace.  The macOS temp-root carveout prevents
+        # pytest/workspace paths under /private/var/folders from being mistaken
+        # for system files while keeping /etc and /private/etc symlink escapes
+        # blocked.
+        if resolved.startswith(prefix) and not resolved_is_temp:
             return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
