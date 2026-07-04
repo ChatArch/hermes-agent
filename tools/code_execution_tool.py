@@ -716,7 +716,8 @@ def _ship_file_to_remote(env, remote_path: str, content: str) -> None:
     """
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
     quoted_remote_path = shlex.quote(remote_path)
-    env.execute(
+    _execute_remote_internal(
+        env,
         f"echo '{encoded}' | base64 -d > {quoted_remote_path}",
         cwd="/",
         timeout=30,
@@ -737,6 +738,24 @@ def _env_temp_dir(env: Any) -> str:
     if isinstance(candidate, str) and candidate.startswith("/"):
         return candidate.rstrip("/") or "/"
     return "/tmp"
+
+
+def _execute_remote_internal(env, command: str, **kwargs) -> dict:
+    """Run execute_code's backend-internal command without leaking cwd.
+
+    Remote backends intentionally persist ``env.cwd`` across user-visible
+    terminal/file calls.  ``execute_code`` also needs backend commands for
+    staging files, polling RPC files, running the script from a temporary
+    sandbox, and cleanup.  Those implementation details must not become the
+    session cwd for later terminal/file tools.
+    """
+    had_cwd = hasattr(env, "cwd")
+    previous_cwd = getattr(env, "cwd", None)
+    try:
+        return env.execute(command, **kwargs)
+    finally:
+        if had_cwd:
+            env.cwd = previous_cwd
 
 
 def _rpc_poll_loop(
@@ -763,7 +782,8 @@ def _rpc_poll_loop(
     while not stop_event.is_set():
         try:
             # List pending request files (skip .tmp partials)
-            ls_result = env.execute(
+            ls_result = _execute_remote_internal(
+                env,
                 f"ls -1 {quoted_rpc_dir}/req_* 2>/dev/null || true",
                 cwd="/",
                 timeout=10,
@@ -788,7 +808,8 @@ def _rpc_poll_loop(
 
                 quoted_req_file = shlex.quote(req_file)
                 # Read request
-                read_result = env.execute(
+                read_result = _execute_remote_internal(
+                    env,
                     f"cat {quoted_req_file}",
                     cwd="/",
                     timeout=10,
@@ -798,7 +819,7 @@ def _rpc_poll_loop(
                 except (json.JSONDecodeError, ValueError):
                     logger.debug("Malformed RPC request in %s", req_file)
                     # Remove bad request to avoid infinite retry
-                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
+                    _execute_remote_internal(env, f"rm -f {quoted_req_file}", cwd="/", timeout=5)
                     continue
 
                 tool_name = request.get("tool", "")
@@ -863,7 +884,8 @@ def _rpc_poll_loop(
                 encoded_result = base64.b64encode(
                     tool_result.encode("utf-8")
                 ).decode("ascii")
-                env.execute(
+                _execute_remote_internal(
+                    env,
                     f"echo '{encoded_result}' | base64 -d > {quoted_res_file}.tmp"
                     f" && mv {quoted_res_file}.tmp {quoted_res_file}",
                     cwd="/",
@@ -871,7 +893,7 @@ def _rpc_poll_loop(
                 )
 
                 # Remove the request file
-                env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
+                _execute_remote_internal(env, f"rm -f {quoted_req_file}", cwd="/", timeout=5)
 
         except Exception as e:
             if not stop_event.is_set():
@@ -919,7 +941,8 @@ def _execute_remote(
 
     try:
         # Verify Python is available on the remote
-        py_check = env.execute(
+        py_check = _execute_remote_internal(
+            env,
             "command -v python3 >/dev/null 2>&1 && echo OK",
             cwd="/", timeout=15,
         )
@@ -936,7 +959,8 @@ def _execute_remote(
             })
 
         # Create sandbox directory on remote
-        env.execute(
+        _execute_remote_internal(
+            env,
             f"mkdir -p {quoted_rpc_dir}", cwd="/", timeout=10,
         )
 
@@ -973,8 +997,10 @@ def _execute_remote(
         # Execute the script on the remote backend
         logger.info("Executing code on %s backend (task %s)...",
                      env_type, effective_task_id[:8])
-        script_result = env.execute(
+        script_result = _execute_remote_internal(
+            env,
             f"cd {quoted_sandbox_dir} && {env_prefix} python3 script.py",
+            cwd="/",
             timeout=timeout,
         )
 
@@ -1010,7 +1036,8 @@ def _execute_remote(
 
         # Clean up remote sandbox dir
         try:
-            env.execute(
+            _execute_remote_internal(
+                env,
                 f"rm -rf {quoted_sandbox_dir}", cwd="/", timeout=15,
             )
         except Exception:

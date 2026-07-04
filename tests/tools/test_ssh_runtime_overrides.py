@@ -270,6 +270,91 @@ def test_execute_code_top_level_dispatch_uses_session_context_override(monkeypat
     assert '"remote":true' in result
 
 
+def test_execute_code_remote_preserves_bound_ssh_cwd(monkeypatch):
+    """execute_code internals must not leak temp/root cwd into SSH session cwd."""
+    from tools import code_execution_tool as code_exec
+
+    class FakeSSHEnv:
+        def __init__(self):
+            self.cwd = "/home/rex/work"
+            self.calls = []
+
+        def get_temp_dir(self):
+            return "/tmp"
+
+        def execute(self, command, cwd="", timeout=None, **kwargs):
+            effective_cwd = cwd or self.cwd
+            self.calls.append({"command": command, "cwd": cwd, "effective_cwd": effective_cwd})
+
+            # Mirror the BaseEnvironment contract enough for this regression:
+            # commands that explicitly cd update the backend cwd to that dir;
+            # otherwise the cwd argument/default becomes the persisted cwd.
+            if command.startswith("cd /tmp/hermes_exec_"):
+                sandbox = command.split(" && ", 1)[0].removeprefix("cd ")
+                self.cwd = sandbox
+                return {"output": "sandbox ran\n", "returncode": 0}
+            self.cwd = effective_cwd
+
+            if "command -v python3" in command:
+                return {"output": "OK\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+    env = FakeSSHEnv()
+    monkeypatch.setattr(code_exec, "_get_or_create_env", lambda task_id: (env, "ssh"))
+    monkeypatch.setattr(code_exec, "_load_config", lambda: {"timeout": 30, "max_tool_calls": 5})
+
+    result = code_exec._execute_remote("print('hello')", task_id="ssh-session", enabled_tools=[])
+
+    assert '"status": "success"' in result
+    assert env.cwd == "/home/rex/work"
+
+
+
+
+def test_execute_code_remote_keeps_followup_relative_operations_in_bound_cwd(monkeypatch):
+    """After execute_code, later relative terminal/file operations stay in the SSH cwd.
+
+    This is the user-facing safety contract: execute_code internals may use
+    /tmp or / internally, but a later relative operation must not suddenly run
+    from /.  Otherwise a safe-looking relative command could target the wrong
+    remote tree.
+    """
+    from tools import code_execution_tool as code_exec
+
+    class FakeSSHEnv:
+        def __init__(self):
+            self.cwd = "/home/rex/work"
+            self.calls = []
+
+        def get_temp_dir(self):
+            return "/tmp"
+
+        def execute(self, command, cwd="", timeout=None, **kwargs):
+            effective_cwd = cwd or self.cwd
+            self.calls.append({"command": command, "cwd": cwd, "effective_cwd": effective_cwd})
+            if command.startswith("cd /tmp/hermes_exec_"):
+                sandbox = command.split(" && ", 1)[0].removeprefix("cd ")
+                self.cwd = sandbox
+                return {"output": "sandbox ran\n", "returncode": 0}
+            self.cwd = effective_cwd
+            if "command -v python3" in command:
+                return {"output": "OK\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+    env = FakeSSHEnv()
+    monkeypatch.setattr(code_exec, "_get_or_create_env", lambda task_id: (env, "ssh"))
+    monkeypatch.setattr(code_exec, "_load_config", lambda: {"timeout": 30, "max_tool_calls": 5})
+
+    result = code_exec._execute_remote("print('hello')", task_id="ssh-session", enabled_tools=[])
+    followup = env.execute("rm -rf .trash/safe-relative-probe")
+
+    assert '"status": "success"' in result
+    assert followup["returncode"] == 0
+    assert env.calls[-1]["command"] == "rm -rf .trash/safe-relative-probe"
+    assert env.calls[-1]["effective_cwd"] == "/home/rex/work"
+    assert env.cwd == "/home/rex/work"
+
+
 def test_prompt_builder_uses_task_override_backend(monkeypatch):
     from agent import prompt_builder
     from tools import terminal_tool as tt
