@@ -8,6 +8,7 @@ from plugins.feishu_card.tools import (
     FEISHU_CARD_SCHEMA,
     feishu_card_tool_async,
     resolve_authorization_request,
+    resolve_interaction_request,
 )
 
 
@@ -19,6 +20,22 @@ async def _default_authorize_action(ctx: CardActionContext) -> CardActionRespons
         Card(
             header=CardHeader(title="已打开授权链接", color="blue"),
             elements=[Markdown("请在打开的授权页面完成授权。" + suffix)],
+        )
+    )
+
+
+async def _default_open_link_action(ctx: CardActionContext) -> CardActionResponse:
+    return CardActionResponse.noop()
+
+
+async def _default_card_respond_action(ctx: CardActionContext) -> CardActionResponse:
+    request_id = ctx.payload.get("request_id", "")
+    resolve_interaction_request(ctx.session_key, request_id, ctx.payload)
+    choice = ctx.payload.get("choice") or ctx.payload.get("button_text") or "已选择"
+    return CardActionResponse.replace_card(
+        Card(
+            header=CardHeader(title="已收到反馈", color="green"),
+            elements=[Markdown(f"已收到你的选择：`{choice}`")],
         )
     )
 
@@ -36,6 +53,8 @@ async def _default_cancel_action(ctx: CardActionContext) -> CardActionResponse:
 
 
 def _register_default_card_actions() -> None:
+    register_card_action("card.respond", _default_card_respond_action)
+    register_card_action("auth.open_link", _default_open_link_action)
     register_card_action("auth.authorize", _default_authorize_action)
     register_card_action("auth.cancel", _default_cancel_action)
 

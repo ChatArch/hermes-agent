@@ -1,6 +1,8 @@
 import asyncio
+import json
 import threading
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -21,6 +23,7 @@ from gateway.cards.actions import (
     register_card_action,
 )
 from gateway.cards.renderers.feishu import render_feishu_card
+from gateway.config import Platform
 from gateway.platforms import feishu as feishu_platform
 from gateway.platforms.feishu import FeishuAdapter
 
@@ -294,3 +297,83 @@ def test_feishu_card_action_trigger_unknown_action_falls_back(monkeypatch):
 
     assert response is not None
     assert submitted and submitted[0][0] is loop
+
+
+def test_feishu_card_action_trigger_resolves_pending_authorization_request(monkeypatch):
+    loop, thread = _start_background_loop()
+    _patch_feishu_callback_classes(monkeypatch)
+    sent = []
+
+    class SendAdapter:
+        async def send_card(self, chat_id, card, *, reply_to=None, metadata=None):
+            sent.append({"chat_id": chat_id, "card": card, "reply_to": reply_to, "metadata": metadata})
+            return SimpleNamespace(success=True, message_id="om_auth", thread_id="omt_thread", error=None)
+
+    fake_gateway_run = ModuleType("gateway.run")
+    fake_gateway_run._gateway_runner_ref = lambda: SimpleNamespace(adapters={Platform.FEISHU: SendAdapter()})
+    monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from plugins.feishu_card import register
+    from plugins.feishu_card.tools import feishu_card_tool_async
+
+    class Ctx:
+        def register_tool(self, **_kwargs):
+            pass
+
+    register(Ctx())
+    adapter = FeishuAdapter.__new__(FeishuAdapter)
+    adapter._loop = loop
+    tokens = set_session_vars(
+        platform="feishu",
+        chat_id="oc_chat",
+        thread_id="omt_thread",
+        session_key="session-auth",
+        message_id="om_trigger",
+    )
+
+    async def scenario():
+        task = asyncio.create_task(
+            feishu_card_tool_async(
+                {
+                    "action": "request_authorization",
+                    "verification_url": "https://accounts.feishu.cn/oauth/v1/device/verify?user_code=REDACTED",
+                    "flow_id": "flow-adapter-cancel",
+                }
+            )
+        )
+        await asyncio.sleep(0)
+        data = SimpleNamespace(
+            event=SimpleNamespace(
+                action=SimpleNamespace(
+                    value={
+                        "action": "card.respond",
+                        "request_id": "flow-adapter-cancel",
+                        "choice": "cancel",
+                        "kind": "cancel",
+                        "flow_id": "flow-adapter-cancel",
+                        "session_key": "session-auth",
+                    }
+                ),
+                operator=SimpleNamespace(open_id="ou_user", user_id="user_id"),
+                context=SimpleNamespace(open_chat_id="oc_chat", open_message_id="om_auth"),
+            )
+        )
+        response = adapter._on_card_action_trigger(data)
+        raw = await task
+        return response, json.loads(raw)
+
+    try:
+        response, result = asyncio.run(scenario())
+    finally:
+        clear_session_vars(tokens)
+        _stop_background_loop(loop, thread)
+
+    assert sent[0]["chat_id"] == "oc_chat"
+    assert sent[0]["metadata"] == {"thread_id": "omt_thread", "reply_to_message_id": "om_trigger"}
+    assert response is not None
+    assert response.card.type == "raw"
+    assert response.card.data["header"]["title"] == {"tag": "plain_text", "content": "已收到反馈"}
+    assert result["success"] is True
+    assert result["choice"] == "cancel"
+    assert result["flow_id"] == "flow-adapter-cancel"

@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import uuid
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +24,7 @@ from gateway.cards import (
 from gateway.cards.renderers.feishu import render_feishu_card
 
 _AUTHORIZATION_REQUEST_TIMEOUT_SECONDS = 300
+_INTERACTION_REQUEST_TIMEOUT_SECONDS = 300
 
 
 @dataclass(slots=True)
@@ -30,29 +33,45 @@ class _AuthorizationRequestEntry:
     choice: str | None = None
 
 
+@dataclass(slots=True)
+class _InteractionRequestEntry:
+    event: threading.Event
+    payload: dict[str, str] | None = None
+
+
 _authorization_lock = threading.RLock()
 _authorization_requests: dict[tuple[str, str], _AuthorizationRequestEntry] = {}
+_interaction_lock = threading.RLock()
+_interaction_requests: dict[tuple[str, str], _InteractionRequestEntry] = {}
 
 
 FEISHU_CARD_SCHEMA = {
     "name": "feishu_card",
     "description": (
-        "Build, request, preview, and send flexible Feishu/Lark interactive cards using a JSON DSL. "
-        "Use request_authorization for natural current-session authorization flows."
+        "Build, preview, send, or request feedback with flexible Feishu/Lark interactive cards. "
+        "Use request_interaction when the model needs to ask the user for structured feedback and then continue."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["schema", "preview", "authorization_preview", "send", "request_authorization"],
+                "enum": [
+                    "schema",
+                    "preview",
+                    "authorization_preview",
+                    "send",
+                    "request_interaction",
+                    "request_authorization",
+                ],
                 "description": (
-                    "Operation to perform. request_authorization sends an authorization card to the current "
-                    "Feishu gateway conversation and waits for the user's card choice. send uses the live "
-                    "Feishu gateway adapter when available."
+                    "Operation to perform. request_interaction sends a model-designed card to the current "
+                    "Feishu conversation, waits for a button response, and returns the user's structured payload. "
+                    "request_authorization is a convenience specialization for authorization-link cards."
                 ),
             },
-            "card": {"type": "object", "description": "Flexible card DSL for action=preview."},
+            "card": {"type": "object", "description": "Flexible card DSL for preview/send/request_interaction."},
+            "request_id": {"type": "string", "description": "Optional stable id for request_interaction feedback."},
             "session_key": {"type": "string", "description": "Optional session key to embed in button values."},
             "verification_url": {"type": "string", "description": "Authorization URL for authorization_preview/request_authorization."},
             "flow_id": {"type": "string", "description": "Opaque authorization flow id for authorization card actions."},
@@ -88,7 +107,16 @@ def _dsl_schema() -> dict[str, Any]:
         "layouts": ["row", "equal"],
         "header": {"fields": ["title", "color"]},
         "escape_hatches": ["raw_feishu"],
-        "semantic_actions": ["request_authorization"],
+        "semantic_actions": ["request_interaction", "request_authorization"],
+        "request_interaction": {
+            "behavior": (
+                "Hermes rewrites each button to a managed card.respond callback, waits for the user click, "
+                "and returns {request_id, choice, payload, message_id, thread_id} to the model."
+            ),
+            "button_payload_contract": (
+                "Each button's action becomes payload.choice. button.payload key-values are returned in payload."
+            ),
+        },
     }
 
 
@@ -159,13 +187,49 @@ def _render_for_args(args: dict[str, Any]) -> dict[str, Any]:
     return render_feishu_card(card, session_key=session_key)
 
 
-def resolve_authorization_request(session_key: str | None, flow_id: str, choice: str) -> bool:
-    """Resolve a pending semantic Feishu authorization request.
+def _build_authorization_request_card(
+    *,
+    verification_url: str,
+    flow_id: str,
+    title: str,
+    body: str,
+) -> Card:
+    """Build an authorization card as one instance of the generic card feedback pattern."""
+    return Card(
+        header=CardHeader(title=title, color="blue"),
+        elements=[
+            Markdown(body),
+            Actions(
+                layout="equal",
+                buttons=[
+                    Button(
+                        text="打开授权链接",
+                        style="primary",
+                        action="auth.open_link",
+                        url=verification_url,
+                        payload={"flow_id": flow_id},
+                    ),
+                    Button(
+                        text="我已完成授权",
+                        style="primary",
+                        action="auth.authorize",
+                        payload={"flow_id": flow_id},
+                    ),
+                    Button(
+                        text="取消",
+                        style="danger",
+                        action="auth.cancel",
+                        payload={"flow_id": flow_id},
+                    ),
+                ],
+            ),
+            Note("打开授权链接后，请回到这里点击“我已完成授权”，Hermes 才会继续任务。"),
+        ],
+    )
 
-    Called by the default authorization card-action handlers.  This mirrors the
-    SSH Mode grant resolver: a card callback turns a user choice into a pending
-    model-tool result.
-    """
+
+def resolve_authorization_request(session_key: str | None, flow_id: str, choice: str) -> bool:
+    """Resolve a pending semantic Feishu authorization request."""
     clean_session_key = str(session_key or "").strip()
     clean_flow_id = str(flow_id or "").strip()
     if not clean_session_key or not clean_flow_id:
@@ -182,14 +246,24 @@ def resolve_authorization_request(session_key: str | None, flow_id: str, choice:
     return True
 
 
-def _current_feishu_session_target() -> tuple[str, str, str, str]:
-    """Return the current Feishu gateway target from session ContextVars.
+def resolve_interaction_request(session_key: str | None, request_id: str, payload: dict[str, Any]) -> bool:
+    """Resolve a pending generic card interaction request."""
+    clean_session_key = str(session_key or "").strip()
+    clean_request_id = str(request_id or "").strip()
+    if not clean_session_key or not clean_request_id:
+        return False
+    clean_payload = {str(k): str(v) for k, v in (payload or {}).items()}
+    with _interaction_lock:
+        entry = _interaction_requests.pop((clean_session_key, clean_request_id), None)
+    if entry is None:
+        return False
+    entry.payload = clean_payload
+    entry.event.set()
+    return True
 
-    This mirrors how built-in approval cards (tool approval, SSH Mode, update
-    prompts) naturally route back to the active conversation: the gateway seeds
-    ``HERMES_SESSION_CHAT_ID`` and ``HERMES_SESSION_THREAD_ID`` for the current
-    task, then platform send methods receive the thread via ``metadata``.
-    """
+
+def _current_feishu_session_target() -> tuple[str, str, str, str]:
+    """Return the current Feishu gateway target from session ContextVars."""
     try:
         from gateway.session_context import get_session_env
     except Exception:
@@ -240,29 +314,60 @@ async def _send_rendered_card(
     return await send_card(chat_id, rendered, reply_to=reply_to, metadata=metadata)
 
 
-async def _request_authorization(args: dict[str, Any]) -> str:
-    verification_url = str(args.get("verification_url") or "").strip()
-    flow_id = str(args.get("flow_id") or "").strip()
-    if not verification_url:
-        return _err("verification_url is required")
-    if not flow_id:
-        return _err("flow_id is required")
+def _prepare_interaction_card_args(args: dict[str, Any], *, request_id: str) -> dict[str, Any]:
+    effective_args = dict(args)
+    card_spec = deepcopy(args.get("card") or {})
+    if not isinstance(card_spec, dict):
+        raise ValueError("card must be an object for request_interaction")
+    elements = card_spec.get("elements") or []
+    if not isinstance(elements, list):
+        raise ValueError("card.elements must be an array for request_interaction")
+    button_count = 0
+    for element in elements:
+        if not isinstance(element, dict) or str(element.get("type") or "").strip().lower() != "actions":
+            continue
+        buttons = element.get("buttons") or []
+        if not isinstance(buttons, list):
+            raise ValueError("actions.buttons must be an array for request_interaction")
+        for button in buttons:
+            if not isinstance(button, dict):
+                raise ValueError("each button must be an object for request_interaction")
+            original_action = str(button.get("action") or button.get("text") or "").strip()
+            if not original_action:
+                raise ValueError("request_interaction buttons require action or text")
+            payload = button.get("payload") or {}
+            if not isinstance(payload, dict):
+                raise ValueError("button.payload must be an object for request_interaction")
+            prepared_payload = {str(k): str(v) for k, v in payload.items()}
+            prepared_payload.setdefault("choice", original_action)
+            prepared_payload.setdefault("request_id", request_id)
+            prepared_payload.setdefault("button_text", str(button.get("text") or original_action))
+            button["action"] = "card.respond"
+            button["payload"] = prepared_payload
+            button_count += 1
+    if button_count == 0:
+        raise ValueError("request_interaction requires at least one action button")
+    effective_args["card"] = card_spec
+    return effective_args
 
+
+async def _request_interaction(args: dict[str, Any]) -> str:
     chat_id, thread_id, session_key, message_id = _current_feishu_session_target()
     if not chat_id or not session_key:
-        return _err("request_authorization requires a live Feishu gateway session")
+        return _err("request_interaction requires a live Feishu gateway session")
+    request_id = str(args.get("request_id") or "").strip() or f"card-{uuid.uuid4().hex}"
 
-    card = build_feishu_authorization_card(
-        verification_url=verification_url,
-        flow_id=flow_id,
-        title=str(args.get("title") or "飞书授权请求"),
-        body=str(args.get("body") or "需要你完成飞书授权后，我才能继续。"),
-    )
-    rendered = render_feishu_card(card, session_key=session_key)
-    request_key = (session_key, flow_id)
-    entry = _AuthorizationRequestEntry(event=threading.Event())
-    with _authorization_lock:
-        _authorization_requests[request_key] = entry
+    try:
+        effective_args = _prepare_interaction_card_args(args, request_id=request_id)
+        effective_args["session_key"] = session_key
+        rendered = _render_for_args(effective_args)
+    except Exception as exc:
+        return _err(str(exc))
+
+    request_key = (session_key, request_id)
+    entry = _InteractionRequestEntry(event=threading.Event())
+    with _interaction_lock:
+        _interaction_requests[request_key] = entry
 
     try:
         result = await _send_rendered_card(
@@ -272,28 +377,100 @@ async def _request_authorization(args: dict[str, Any]) -> str:
             reply_to_message_id=message_id,
         )
         if not getattr(result, "success", False):
-            with _authorization_lock:
-                _authorization_requests.pop(request_key, None)
-            return _err(
-                getattr(result, "error", "Feishu authorization card send failed")
-                or "Feishu authorization card send failed"
-            )
+            with _interaction_lock:
+                _interaction_requests.pop(request_key, None)
+            return _err(getattr(result, "error", "Feishu interaction card send failed") or "Feishu interaction card send failed")
 
-        resolved = await asyncio.to_thread(entry.event.wait, _AUTHORIZATION_REQUEST_TIMEOUT_SECONDS)
+        resolved = await asyncio.to_thread(entry.event.wait, _INTERACTION_REQUEST_TIMEOUT_SECONDS)
         if not resolved:
-            with _authorization_lock:
-                _authorization_requests.pop(request_key, None)
-            return _err("Timed out waiting for Feishu authorization response")
+            with _interaction_lock:
+                _interaction_requests.pop(request_key, None)
+            return _err("Timed out waiting for Feishu card interaction response")
+        payload = entry.payload or {}
         return _ok(
-            choice=entry.choice or "cancel",
-            flow_id=flow_id,
+            request_id=request_id,
+            choice=payload.get("choice"),
+            payload=payload,
             message_id=getattr(result, "message_id", None),
             thread_id=getattr(result, "thread_id", None),
         )
     except Exception as exc:
-        with _authorization_lock:
-            _authorization_requests.pop(request_key, None)
+        with _interaction_lock:
+            _interaction_requests.pop(request_key, None)
         return _err(str(exc))
+
+
+async def _request_authorization(args: dict[str, Any]) -> str:
+    verification_url = str(args.get("verification_url") or "").strip()
+    flow_id = str(args.get("flow_id") or "").strip()
+    if not verification_url:
+        return _err("verification_url is required")
+    if not flow_id:
+        return _err("flow_id is required")
+
+    title = str(args.get("title") or "飞书授权请求")
+    body = str(args.get("body") or "需要你完成飞书授权后，我才能继续。")
+    interaction_args = {
+        "action": "request_interaction",
+        "request_id": flow_id,
+        "card": {
+            "header": {"title": title, "color": "blue"},
+            "elements": [
+                {"type": "markdown", "content": body},
+                {
+                    "type": "actions",
+                    "layout": "equal",
+                    "buttons": [
+                        {
+                            "text": "打开授权链接",
+                            "style": "primary",
+                            "action": "open_link",
+                            "url": verification_url,
+                            "payload": {"flow_id": flow_id, "kind": "open_link"},
+                        },
+                        {
+                            "text": "我已完成授权",
+                            "style": "primary",
+                            "action": "authorize",
+                            "payload": {"flow_id": flow_id, "kind": "authorize"},
+                        },
+                        {
+                            "text": "取消",
+                            "style": "danger",
+                            "action": "cancel",
+                            "payload": {"flow_id": flow_id, "kind": "cancel"},
+                        },
+                    ],
+                },
+                {"type": "note", "content": "打开授权链接后，请回到这里点击“我已完成授权”，Hermes 才会继续任务。"},
+            ],
+        },
+    }
+    raw = await _request_interaction(interaction_args)
+    result = json.loads(raw)
+    if not result.get("success"):
+        return raw
+    choice = str(result.get("choice") or "")
+    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    kind = str(payload.get("kind") or choice)
+    if kind == "open_link":
+        # Opening the URL is not terminal feedback; the user still needs to
+        # return and click completed/cancel.  If a platform sends a URL-button
+        # callback, surface it without pretending authorization completed.
+        return _ok(
+            choice="open_link",
+            flow_id=flow_id,
+            payload=payload,
+            message_id=result.get("message_id"),
+            thread_id=result.get("thread_id"),
+        )
+    return _ok(
+        choice="authorize" if kind == "authorize" else "cancel",
+        flow_id=flow_id,
+        payload=payload,
+        message_id=result.get("message_id"),
+        thread_id=result.get("thread_id"),
+    )
 
 
 def feishu_card_tool(args: dict[str, Any]) -> str:
@@ -326,6 +503,8 @@ def feishu_card_tool(args: dict[str, Any]) -> str:
 
 async def feishu_card_tool_async(args: dict[str, Any]) -> str:
     action = str(args.get("action") or "").strip()
+    if action == "request_interaction":
+        return await _request_interaction(args)
     if action == "request_authorization":
         return await _request_authorization(args)
     if action != "send":

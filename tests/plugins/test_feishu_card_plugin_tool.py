@@ -145,6 +145,95 @@ def test_feishu_card_tool_schema_describes_flexible_card_dsl():
     assert "raw_feishu" in result["schema"]["escape_hatches"]
 
 
+def test_feishu_card_tool_request_interaction_returns_user_button_payload(monkeypatch):
+    sent = []
+
+    class Adapter:
+        async def send_card(self, chat_id, card, *, reply_to=None, metadata=None):
+            sent.append({"chat_id": chat_id, "card": card, "reply_to": reply_to, "metadata": metadata})
+            return SimpleNamespace(success=True, message_id="om_interact", thread_id="omt_current", error=None)
+
+    fake_gateway_run = ModuleType("gateway.run")
+    fake_gateway_run._gateway_runner_ref = lambda: SimpleNamespace(adapters={Platform.FEISHU: Adapter()})
+    monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+
+    from gateway.cards.actions import CardActionContext, get_card_action_registry
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from plugins.feishu_card import register
+    from plugins.feishu_card import tools as card_tools
+
+    monkeypatch.setattr(card_tools, "_INTERACTION_REQUEST_TIMEOUT_SECONDS", 0.2)
+
+    class Ctx:
+        def register_tool(self, **_kwargs):
+            pass
+
+    register(Ctx())
+    tokens = set_session_vars(
+        platform="feishu",
+        chat_id="oc_current",
+        thread_id="omt_current",
+        session_key="session-current",
+        message_id="om_trigger",
+    )
+
+    async def scenario():
+        task = asyncio.create_task(
+            feishu_card_tool_async(
+                {
+                    "action": "request_interaction",
+                    "request_id": "req-priority",
+                    "card": {
+                        "header": {"title": "选择优先级", "color": "blue"},
+                        "elements": [
+                            {"type": "markdown", "content": "请选择下一步优先级。"},
+                            {
+                                "type": "actions",
+                                "layout": "equal",
+                                "buttons": [
+                                    {"text": "高", "style": "primary", "action": "high", "payload": {"priority": "high"}},
+                                    {"text": "低", "style": "default", "action": "low", "payload": {"priority": "low"}},
+                                ],
+                            },
+                        ],
+                    },
+                }
+            )
+        )
+        await asyncio.sleep(0)
+        buttons = sent[0]["card"]["elements"][1]["columns"]
+        high_value = buttons[0]["elements"][0]["value"]
+        assert high_value["action"] == "card.respond"
+        assert high_value["request_id"] == "req-priority"
+        assert high_value["choice"] == "high"
+        assert high_value["priority"] == "high"
+        response = await get_card_action_registry().dispatch(
+            CardActionContext(
+                action="card.respond",
+                payload={"request_id": "req-priority", "choice": "high", "priority": "high"},
+                user_id="ou_user",
+                chat_id="oc_current",
+                message_id="om_interact",
+                session_key="session-current",
+            )
+        )
+        raw = await task
+        return response, json.loads(raw)
+
+    try:
+        response, result = asyncio.run(scenario())
+    finally:
+        clear_session_vars(tokens)
+
+    assert response.kind == "replace_card"
+    assert result["success"] is True
+    assert result["request_id"] == "req-priority"
+    assert result["choice"] == "high"
+    assert result["payload"] == {"choice": "high", "priority": "high", "request_id": "req-priority"}
+    assert sent[0]["chat_id"] == "oc_current"
+    assert sent[0]["metadata"] == {"thread_id": "omt_current", "reply_to_message_id": "om_trigger"}
+
+
 def test_feishu_card_tool_request_authorization_waits_for_current_session_choice(monkeypatch):
     sent = []
 
@@ -153,7 +242,11 @@ def test_feishu_card_tool_request_authorization_waits_for_current_session_choice
             sent.append({"chat_id": chat_id, "card": card, "reply_to": reply_to, "metadata": metadata})
             from plugins.feishu_card import tools
 
-            tools.resolve_authorization_request("session-current", "flow-natural", "authorize")
+            tools.resolve_interaction_request(
+                "session-current",
+                "flow-natural",
+                {"request_id": "flow-natural", "choice": "authorize", "kind": "authorize", "flow_id": "flow-natural"},
+            )
             return SimpleNamespace(success=True, message_id="om_auth", thread_id="omt_current", error=None)
 
     fake_gateway_run = ModuleType("gateway.run")
@@ -190,13 +283,25 @@ def test_feishu_card_tool_request_authorization_waits_for_current_session_choice
     assert result["message_id"] == "om_auth"
     assert sent[0]["chat_id"] == "oc_current"
     assert sent[0]["metadata"] == {"thread_id": "omt_current", "reply_to_message_id": "om_trigger"}
-    authorize = sent[0]["card"]["elements"][1]["columns"][0]["elements"][0]
-    assert authorize["value"]["action"] == "auth.authorize"
-    assert authorize["value"]["session_key"] == "session-current"
-    assert authorize["value"]["flow_id"] == "flow-natural"
+    buttons = sent[0]["card"]["elements"][1]["columns"]
+    open_link = buttons[0]["elements"][0]
+    complete = buttons[1]["elements"][0]
+    cancel = buttons[2]["elements"][0]
+    assert open_link["text"]["content"] == "打开授权链接"
+    assert open_link["url"].startswith("https://accounts.feishu.cn/oauth/v1/device/verify")
+    assert open_link["value"]["action"] == "card.respond"
+    assert open_link["value"]["choice"] == "open_link"
+    assert complete["text"]["content"] == "我已完成授权"
+    assert "url" not in complete
+    assert complete["value"]["action"] == "card.respond"
+    assert complete["value"]["choice"] == "authorize"
+    assert complete["value"]["request_id"] == "flow-natural"
+    assert complete["value"]["flow_id"] == "flow-natural"
+    assert cancel["value"]["action"] == "card.respond"
+    assert cancel["value"]["choice"] == "cancel"
 
 
-def test_feishu_card_authorization_card_action_resolves_pending_request(monkeypatch):
+def test_feishu_card_respond_action_resolves_pending_authorization_request(monkeypatch):
     sent = []
 
     class Adapter:
@@ -213,7 +318,7 @@ def test_feishu_card_authorization_card_action_resolves_pending_request(monkeypa
     from plugins.feishu_card import register
     from plugins.feishu_card import tools as card_tools
 
-    monkeypatch.setattr(card_tools, "_AUTHORIZATION_REQUEST_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(card_tools, "_INTERACTION_REQUEST_TIMEOUT_SECONDS", 0.2)
 
     class Ctx:
         def register_tool(self, **_kwargs):
@@ -241,8 +346,13 @@ def test_feishu_card_authorization_card_action_resolves_pending_request(monkeypa
         await asyncio.sleep(0)
         response = await get_card_action_registry().dispatch(
             CardActionContext(
-                action="auth.cancel",
-                payload={"flow_id": "flow-cancel"},
+                action="card.respond",
+                payload={
+                    "request_id": "flow-cancel",
+                    "choice": "cancel",
+                    "kind": "cancel",
+                    "flow_id": "flow-cancel",
+                },
                 user_id="ou_user",
                 chat_id="oc_current",
                 message_id="om_auth",
@@ -259,7 +369,7 @@ def test_feishu_card_authorization_card_action_resolves_pending_request(monkeypa
 
     assert response.kind == "replace_card"
     assert response.card is not None
-    assert response.card.header.title == "授权已取消"
+    assert response.card.header.title == "已收到反馈"
     assert result["success"] is True
     assert result["choice"] == "cancel"
     assert result["flow_id"] == "flow-cancel"
