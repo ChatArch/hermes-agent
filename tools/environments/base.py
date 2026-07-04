@@ -319,6 +319,7 @@ class BaseEnvironment(ABC):
         self._cwd_file = f"{temp_dir}/hermes-cwd-{self._session_id}.txt"
         self._cwd_marker = _cwd_marker(self._session_id)
         self._snapshot_ready = False
+        self._persist_session_state = True
 
     # ------------------------------------------------------------------
     # Abstract methods
@@ -450,11 +451,12 @@ class BaseEnvironment(ABC):
         parts.append("__hermes_ec=$?")
 
         # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
-        if self._snapshot_ready:
+        if self._snapshot_ready and self._persist_session_state:
             parts.append(f"export -p > {_quoted_snap} 2>/dev/null || true")
 
         # Write CWD to file (local reads this) and stdout marker (remote parses this)
-        parts.append(f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true")
+        if self._persist_session_state:
+            parts.append(f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true")
         # Use a distinct line for the marker. The leading \n ensures
         # the marker starts on its own line even if the command doesn't
         # end with a newline (e.g. printf 'exact'). We'll strip this
@@ -793,7 +795,7 @@ class BaseEnvironment(ABC):
             return
 
         cwd_path = output[first + len(marker) : last].strip()
-        if cwd_path:
+        if cwd_path and self._persist_session_state:
             self.cwd = cwd_path
 
         # Strip the marker line AND the \n we injected before it.
