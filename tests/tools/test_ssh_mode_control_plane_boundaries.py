@@ -207,3 +207,26 @@ def test_memory_session_ssh_override_writes_local_memory_store(monkeypatch, tmp_
     assert "Local user profile boundary probe" in user_file.read_text(encoding="utf-8")
     assert str(user_file).startswith(str(hermes_home))
     assert not str(user_file).startswith("/home/rex/.hermes/memories")
+
+
+
+def test_todo_session_ssh_override_stays_in_local_store():
+    """Todo is local in-memory agent/session state, not SSH target state."""
+    from tools import todo_tool
+
+    task_id = "ssh-mode-boundary-todo"
+    terminal_tool = _register_session_ssh_backend(task_id)
+    store = todo_tool.TodoStore()
+
+    try:
+        result = json.loads(
+            todo_tool.todo_tool(
+                todos=[{"id": "a", "content": "local todo", "status": "in_progress"}],
+                store=store,
+            )
+        )
+    finally:
+        terminal_tool.clear_task_env_overrides(task_id)
+
+    assert result["todos"] == [{"id": "a", "content": "local todo", "status": "in_progress"}]
+    assert store.read() == result["todos"]
