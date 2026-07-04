@@ -229,7 +229,14 @@ def _get_enabled_plugins() -> Optional[set]:
 # Data classes
 # ---------------------------------------------------------------------------
 
-_VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
+_VALID_PLUGIN_KINDS: Set[str] = {
+    "standalone",
+    "backend",
+    "tool",
+    "exclusive",
+    "platform",
+    "model-provider",
+}
 
 
 @dataclass
@@ -251,6 +258,10 @@ class PluginManifest:
     # ``backend``: pluggable backend for an existing core tool (e.g.
     #              image_gen). Built-in (bundled) backends auto-load;
     #              user-installed still gated by ``plugins.enabled``.
+    # ``tool``: native Hermes tool capability bundled with the product.
+    #           Bundled tool plugins auto-load so models can naturally call
+    #           shipped tools without requiring a separate skill/config step;
+    #           user-installed tool plugins remain gated by ``plugins.enabled``.
     # ``exclusive``: category with exactly one active provider (memory).
     #              Selection via ``<category>.provider`` config key; the
     #              category's own discovery system handles loading and the
@@ -1275,7 +1286,10 @@ class PluginManager:
             # Bundled platform plugins (gateway adapters like IRC) auto-load
             # for the same reason: every platform Hermes ships must be
             # available out of the box without the user having to opt in.
-            if manifest.source == "bundled" and manifest.kind in {"backend", "platform"}:
+            # Bundled native tool plugins auto-load for the same reason:
+            # when Hermes ships a first-party tool surface, models should be
+            # able to call it naturally without a separate Skill/config step.
+            if manifest.source == "bundled" and manifest.kind in {"backend", "platform", "tool"}:
                 self._load_plugin(manifest)
                 continue
 

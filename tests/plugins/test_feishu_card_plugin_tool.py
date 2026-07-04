@@ -3,6 +3,9 @@ import json
 import sys
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
+from gateway.cards import Markdown
 from gateway.config import Platform
 from plugins.feishu_card.tools import feishu_card_tool, feishu_card_tool_async
 
@@ -10,6 +13,74 @@ from plugins.feishu_card.tools import feishu_card_tool, feishu_card_tool_async
 def _json_result(payload):
     result = feishu_card_tool(payload)
     return json.loads(result)
+
+
+def test_feishu_card_bundled_tool_plugin_auto_loads_without_config(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from hermes_cli import plugins as pmod
+    from tools.registry import registry
+
+    registry.deregister("feishu_card")
+    mgr = pmod.PluginManager()
+    mgr.discover_and_load()
+
+    loaded = mgr._plugins["feishu_card"]
+    assert loaded.enabled is True
+    assert loaded.manifest.source == "bundled"
+    assert loaded.manifest.kind == "tool"
+    tool = registry.get_entry("feishu_card")
+    assert tool is not None
+    assert tool.toolset == "messaging"
+    assert tool.is_async is True
+
+
+def test_feishu_card_plugin_registers_default_authorization_actions():
+    from gateway.cards.actions import CardActionContext, get_card_action_registry
+    from plugins.feishu_card import register
+
+    class Ctx:
+        def register_tool(self, **_kwargs):
+            pass
+
+    register(Ctx())
+    registry = get_card_action_registry()
+
+    cancel_response = asyncio.run(
+        registry.dispatch(
+            CardActionContext(
+                action="auth.cancel",
+                payload={"flow_id": "flow-default"},
+                user_id="ou_user",
+                chat_id="oc_chat",
+                message_id="om_msg",
+                session_key="session-default",
+            )
+        )
+    )
+    assert cancel_response.kind == "replace_card"
+    assert cancel_response.card is not None
+    assert isinstance(cancel_response.card.elements[0], Markdown)
+    assert cancel_response.card.header.title == "授权已取消"
+    assert "flow-default" in cancel_response.card.elements[0].content
+
+    authorize_response = asyncio.run(
+        registry.dispatch(
+            CardActionContext(
+                action="auth.authorize",
+                payload={"flow_id": "flow-default"},
+                user_id="ou_user",
+                chat_id="oc_chat",
+                message_id="om_msg",
+                session_key="session-default",
+            )
+        )
+    )
+    assert authorize_response.kind == "replace_card"
+    assert authorize_response.card is not None
+    assert authorize_response.card.header.title == "已打开授权链接"
 
 
 def test_feishu_card_tool_preview_renders_custom_card_spec():

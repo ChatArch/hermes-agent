@@ -1,3 +1,4 @@
 name: feishu_card
 description: Flexible Feishu/Lark card DSL preview and send capability for Hermes.
 version: 0.1.0
+kind: tool

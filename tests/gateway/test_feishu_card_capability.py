@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -13,7 +14,12 @@ from gateway.cards import (
     RawFeishuCard,
     build_feishu_authorization_card,
 )
-from gateway.cards.actions import CardActionContext, CardActionResponse, CardActionRegistry
+from gateway.cards.actions import (
+    CardActionContext,
+    CardActionResponse,
+    CardActionRegistry,
+    register_card_action,
+)
 from gateway.cards.renderers.feishu import render_feishu_card
 from gateway.platforms.feishu import FeishuAdapter
 
@@ -169,3 +175,103 @@ def test_card_action_registry_rejects_unknown_action():
                 )
             )
         )
+
+
+def _start_background_loop():
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
+
+    def run_loop():
+        asyncio.set_event_loop(loop)
+        ready.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=run_loop, daemon=True)
+    thread.start()
+    ready.wait(timeout=2)
+    return loop, thread
+
+
+def _stop_background_loop(loop, thread):
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join(timeout=2)
+    loop.close()
+
+
+def test_feishu_card_action_trigger_registered_action_returns_replacement_card():
+    loop, thread = _start_background_loop()
+    action_name = "test.auth.cancel.phase2"
+
+    async def cancel(ctx: CardActionContext) -> CardActionResponse:
+        assert ctx.action == action_name
+        assert ctx.payload["flow_id"] == "flow-click"
+        assert ctx.session_key == "session-click"
+        assert ctx.chat_id == "oc_chat"
+        assert ctx.message_id == "om_msg"
+        return CardActionResponse.replace_card(
+            Card(
+                header=CardHeader(title="授权已取消", color="red"),
+                elements=[Markdown("flow=" + ctx.payload["flow_id"])],
+            )
+        )
+
+    register_card_action(action_name, cancel)
+    adapter = FeishuAdapter.__new__(FeishuAdapter)
+    adapter._loop = loop
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            action=SimpleNamespace(
+                value={
+                    "action": action_name,
+                    "flow_id": "flow-click",
+                    "session_key": "session-click",
+                }
+            ),
+            operator=SimpleNamespace(open_id="ou_user", user_id="user_id"),
+            context=SimpleNamespace(open_chat_id="oc_chat", open_message_id="om_msg"),
+        )
+    )
+
+    try:
+        response = adapter._on_card_action_trigger(data)
+    finally:
+        _stop_background_loop(loop, thread)
+
+    assert response is not None
+    assert response.card.type == "raw"
+    assert response.card.data["header"]["title"] == {"tag": "plain_text", "content": "授权已取消"}
+    assert response.card.data["header"]["template"] == "red"
+    assert response.card.data["elements"][0] == {"tag": "markdown", "content": "flow=flow-click"}
+
+
+def test_feishu_card_action_trigger_unknown_action_falls_back(monkeypatch):
+    loop, thread = _start_background_loop()
+    adapter = FeishuAdapter.__new__(FeishuAdapter)
+    adapter._loop = loop
+    submitted = []
+
+    async def fake_handle(data):
+        return None
+
+    def fake_submit(active_loop, coro):
+        submitted.append((active_loop, coro))
+        coro.close()
+        return True
+
+    monkeypatch.setattr(adapter, "_handle_card_action_event", fake_handle)
+    monkeypatch.setattr(adapter, "_submit_on_loop", fake_submit)
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            action=SimpleNamespace(value={"action": "missing.phase2.action"}),
+            operator=SimpleNamespace(open_id="ou_user", user_id="user_id"),
+            context=SimpleNamespace(open_chat_id="oc_chat", open_message_id="om_msg"),
+        )
+    )
+
+    try:
+        response = adapter._on_card_action_trigger(data)
+    finally:
+        _stop_background_loop(loop, thread)
+
+    assert response is not None
+    assert submitted and submitted[0][0] is loop
