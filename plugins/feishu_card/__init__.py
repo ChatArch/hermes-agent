@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from gateway.cards import Card, CardHeader, Markdown
 from gateway.cards.actions import CardActionContext, CardActionResponse, register_card_action
-from plugins.feishu_card.tools import FEISHU_CARD_SCHEMA, feishu_card_tool_async
+from plugins.feishu_card.tools import (
+    FEISHU_CARD_SCHEMA,
+    feishu_card_tool_async,
+    resolve_authorization_request,
+)
 
 
 async def _default_authorize_action(ctx: CardActionContext) -> CardActionResponse:
     flow_id = ctx.payload.get("flow_id", "")
+    resolve_authorization_request(ctx.session_key, flow_id, "authorize")
     suffix = f"\n\n流程：`{flow_id}`" if flow_id else ""
     return CardActionResponse.replace_card(
         Card(
@@ -20,6 +25,7 @@ async def _default_authorize_action(ctx: CardActionContext) -> CardActionRespons
 
 async def _default_cancel_action(ctx: CardActionContext) -> CardActionResponse:
     flow_id = ctx.payload.get("flow_id", "")
+    resolve_authorization_request(ctx.session_key, flow_id, "cancel")
     suffix = f"\n\n流程：`{flow_id}`" if flow_id else ""
     return CardActionResponse.replace_card(
         Card(
