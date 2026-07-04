@@ -8,6 +8,8 @@ SSH target machine.
 import json
 from pathlib import Path
 
+import pytest
+
 
 def _skill_content(description="Boundary probe"):
     return (
@@ -230,3 +232,86 @@ def test_todo_session_ssh_override_stays_in_local_store():
 
     assert result["todos"] == [{"id": "a", "content": "local todo", "status": "in_progress"}]
     assert store.read() == result["todos"]
+
+
+def test_cronjob_system_ssh_backend_writes_local_scheduler_store(monkeypatch, tmp_path):
+    """Cron metadata belongs to the local Hermes service, never the SSH target."""
+    from cron import jobs as cron_jobs
+    from tools import cronjob_tools
+    from tools.environments import ssh as ssh_env
+
+    hermes_home = tmp_path / "hermes-home"
+    cron_dir = hermes_home / "cron"
+    jobs_file = cron_dir / "jobs.json"
+    output_dir = cron_dir / "output"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(cron_jobs, "HERMES_DIR", hermes_home)
+    monkeypatch.setattr(cron_jobs, "CRON_DIR", cron_dir)
+    monkeypatch.setattr(cron_jobs, "JOBS_FILE", jobs_file)
+    monkeypatch.setattr(cron_jobs, "OUTPUT_DIR", output_dir)
+    monkeypatch.setattr(
+        ssh_env.SSHEnvironment,
+        "__init__",
+        lambda self, *a, **k: pytest.fail("cronjob must not initialize an SSH backend"),
+    )
+    _configure_system_ssh_backend(monkeypatch)
+
+    result = json.loads(
+        cronjob_tools.cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Record a local scheduler boundary probe",
+            name="local-cron-boundary",
+        )
+    )
+    listed = json.loads(cronjob_tools.cronjob(action="list"))
+
+    assert result["success"] is True
+    assert jobs_file.exists()
+    assert str(jobs_file).startswith(str(hermes_home))
+    assert not str(jobs_file).startswith("/home/rex/.hermes/cron")
+    assert listed["success"] is True
+    assert listed["count"] == 1
+    assert listed["jobs"][0]["name"] == "local-cron-boundary"
+
+
+class _LocalSessionDB:
+    def __init__(self):
+        self.list_calls = []
+
+    def list_sessions_rich(self, **kwargs):
+        self.list_calls.append(kwargs)
+        return [
+            {
+                "id": "local-session-1",
+                "title": "Local session",
+                "source": "feishu",
+                "started_at": 1,
+                "last_active": 2,
+                "message_count": 3,
+                "preview": "local service DB preview",
+            }
+        ]
+
+
+def test_session_search_system_ssh_backend_reads_local_session_db(monkeypatch):
+    """session_search is local service recall, not a remote SSH database query."""
+    from tools import session_search_tool
+    from tools.environments import ssh as ssh_env
+
+    db = _LocalSessionDB()
+    monkeypatch.setattr(
+        ssh_env.SSHEnvironment,
+        "__init__",
+        lambda self, *a, **k: pytest.fail("session_search must not initialize an SSH backend"),
+    )
+    _configure_system_ssh_backend(monkeypatch)
+
+    result = json.loads(session_search_tool.session_search(db=db, limit=1))
+
+    assert result["success"] is True
+    assert result["mode"] == "browse"
+    assert result["results"][0]["session_id"] == "local-session-1"
+    assert result["results"][0]["preview"] == "local service DB preview"
+    assert db.list_calls

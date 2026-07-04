@@ -89,8 +89,7 @@ class SSHEnvironment(BaseEnvironment):
         self.known_hosts_path.touch(exist_ok=True)
         self.host_key_policy = _normalize_host_key_policy(host_key_policy)
 
-        self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
-        self.control_dir.mkdir(parents=True, exist_ok=True)
+        self.control_dir = self._make_control_dir()
         # Keep the socket filename short and deterministic so the full path
         # stays under the 104-byte sun_path limit that macOS enforces on
         # Unix domain sockets. A raw ``user@host:port`` — especially with an
@@ -119,6 +118,48 @@ class SSHEnvironment(BaseEnvironment):
             self._sync_manager.sync(force=True)
 
         self.init_session()
+
+    @staticmethod
+    def _control_dir_suffix() -> str:
+        """Return a short local-user suffix for ControlMaster socket dirs."""
+        try:
+            return str(os.getuid())
+        except AttributeError:
+            user = os.getenv("USERNAME") or os.getenv("USER") or "user"
+            return hashlib.sha256(user.encode()).hexdigest()[:8]
+
+    @classmethod
+    def _make_control_dir(cls) -> Path:
+        """Create a local-user-isolated OpenSSH ControlMaster directory.
+
+        ``/tmp`` is shared across local users on Linux/macOS.  A fixed global
+        directory such as ``/tmp/hermes-ssh`` can be created by one gateway user
+        and then block another user from binding a control socket.  Use a short
+        per-local-user directory name to avoid cross-user permission pollution
+        while preserving the macOS Unix-socket path length budget.
+        """
+        control_dir = Path(tempfile.gettempdir()) / f"hssh-{cls._control_dir_suffix()}"
+        control_dir.mkdir(parents=True, exist_ok=True)
+        if control_dir.is_symlink():
+            raise RuntimeError(f"SSH control socket directory must not be a symlink: {control_dir}")
+        try:
+            expected_uid = os.getuid()
+        except AttributeError:
+            expected_uid = None
+        if expected_uid is not None:
+            actual_uid = control_dir.stat().st_uid
+            if actual_uid != expected_uid:
+                raise RuntimeError(
+                    "SSH control socket directory is owned by another local user: "
+                    f"{control_dir} (uid {actual_uid}, expected {expected_uid})"
+                )
+        try:
+            control_dir.chmod(0o700)
+        except OSError:
+            logger.debug("SSH: failed to chmod control dir %s", control_dir, exc_info=True)
+        if not os.access(control_dir, os.W_OK | os.X_OK):
+            raise RuntimeError(f"SSH control socket directory is not writable: {control_dir}")
+        return control_dir
 
     def _build_ssh_command(self, extra_args: list | None = None) -> list:
         cmd = ["ssh"]
