@@ -883,13 +883,18 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             })
 
         _resolved = _resolve_path_for_task(path, task_id)
+        is_remote_backend = _is_remote_backend_task(task_id)
 
         # ── Structured-document extraction ────────────────────────────
-        # Try before the binary-extension guard so .docx/.xlsx can render as text.
+        # Local backend only.  Extraction libraries open files from the Python
+        # host filesystem; under SSH/container backends that would either leak a
+        # same-path host document or fail locally before the backend read.  Remote
+        # reads must go through backend file operations exclusively.
+        # Try before the binary-extension guard so local .docx/.xlsx can render as text.
         # Malformed documents fall through to the normal path/binary guard.
         from tools.read_extract import ExtractionError, extract_document_text, is_extractable_document
 
-        if is_extractable_document(str(_resolved)):
+        if not is_remote_backend and is_extractable_document(str(_resolved)):
             try:
                 extracted_text = extract_document_text(str(_resolved))
             except ExtractionError:
@@ -931,8 +936,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 return json.dumps(result_dict, ensure_ascii=False)
 
         # ── Binary file guard ─────────────────────────────────────────
-        # Block binary files by extension (no I/O).
-        if has_binary_extension(str(_resolved)):
+        # Block local binary files by extension without I/O.  Remote backends
+        # must not use host path suffix checks as an early return because doing
+        # so bypasses backend execution and can hide whether the remote file
+        # exists.  ShellFileOperations performs backend-side binary detection.
+        if not is_remote_backend and has_binary_extension(str(_resolved)):
             _ext = _resolved.suffix.lower()
             return json.dumps({
                 "error": (

@@ -101,6 +101,38 @@ def test_read_file_ssh_session_passes_backend_path_not_host_resolved(monkeypatch
     assert "/System/Volumes/Data" not in str(ops.read_calls)
 
 
+def test_read_file_ssh_session_docx_skips_host_document_extraction(monkeypatch, tmp_path):
+    """Remote structured documents must not be opened/extracted from the host filesystem."""
+    from tools import file_tools
+    from tools import read_extract
+    from tools import terminal_tool
+
+    task_id = "ssh-read-session-docx"
+    requested = "/tmp/report.docx"
+    host_resolved = tmp_path / "report.docx"
+    host_resolved.write_bytes(b"host docx content must not be read")
+    ops = _RecordingFileOps()
+    _install_common_stubs(monkeypatch, file_tools, requested, str(host_resolved), ops)
+    _register_ssh_task(terminal_tool, task_id)
+
+    monkeypatch.setattr(read_extract, "is_extractable_document", lambda path: path.endswith(".docx"))
+    monkeypatch.setattr(
+        read_extract,
+        "extract_document_text",
+        lambda path: (_ for _ in ()).throw(AssertionError("host document extraction must not run for SSH reads")),
+    )
+
+    try:
+        result = json.loads(file_tools.read_file_tool(requested, offset=1, limit=5, task_id=task_id))
+    finally:
+        terminal_tool.clear_task_env_overrides(task_id)
+        file_tools.clear_file_ops_cache(task_id)
+
+    assert not result.get("error"), result
+    assert ops.read_calls == [(requested, 1, 5)]
+    assert "host docx content" not in json.dumps(result)
+
+
 def test_search_files_ssh_session_passes_backend_path_not_host_resolved(monkeypatch):
     """search_files must search backend paths under SSH session overrides."""
     from tools import file_tools
