@@ -122,11 +122,11 @@ class SSHEnvironment(BaseEnvironment):
     @staticmethod
     def _control_dir_suffix() -> str:
         """Return a short local-user suffix for ControlMaster socket dirs."""
-        try:
-            return str(os.getuid())
-        except AttributeError:
-            user = os.getenv("USERNAME") or os.getenv("USER") or "user"
-            return hashlib.sha256(user.encode()).hexdigest()[:8]
+        getuid = getattr(os, "getuid", None)
+        if callable(getuid):
+            return str(getuid())
+        user = os.getenv("USERNAME") or os.getenv("USER") or "user"
+        return hashlib.sha256(user.encode()).hexdigest()[:8]
 
     @classmethod
     def _make_control_dir(cls) -> Path:
@@ -142,10 +142,8 @@ class SSHEnvironment(BaseEnvironment):
         control_dir.mkdir(parents=True, exist_ok=True)
         if control_dir.is_symlink():
             raise RuntimeError(f"SSH control socket directory must not be a symlink: {control_dir}")
-        try:
-            expected_uid = os.getuid()
-        except AttributeError:
-            expected_uid = None
+        getuid = getattr(os, "getuid", None)
+        expected_uid = getuid() if callable(getuid) else None
         if expected_uid is not None:
             actual_uid = control_dir.stat().st_uid
             if actual_uid != expected_uid:
