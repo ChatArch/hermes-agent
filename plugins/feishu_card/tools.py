@@ -23,24 +23,18 @@ from gateway.cards import (
 )
 from gateway.cards.renderers.feishu import render_feishu_card
 
-_AUTHORIZATION_REQUEST_TIMEOUT_SECONDS = 300
 _INTERACTION_REQUEST_TIMEOUT_SECONDS = 300
-
-
-@dataclass(slots=True)
-class _AuthorizationRequestEntry:
-    event: threading.Event
-    choice: str | None = None
 
 
 @dataclass(slots=True)
 class _InteractionRequestEntry:
     event: threading.Event
+    chat_id: str
+    trigger_message_id: str
+    response_message_id: str | None = None
     payload: dict[str, str] | None = None
 
 
-_authorization_lock = threading.RLock()
-_authorization_requests: dict[tuple[str, str], _AuthorizationRequestEntry] = {}
 _interaction_lock = threading.RLock()
 _interaction_requests: dict[tuple[str, str], _InteractionRequestEntry] = {}
 
@@ -228,25 +222,14 @@ def _build_authorization_request_card(
     )
 
 
-def resolve_authorization_request(session_key: str | None, flow_id: str, choice: str) -> bool:
-    """Resolve a pending semantic Feishu authorization request."""
-    clean_session_key = str(session_key or "").strip()
-    clean_flow_id = str(flow_id or "").strip()
-    if not clean_session_key or not clean_flow_id:
-        return False
-    clean_choice = str(choice or "").strip().lower()
-    if clean_choice not in {"authorize", "cancel"}:
-        clean_choice = "cancel"
-    with _authorization_lock:
-        entry = _authorization_requests.pop((clean_session_key, clean_flow_id), None)
-    if entry is None:
-        return False
-    entry.choice = clean_choice
-    entry.event.set()
-    return True
-
-
-def resolve_interaction_request(session_key: str | None, request_id: str, payload: dict[str, Any]) -> bool:
+def resolve_interaction_request(
+    session_key: str | None,
+    request_id: str,
+    payload: dict[str, Any],
+    *,
+    chat_id: str = "",
+    message_id: str = "",
+) -> bool:
     """Resolve a pending generic card interaction request."""
     clean_session_key = str(session_key or "").strip()
     clean_request_id = str(request_id or "").strip()
@@ -254,9 +237,15 @@ def resolve_interaction_request(session_key: str | None, request_id: str, payloa
         return False
     clean_payload = {str(k): str(v) for k, v in (payload or {}).items()}
     with _interaction_lock:
-        entry = _interaction_requests.pop((clean_session_key, clean_request_id), None)
-    if entry is None:
-        return False
+        request_key = (clean_session_key, clean_request_id)
+        entry = _interaction_requests.get(request_key)
+        if entry is None:
+            return False
+        if chat_id and entry.chat_id and chat_id != entry.chat_id:
+            return False
+        if message_id and entry.response_message_id and message_id != entry.response_message_id:
+            return False
+        _interaction_requests.pop(request_key, None)
     entry.payload = clean_payload
     entry.event.set()
     return True
@@ -338,6 +327,9 @@ def _prepare_interaction_card_args(args: dict[str, Any], *, request_id: str) -> 
             payload = button.get("payload") or {}
             if not isinstance(payload, dict):
                 raise ValueError("button.payload must be an object for request_interaction")
+            if button.get("url") and str(payload.get("terminal") or "").strip().lower() in {"false", "0", "no"}:
+                button_count += 1
+                continue
             prepared_payload = {str(k): str(v) for k, v in payload.items()}
             prepared_payload.setdefault("choice", original_action)
             prepared_payload.setdefault("request_id", request_id)
@@ -365,8 +357,10 @@ async def _request_interaction(args: dict[str, Any]) -> str:
         return _err(str(exc))
 
     request_key = (session_key, request_id)
-    entry = _InteractionRequestEntry(event=threading.Event())
+    entry = _InteractionRequestEntry(event=threading.Event(), chat_id=chat_id, trigger_message_id=message_id)
     with _interaction_lock:
+        if request_key in _interaction_requests:
+            return _err(f"request_interaction request_id already pending: {request_id}")
         _interaction_requests[request_key] = entry
 
     try:
@@ -380,6 +374,10 @@ async def _request_interaction(args: dict[str, Any]) -> str:
             with _interaction_lock:
                 _interaction_requests.pop(request_key, None)
             return _err(getattr(result, "error", "Feishu interaction card send failed") or "Feishu interaction card send failed")
+        with _interaction_lock:
+            current = _interaction_requests.get(request_key)
+            if current is not None and current is entry:
+                current.response_message_id = str(getattr(result, "message_id", "") or "") or None
 
         resolved = await asyncio.to_thread(entry.event.wait, _INTERACTION_REQUEST_TIMEOUT_SECONDS)
         if not resolved:
@@ -426,7 +424,7 @@ async def _request_authorization(args: dict[str, Any]) -> str:
                             "style": "primary",
                             "action": "open_link",
                             "url": verification_url,
-                            "payload": {"flow_id": flow_id, "kind": "open_link"},
+                            "payload": {"flow_id": flow_id, "kind": "open_link", "terminal": "false"},
                         },
                         {
                             "text": "我已完成授权",

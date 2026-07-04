@@ -218,6 +218,11 @@ def _patch_feishu_callback_classes(monkeypatch):
     )
 
 
+def _allow_all_interactive_callbacks(adapter):
+    adapter._admins = {"*"}
+    adapter._allowed_group_users = set()
+
+
 def test_feishu_card_action_trigger_registered_action_returns_replacement_card(monkeypatch):
     loop, thread = _start_background_loop()
     action_name = "test.auth.cancel.phase2"
@@ -239,6 +244,7 @@ def test_feishu_card_action_trigger_registered_action_returns_replacement_card(m
     _patch_feishu_callback_classes(monkeypatch)
     adapter = FeishuAdapter.__new__(FeishuAdapter)
     adapter._loop = loop
+    _allow_all_interactive_callbacks(adapter)
     data = SimpleNamespace(
         event=SimpleNamespace(
             action=SimpleNamespace(
@@ -270,6 +276,7 @@ def test_feishu_card_action_trigger_unknown_action_falls_back(monkeypatch):
     _patch_feishu_callback_classes(monkeypatch)
     adapter = FeishuAdapter.__new__(FeishuAdapter)
     adapter._loop = loop
+    _allow_all_interactive_callbacks(adapter)
     submitted = []
 
     async def fake_handle(data):
@@ -324,6 +331,7 @@ def test_feishu_card_action_trigger_resolves_pending_authorization_request(monke
     register(Ctx())
     adapter = FeishuAdapter.__new__(FeishuAdapter)
     adapter._loop = loop
+    _allow_all_interactive_callbacks(adapter)
     tokens = set_session_vars(
         platform="feishu",
         chat_id="oc_chat",
@@ -377,3 +385,74 @@ def test_feishu_card_action_trigger_resolves_pending_authorization_request(monke
     assert result["success"] is True
     assert result["choice"] == "cancel"
     assert result["flow_id"] == "flow-adapter-cancel"
+
+
+def test_feishu_card_action_trigger_registered_action_rejects_unauthorized_user(monkeypatch):
+    loop, thread = _start_background_loop()
+    action_name = "test.auth.unauthorized.phase2"
+    called = []
+
+    async def handler(ctx: CardActionContext) -> CardActionResponse:
+        called.append(ctx)
+        return CardActionResponse.replace_card(Card(header=CardHeader(title="不应出现"), elements=[Markdown("bad")]))
+
+    register_card_action(action_name, handler)
+    _patch_feishu_callback_classes(monkeypatch)
+    adapter = FeishuAdapter.__new__(FeishuAdapter)
+    adapter._loop = loop
+    adapter._admins = set()
+    adapter._allowed_group_users = set()
+    monkeypatch.setattr(adapter, "_allow_group_message", lambda *_args, **_kwargs: False)
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            action=SimpleNamespace(value={"action": action_name, "session_key": "session-click"}),
+            operator=SimpleNamespace(open_id="ou_intruder", user_id="user_id"),
+            context=SimpleNamespace(open_chat_id="oc_chat", open_message_id="om_msg"),
+        )
+    )
+
+    try:
+        response = adapter._on_card_action_trigger(data)
+    finally:
+        _stop_background_loop(loop, thread)
+
+    assert response is not None
+    assert response.card is None
+    assert called == []
+
+
+def test_feishu_card_action_trigger_registered_action_on_same_loop_does_not_deadlock(monkeypatch):
+    action_name = "test.auth.same_loop.phase2"
+
+    async def handler(ctx: CardActionContext) -> CardActionResponse:
+        return CardActionResponse.replace_card(
+            Card(header=CardHeader(title="同 loop 已处理", color="green"), elements=[Markdown(ctx.payload["request_id"])])
+        )
+
+    register_card_action(action_name, handler)
+    _patch_feishu_callback_classes(monkeypatch)
+
+    async def scenario():
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._loop = asyncio.get_running_loop()
+        _allow_all_interactive_callbacks(adapter)
+        data = SimpleNamespace(
+            event=SimpleNamespace(
+                action=SimpleNamespace(
+                    value={
+                        "action": action_name,
+                        "request_id": "req-same-loop",
+                        "session_key": "session-click",
+                    }
+                ),
+                operator=SimpleNamespace(open_id="ou_user", user_id="user_id"),
+                context=SimpleNamespace(open_chat_id="oc_chat", open_message_id="om_msg"),
+            )
+        )
+        return adapter._on_card_action_trigger(data)
+
+    response = asyncio.run(scenario())
+
+    assert response is not None
+    assert response.card.type == "raw"
+    assert response.card.data["header"]["title"] == {"tag": "plain_text", "content": "同 loop 已处理"}

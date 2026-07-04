@@ -7,14 +7,12 @@ from gateway.cards.actions import CardActionContext, CardActionResponse, registe
 from plugins.feishu_card.tools import (
     FEISHU_CARD_SCHEMA,
     feishu_card_tool_async,
-    resolve_authorization_request,
     resolve_interaction_request,
 )
 
 
 async def _default_authorize_action(ctx: CardActionContext) -> CardActionResponse:
     flow_id = ctx.payload.get("flow_id", "")
-    resolve_authorization_request(ctx.session_key, flow_id, "authorize")
     suffix = f"\n\n流程：`{flow_id}`" if flow_id else ""
     return CardActionResponse.replace_card(
         Card(
@@ -30,7 +28,15 @@ async def _default_open_link_action(ctx: CardActionContext) -> CardActionRespons
 
 async def _default_card_respond_action(ctx: CardActionContext) -> CardActionResponse:
     request_id = ctx.payload.get("request_id", "")
-    resolve_interaction_request(ctx.session_key, request_id, ctx.payload)
+    resolved = resolve_interaction_request(
+        ctx.session_key,
+        request_id,
+        ctx.payload,
+        chat_id=ctx.chat_id,
+        message_id=ctx.message_id,
+    )
+    if not resolved:
+        return CardActionResponse.noop()
     choice = ctx.payload.get("choice") or ctx.payload.get("button_text") or "已选择"
     return CardActionResponse.replace_card(
         Card(
@@ -42,7 +48,6 @@ async def _default_card_respond_action(ctx: CardActionContext) -> CardActionResp
 
 async def _default_cancel_action(ctx: CardActionContext) -> CardActionResponse:
     flow_id = ctx.payload.get("flow_id", "")
-    resolve_authorization_request(ctx.session_key, flow_id, "cancel")
     suffix = f"\n\n流程：`{flow_id}`" if flow_id else ""
     return CardActionResponse.replace_card(
         Card(

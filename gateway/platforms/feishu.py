@@ -2810,6 +2810,11 @@ class FeishuAdapter(BasePlatformAdapter):
         context = getattr(event, "context", None)
         chat_id = str(getattr(context, "open_chat_id", "") or "")
         message_id = str(getattr(context, "open_message_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
+        if not self._is_interactive_operator_authorized(sender_id, chat_id):
+            logger.warning("[Feishu] Unauthorized generic card action click by %s", open_id or "<unknown>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
         session_key = action_value.get("session_key")
         payload = {str(k): v for k, v in action_value.items() if k != "action"}
         action_context = CardActionContext(
@@ -2822,8 +2827,31 @@ class FeishuAdapter(BasePlatformAdapter):
         )
 
         try:
-            future = asyncio.run_coroutine_threadsafe(registry.dispatch(action_context), loop)
-            result = future.result(timeout=5)
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        try:
+            if running_loop is loop:
+                result_box: Dict[str, Any] = {}
+
+                def _run_dispatch() -> None:
+                    try:
+                        result_box["result"] = asyncio.run(registry.dispatch(action_context))
+                    except Exception as exc:  # pragma: no cover - surfaced below
+                        result_box["error"] = exc
+
+                dispatch_thread = threading.Thread(target=_run_dispatch, daemon=True)
+                dispatch_thread.start()
+                dispatch_thread.join(timeout=5)
+                if dispatch_thread.is_alive():
+                    raise TimeoutError(f"Generic card action {action} timed out")
+                if "error" in result_box:
+                    raise result_box["error"]
+                result = result_box.get("result")
+            else:
+                future = asyncio.run_coroutine_threadsafe(registry.dispatch(action_context), loop)
+                result = future.result(timeout=5)
         except Exception as exc:
             logger.warning("[Feishu] Generic card action %s failed: %s", action, exc)
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
