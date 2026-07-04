@@ -315,3 +315,69 @@ def test_session_search_system_ssh_backend_reads_local_session_db(monkeypatch):
     assert result["results"][0]["session_id"] == "local-session-1"
     assert result["results"][0]["preview"] == "local service DB preview"
     assert db.list_calls
+
+
+def test_control_plane_tools_ignore_gateway_session_ssh_context(monkeypatch, tmp_path):
+    """Gateway session SSH binding must not pull Hermes control-plane tools onto SSH."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import memory_tool, session_search_tool, skill_manager_tool, todo_tool
+    from tools.environments import ssh as ssh_env
+
+    session_key = "agent:main:feishu:chat:thread"
+    terminal_tool = _register_session_ssh_backend(session_key)
+    _, skills_dir = _isolate_skill_home(monkeypatch, tmp_path)
+    hermes_home = tmp_path / "hermes-home"
+    local_memory_dir = hermes_home / "memories"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(memory_tool, "get_memory_dir", lambda: local_memory_dir)
+    monkeypatch.setattr(
+        ssh_env.SSHEnvironment,
+        "__init__",
+        lambda self, *a, **k: pytest.fail("control-plane tools must not initialize an SSH backend"),
+    )
+
+    tokens = set_session_vars(
+        platform="feishu",
+        chat_id="chat",
+        thread_id="thread",
+        session_key=session_key,
+    )
+    try:
+        skill_result = json.loads(
+            skill_manager_tool.skill_manage(
+                action="create",
+                name="ssh-mode-boundary-probe",
+                category="tmp",
+                content=_skill_content("Gateway session SSH boundary probe"),
+            )
+        )
+        store = memory_tool.MemoryStore(memory_char_limit=500, user_char_limit=500)
+        store.load_from_disk()
+        memory_result = json.loads(
+            memory_tool.memory_tool(
+                action="add",
+                target="memory",
+                content="Gateway session local memory probe",
+                store=store,
+            )
+        )
+        todo_store = todo_tool.TodoStore()
+        todo_result = json.loads(
+            todo_tool.todo_tool(
+                todos=[{"id": "local", "content": "gateway local todo", "status": "in_progress"}],
+                store=todo_store,
+            )
+        )
+        db = _LocalSessionDB()
+        search_result = json.loads(session_search_tool.session_search(db=db, limit=1))
+    finally:
+        clear_session_vars(tokens)
+        terminal_tool.clear_task_env_overrides(session_key)
+
+    local_skill = skills_dir / "tmp" / "ssh-mode-boundary-probe" / "SKILL.md"
+    assert skill_result["success"] is True
+    assert Path(skill_result["skill_md"]) == local_skill
+    assert memory_result["success"] is True
+    assert (local_memory_dir / "MEMORY.md").exists()
+    assert todo_result["todos"] == [{"id": "local", "content": "gateway local todo", "status": "in_progress"}]
+    assert search_result["results"][0]["session_id"] == "local-session-1"

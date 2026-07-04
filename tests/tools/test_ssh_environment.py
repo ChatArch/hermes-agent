@@ -150,7 +150,7 @@ class TestControlSocketPath:
         monkeypatch.setattr("tools.environments.ssh.os.access", lambda *a, **k: True)
         monkeypatch.setattr("tools.environments.ssh.os.getuid", lambda: 501)
         monkeypatch.setattr(_Path, "is_symlink", lambda *a, **k: False)
-        monkeypatch.setattr(_Path, "stat", lambda *a, **k: type("S", (), {"st_uid": 501})())
+        monkeypatch.setattr(_Path, "stat", lambda *a, **k: type("S", (), {"st_uid": 501, "st_mode": 0o700})())
 
         env = SSHEnvironment(
             host="9373:9b91:4480:558d:708e:e601:24e8:d8d0",
@@ -205,8 +205,22 @@ class TestControlSocketPath:
         from pathlib import Path as _Path
         monkeypatch.setattr(_Path, "mkdir", lambda *a, **k: None)
         monkeypatch.setattr(_Path, "is_symlink", lambda *a, **k: False)
-        monkeypatch.setattr(_Path, "stat", lambda *a, **k: type("S", (), {"st_uid": 99999})())
+        monkeypatch.setattr(_Path, "stat", lambda *a, **k: type("S", (), {"st_uid": 99999, "st_mode": 0o700})())
         with pytest.raises(RuntimeError, match="owned by another local user"):
+            ssh_env.SSHEnvironment._make_control_dir()
+
+    def test_control_dir_group_accessible_mode_fails(self, monkeypatch, tmp_path):
+        """Even current-user dirs must not remain group/other accessible."""
+        monkeypatch.setattr("tools.environments.ssh.tempfile.gettempdir", lambda: str(tmp_path))
+        monkeypatch.setattr("tools.environments.ssh.os.getuid", lambda: 12345)
+        monkeypatch.setattr("tools.environments.ssh.os.access", lambda *a, **k: True)
+        from pathlib import Path as _Path
+        monkeypatch.setattr(_Path, "mkdir", lambda *a, **k: None)
+        monkeypatch.setattr(_Path, "chmod", lambda *a, **k: None)
+        monkeypatch.setattr(_Path, "is_symlink", lambda *a, **k: False)
+        monkeypatch.setattr(_Path, "stat", lambda *a, **k: type("S", (), {"st_uid": 12345, "st_mode": 0o775})())
+
+        with pytest.raises(RuntimeError, match="must be private"):
             ssh_env.SSHEnvironment._make_control_dir()
 
     def test_path_differs_for_different_targets(self):

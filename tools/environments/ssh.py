@@ -139,7 +139,7 @@ class SSHEnvironment(BaseEnvironment):
         while preserving the macOS Unix-socket path length budget.
         """
         control_dir = Path(tempfile.gettempdir()) / f"hssh-{cls._control_dir_suffix()}"
-        control_dir.mkdir(parents=True, exist_ok=True)
+        control_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         if control_dir.is_symlink():
             raise RuntimeError(f"SSH control socket directory must not be a symlink: {control_dir}")
         getuid = getattr(os, "getuid", None)
@@ -157,6 +157,12 @@ class SSHEnvironment(BaseEnvironment):
             logger.debug("SSH: failed to chmod control dir %s", control_dir, exc_info=True)
         if not os.access(control_dir, os.W_OK | os.X_OK):
             raise RuntimeError(f"SSH control socket directory is not writable: {control_dir}")
+        final_mode = control_dir.stat().st_mode & 0o777
+        if final_mode & 0o077:
+            raise RuntimeError(
+                "SSH control socket directory must be private to the local user: "
+                f"{control_dir} (mode {final_mode:o})"
+            )
         return control_dir
 
     def _build_ssh_command(self, extra_args: list | None = None) -> list:
