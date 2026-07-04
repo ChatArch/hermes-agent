@@ -196,6 +196,80 @@ def test_execute_code_uses_resolve_task_overrides_for_raw_task_id(monkeypatch):
     assert captured["ssh_config"]["host_key_policy"] == "strict"
 
 
+def test_execute_code_top_level_dispatch_uses_task_override_backend(monkeypatch):
+    """Top-level execute_code must route by effective backend, not global config only."""
+    from tools import code_execution_tool as code_exec
+    from tools import terminal_tool as tt
+
+    task_id = "execute-session-ssh"
+    calls = []
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    tt.register_task_env_overrides(
+        task_id,
+        {
+            "env_type": "ssh",
+            "ssh_host": "example.internal",
+            "ssh_user": "rex",
+            "ssh_key": "/redacted/key",
+        },
+    )
+
+    def fake_execute_remote(code, remote_task_id, enabled_tools):
+        calls.append((code, remote_task_id, enabled_tools))
+        return '{"status":"success","remote":true}'
+
+    monkeypatch.setattr(code_exec, "_execute_remote", fake_execute_remote)
+    try:
+        result = code_exec.execute_code("print('hello')", task_id=task_id, enabled_tools=["terminal"])
+    finally:
+        tt.clear_task_env_overrides(task_id)
+
+    assert calls == [("print('hello')", task_id, ["terminal"])]
+    assert '"remote":true' in result
+
+
+
+def test_execute_code_top_level_dispatch_uses_session_context_override(monkeypatch):
+    """Gateway session ContextVar fallback must affect top-level execute_code dispatch."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import code_execution_tool as code_exec
+    from tools import terminal_tool as tt
+
+    session_key = "agent:main:feishu:dm:chat:thread"
+    calls = []
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    tt.register_task_env_overrides(
+        session_key,
+        {
+            "env_type": "ssh",
+            "ssh_host": "example.internal",
+            "ssh_user": "rex",
+            "ssh_key": "/redacted/key",
+        },
+    )
+
+    def fake_execute_remote(code, remote_task_id, enabled_tools):
+        calls.append((code, remote_task_id, enabled_tools))
+        return '{"status":"success","remote":true}'
+
+    monkeypatch.setattr(code_exec, "_execute_remote", fake_execute_remote)
+    monkeypatch.setattr(
+        "tools.approval.check_execute_code_guard",
+        lambda code, env_type: {"approved": True},
+    )
+    tokens = set_session_vars(platform="feishu", chat_id="chat", thread_id="thread", session_key=session_key)
+    try:
+        result = code_exec.execute_code("print('hello')", task_id=None, enabled_tools=["terminal"])
+    finally:
+        clear_session_vars(tokens)
+        tt.clear_task_env_overrides(session_key)
+
+    assert calls == [("print('hello')", None, ["terminal"])]
+    assert '"remote":true' in result
+
+
 def test_prompt_builder_uses_task_override_backend(monkeypatch):
     from agent import prompt_builder
     from tools import terminal_tool as tt

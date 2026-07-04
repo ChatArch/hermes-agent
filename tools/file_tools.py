@@ -883,13 +883,18 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             })
 
         _resolved = _resolve_path_for_task(path, task_id)
+        is_remote_backend = _is_remote_backend_task(task_id)
 
         # ── Structured-document extraction ────────────────────────────
-        # Try before the binary-extension guard so .docx/.xlsx can render as text.
+        # Local backend only.  Extraction libraries open files from the Python
+        # host filesystem; under SSH/container backends that would either leak a
+        # same-path host document or fail locally before the backend read.  Remote
+        # reads must go through backend file operations exclusively.
+        # Try before the binary-extension guard so local .docx/.xlsx can render as text.
         # Malformed documents fall through to the normal path/binary guard.
         from tools.read_extract import ExtractionError, extract_document_text, is_extractable_document
 
-        if is_extractable_document(str(_resolved)):
+        if not is_remote_backend and is_extractable_document(str(_resolved)):
             try:
                 extracted_text = extract_document_text(str(_resolved))
             except ExtractionError:
@@ -931,8 +936,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 return json.dumps(result_dict, ensure_ascii=False)
 
         # ── Binary file guard ─────────────────────────────────────────
-        # Block binary files by extension (no I/O).
-        if has_binary_extension(str(_resolved)):
+        # Block local binary files by extension without I/O.  Remote backends
+        # must not use host path suffix checks as an early return because doing
+        # so bypasses backend execution and can hide whether the remote file
+        # exists.  ShellFileOperations performs backend-side binary detection.
+        if not is_remote_backend and has_binary_extension(str(_resolved)):
             _ext = _resolved.suffix.lower()
             return json.dumps({
                 "error": (
@@ -956,7 +964,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # If we already read this exact (path, offset, limit) and the
         # file hasn't been modified since, return a lightweight stub
         # instead of re-sending the same content.  Saves context tokens.
-        resolved_str = str(_resolved)
+        resolved_str = _remote_display_path_for_task(path, task_id) if is_remote_backend else str(_resolved)
         dedup_key = (resolved_str, offset, limit)
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
@@ -973,7 +981,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 task_data["read_timestamps"] = {}
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
-        if cached_mtime is not None:
+        if not is_remote_backend and cached_mtime is not None:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
@@ -1082,12 +1090,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             # 1. Dedup: skip identical re-reads of unchanged files.
             # 2. Staleness: warn on write/patch if the file changed since
             #    the agent last read it (external edit, concurrent agent, etc.).
-            try:
-                _mtime_now = os.path.getmtime(resolved_str)
-                task_data["dedup"][dedup_key] = _mtime_now
-                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
-            except OSError:
-                pass  # Can't stat — skip tracking for this entry
+            if not is_remote_backend:
+                try:
+                    _mtime_now = os.path.getmtime(resolved_str)
+                    task_data["dedup"][dedup_key] = _mtime_now
+                    task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+                except OSError:
+                    pass  # Can't stat — skip tracking for this entry
 
             # Bound the per-task containers so a long CLI session doesn't
             # accumulate megabytes of dict/set state.  See _cap_read_tracker_data.
