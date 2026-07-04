@@ -62,15 +62,17 @@ class SSHEnvironment(BaseEnvironment):
                  timeout: int = 60, port: int = 22, key_path: str = "",
                  identities_only: bool = True, known_hosts_path: str | Path = "",
                  host_key_policy: str = "accept-new", persistent: bool = True,
-                 sync_back_on_cleanup: bool = True):
+                 sync_back_on_cleanup: bool = False,
+                 sync_hermes_files: bool = False):
         super().__init__(cwd=cwd, timeout=timeout)
         self._persistent = bool(persistent)
-        # SSH is a live remote machine, not an ephemeral container filesystem.
-        # Pulling the whole remote ~/.hermes tree back during normal section
-        # switch/off or interpreter shutdown can block for minutes after the
-        # user's command has already completed. File tools operate directly over
-        # the SSH environment, so cleanup should only close the ControlMaster by
-        # default; callers can opt into sync-back explicitly if needed.
+        # SSH targets are real, long-lived machines with their own filesystem
+        # and possibly their own Hermes installation.  Unlike disposable
+        # container backends, default SSH execution must not upload local
+        # ~/.hermes resources or pull remote ~/.hermes back.  Terminal and file
+        # tools operate directly on the remote target; Hermes control-plane
+        # state stays local.
+        self._sync_hermes_files = bool(sync_hermes_files)
         self._sync_back_on_cleanup = bool(sync_back_on_cleanup)
         self._cleaned = False
         self.host = host
@@ -104,16 +106,17 @@ class SSHEnvironment(BaseEnvironment):
         _ensure_ssh_available()
         self._establish_connection()
         self._remote_home = self._detect_remote_home()
-
-        self._ensure_remote_dirs()
-        self._sync_manager = FileSyncManager(
-            get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
-            upload_fn=self._scp_upload,
-            delete_fn=self._ssh_delete,
-            bulk_upload_fn=self._ssh_bulk_upload,
-            bulk_download_fn=self._ssh_bulk_download,
-        )
-        self._sync_manager.sync(force=True)
+        self._sync_manager = None
+        if self._sync_hermes_files:
+            self._ensure_remote_dirs()
+            self._sync_manager = FileSyncManager(
+                get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
+                upload_fn=self._scp_upload,
+                delete_fn=self._ssh_delete,
+                bulk_upload_fn=self._ssh_bulk_upload,
+                bulk_download_fn=self._ssh_bulk_download,
+            )
+            self._sync_manager.sync(force=True)
 
         self.init_session()
 
@@ -383,8 +386,9 @@ class SSHEnvironment(BaseEnvironment):
             raise RuntimeError(f"remote rm failed: {result.stderr.strip()}")
 
     def _before_execute(self) -> None:
-        """Sync files to remote via FileSyncManager (rate-limited internally)."""
-        self._sync_manager.sync()
+        """No-op by default; SSH targets must not receive local Hermes sync."""
+        if self._sync_manager is not None:
+            self._sync_manager.sync()
 
     # ------------------------------------------------------------------
     # Execution
