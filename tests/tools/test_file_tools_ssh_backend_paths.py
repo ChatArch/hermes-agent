@@ -136,6 +136,53 @@ def test_search_files_ssh_session_passes_backend_path_not_host_resolved(monkeypa
     assert "/System/Volumes/Data" not in str(ops.search_calls)
 
 
+
+def test_read_file_ssh_session_keeps_relative_backend_path(monkeypatch):
+    """read_file keeps relative backend paths under SSH session overrides."""
+    from tools import file_tools
+    from tools import terminal_tool
+
+    task_id = "ssh-read-session-relative"
+    requested = "report.md"
+    host_resolved = "/System/Volumes/Data/home/rex/work/report.md"
+    ops = _RecordingFileOps()
+    _install_common_stubs(monkeypatch, file_tools, requested, host_resolved, ops)
+    _register_ssh_task(terminal_tool, task_id)
+
+    try:
+        result = json.loads(file_tools.read_file_tool(requested, offset=1, limit=5, task_id=task_id))
+    finally:
+        terminal_tool.clear_task_env_overrides(task_id)
+        file_tools.clear_file_ops_cache(task_id)
+
+    assert not result.get("error"), result
+    assert ops.read_calls == [(requested, 1, 5)]
+    assert "/System/Volumes/Data" not in str(ops.read_calls)
+
+
+def test_search_files_ssh_session_keeps_relative_backend_path(monkeypatch):
+    """search_files keeps relative backend paths under SSH session overrides."""
+    from tools import file_tools
+    from tools import terminal_tool
+
+    task_id = "ssh-search-session-relative"
+    requested = "."
+    host_resolved = "/System/Volumes/Data/home/rex/work"
+    ops = _RecordingFileOps()
+    _install_common_stubs(monkeypatch, file_tools, requested, host_resolved, ops)
+    _register_ssh_task(terminal_tool, task_id)
+
+    try:
+        result = json.loads(file_tools.search_tool("hello", path=requested, task_id=task_id))
+    finally:
+        terminal_tool.clear_task_env_overrides(task_id)
+        file_tools.clear_file_ops_cache(task_id)
+
+    assert not result.get("error"), result
+    assert ops.search_calls == [("hello", requested, "content", None, 50, 0, "content", 0)]
+    assert "/System/Volumes/Data" not in str(ops.search_calls)
+
+
 def test_write_file_system_ssh_backend_passes_backend_path_not_host_resolved(monkeypatch):
     """The original system-level terminal SSH backend has the same path contract."""
     from tools import file_tools
