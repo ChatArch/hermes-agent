@@ -964,7 +964,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # If we already read this exact (path, offset, limit) and the
         # file hasn't been modified since, return a lightweight stub
         # instead of re-sending the same content.  Saves context tokens.
-        resolved_str = str(_resolved)
+        resolved_str = _remote_display_path_for_task(path, task_id) if is_remote_backend else str(_resolved)
         dedup_key = (resolved_str, offset, limit)
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
@@ -981,7 +981,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 task_data["read_timestamps"] = {}
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
-        if cached_mtime is not None:
+        if not is_remote_backend and cached_mtime is not None:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
@@ -1090,12 +1090,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             # 1. Dedup: skip identical re-reads of unchanged files.
             # 2. Staleness: warn on write/patch if the file changed since
             #    the agent last read it (external edit, concurrent agent, etc.).
-            try:
-                _mtime_now = os.path.getmtime(resolved_str)
-                task_data["dedup"][dedup_key] = _mtime_now
-                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
-            except OSError:
-                pass  # Can't stat — skip tracking for this entry
+            if not is_remote_backend:
+                try:
+                    _mtime_now = os.path.getmtime(resolved_str)
+                    task_data["dedup"][dedup_key] = _mtime_now
+                    task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+                except OSError:
+                    pass  # Can't stat — skip tracking for this entry
 
             # Bound the per-task containers so a long CLI session doesn't
             # accumulate megabytes of dict/set state.  See _cap_read_tracker_data.

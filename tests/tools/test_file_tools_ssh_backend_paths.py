@@ -133,6 +133,34 @@ def test_read_file_ssh_session_docx_skips_host_document_extraction(monkeypatch, 
     assert "host docx content" not in json.dumps(result)
 
 
+def test_read_file_ssh_session_repeated_read_does_not_use_host_mtime_dedup(monkeypatch, tmp_path):
+    """Remote repeated reads must call backend again instead of trusting host shadow mtimes."""
+    from tools import file_tools
+    from tools import terminal_tool
+
+    task_id = "ssh-read-session-repeat"
+    requested = "/tmp/repeated.md"
+    host_resolved = tmp_path / "repeated.md"
+    host_resolved.write_text("host shadow file must not drive remote dedup")
+    ops = _RecordingFileOps()
+    _install_common_stubs(monkeypatch, file_tools, requested, str(host_resolved), ops)
+    _register_ssh_task(terminal_tool, task_id)
+
+    try:
+        first = json.loads(file_tools.read_file_tool(requested, offset=1, limit=5, task_id=task_id))
+        second = json.loads(file_tools.read_file_tool(requested, offset=1, limit=5, task_id=task_id))
+    finally:
+        terminal_tool.clear_task_env_overrides(task_id)
+        file_tools.reset_file_dedup(task_id)
+        file_tools.clear_file_ops_cache(task_id)
+
+    assert not first.get("error"), first
+    assert not second.get("error"), second
+    assert not second.get("dedup"), second
+    assert second.get("status") != "unchanged"
+    assert ops.read_calls == [(requested, 1, 5), (requested, 1, 5)]
+
+
 def test_search_files_ssh_session_passes_backend_path_not_host_resolved(monkeypatch):
     """search_files must search backend paths under SSH session overrides."""
     from tools import file_tools
