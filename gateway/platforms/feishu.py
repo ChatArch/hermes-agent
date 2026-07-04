@@ -1804,6 +1804,30 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound — send / edit / send_image / send_voice / …
     # =========================================================================
 
+    async def send_card(
+        self,
+        chat_id: str,
+        card: Dict[str, Any],
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a rendered Feishu interactive card payload."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        try:
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=json.dumps(card, ensure_ascii=False),
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            return self._finalize_send_result(response, "card send failed")
+        except Exception as exc:
+            logger.error("[Feishu] Send card error: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
     async def send(
         self,
         chat_id: str,

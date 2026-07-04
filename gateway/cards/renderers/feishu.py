@@ -1,0 +1,88 @@
+"""Feishu/Lark renderer for Hermes gateway cards."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from gateway.cards.model import Actions, Button, Card, Divider, Markdown, Note, RawFeishuCard
+
+
+def _plain_text(content: str) -> dict[str, str]:
+    return {"tag": "plain_text", "content": content}
+
+
+def _button_value(button: Button, *, session_key: str | None) -> dict[str, str]:
+    value = {"action": button.action}
+    if session_key:
+        value["session_key"] = session_key
+    value.update(button.payload)
+    return value
+
+
+def _render_button(button: Button, *, session_key: str | None) -> dict[str, Any]:
+    rendered: dict[str, Any] = {
+        "tag": "button",
+        "text": _plain_text(button.text),
+        "type": button.style or "default",
+        "value": _button_value(button, session_key=session_key),
+    }
+    if button.url:
+        rendered["url"] = button.url
+    return rendered
+
+
+def _render_actions(element: Actions, *, session_key: str | None) -> dict[str, Any] | None:
+    buttons = [_render_button(button, session_key=session_key) for button in element.buttons]
+    if not buttons:
+        return None
+
+    if element.layout == "equal":
+        columns = [
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "vertical_align": "center",
+                "horizontal_align": "center",
+                "elements": [button],
+            }
+            for button in buttons
+        ]
+        column_set: dict[str, Any] = {"tag": "column_set", "columns": columns}
+        if len(buttons) == 2:
+            column_set["flex_mode"] = "bisect"
+        return column_set
+
+    return {"tag": "action", "actions": buttons}
+
+
+def render_feishu_card(card: Card | RawFeishuCard, *, session_key: str | None = None) -> dict[str, Any]:
+    """Render a generic Hermes card into Feishu interactive-card JSON data."""
+
+    if isinstance(card, RawFeishuCard):
+        return card.data
+
+    rendered: dict[str, Any] = {"config": {"wide_screen_mode": True}}
+    if card.header and card.header.title:
+        rendered["header"] = {
+            "title": _plain_text(card.header.title),
+            "template": card.header.color or "blue",
+        }
+
+    elements: list[dict[str, Any]] = []
+    for element in card.elements:
+        if isinstance(element, Markdown):
+            elements.append({"tag": "markdown", "content": element.content})
+        elif isinstance(element, Divider):
+            elements.append({"tag": "hr"})
+        elif isinstance(element, Actions):
+            rendered_actions = _render_actions(element, session_key=session_key)
+            if rendered_actions:
+                elements.append(rendered_actions)
+        elif isinstance(element, Note):
+            elements.append({"tag": "note", "elements": [_plain_text(element.content)]})
+
+    if not elements:
+        elements.append({"tag": "markdown", "content": " "})
+    rendered["elements"] = elements
+    return rendered
