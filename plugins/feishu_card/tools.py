@@ -243,7 +243,11 @@ def resolve_interaction_request(
             return False
         if chat_id and entry.chat_id and chat_id != entry.chat_id:
             return False
+        if entry.chat_id and not chat_id:
+            return False
         if message_id and entry.response_message_id and message_id != entry.response_message_id:
+            return False
+        if entry.response_message_id and not message_id:
             return False
         _interaction_requests.pop(request_key, None)
     entry.payload = clean_payload

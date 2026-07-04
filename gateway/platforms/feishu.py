@@ -2773,6 +2773,11 @@ class FeishuAdapter(BasePlatformAdapter):
                 action_value=action_value,
                 loop=loop,
             )
+        if generic_card_action and (
+            str(generic_card_action) == "open_link"
+            or str(action_value.get("terminal") or "").strip().lower() in {"false", "0", "no"}
+        ):
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
         if generic_card_action and get_card_action_registry().get(str(generic_card_action)):
             return self._handle_registered_card_action(
                 event=event,
@@ -2811,7 +2816,13 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_id = str(getattr(context, "open_chat_id", "") or "")
         message_id = str(getattr(context, "open_message_id", "") or "")
         sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
-        if not self._is_interactive_operator_authorized(sender_id, chat_id):
+        callback_chat_type = str(
+            getattr(context, "chat_type", "")
+            or getattr(event, "chat_type", "")
+            or (self._chat_info_cache.get(chat_id, {}) or {}).get("type", "")
+            or ""
+        ).strip().lower()
+        if not self._is_interactive_operator_authorized(sender_id, chat_id, chat_type=callback_chat_type):
             logger.warning("[Feishu] Unauthorized generic card action click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -2887,14 +2898,14 @@ class FeishuAdapter(BasePlatformAdapter):
         future.add_done_callback(self._log_background_failure)
         return True
 
-    def _is_interactive_operator_authorized(self, sender_id: Any, chat_id: str) -> bool:
+    def _is_interactive_operator_authorized(self, sender_id: Any, chat_id: str, *, chat_type: str = "") -> bool:
         """Return whether this card-action operator may answer gated prompts.
 
         Card callbacks do not pass through the normal inbound message guard, so
-        they must enforce the same group/admin policy here.  Keep the default
-        fail-closed unless the operator is explicitly allowed/admin, a per-chat
-        rule allows them, or the operator configured an explicit open/blacklist
-        policy for this chat class.
+        they must enforce the same group/admin policy here.  DM/p2p callbacks
+        follow the normal inbound p2p behavior and are allowed once the operator
+        identity is present; group callbacks remain fail-closed unless the
+        operator is explicitly allowed/admin or a group rule permits them.
         """
         sender_open_id = str(getattr(sender_id, "open_id", "") or "").strip()
         sender_user_id = str(getattr(sender_id, "user_id", "") or "").strip()
@@ -2904,6 +2915,9 @@ class FeishuAdapter(BasePlatformAdapter):
         if "*" in self._admins or "*" in self._allowed_group_users:
             return True
         if self._admins and (sender_ids & self._admins):
+            return True
+        normalized_chat_type = str(chat_type or "").strip().lower()
+        if normalized_chat_type in {"dm", "p2p", "private"}:
             return True
         return self._allow_group_message(sender_id, chat_id, is_bot=False)
 

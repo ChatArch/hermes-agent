@@ -516,6 +516,16 @@ def test_feishu_card_respond_ignores_wrong_chat_and_stale_callbacks(monkeypatch)
             )
         )
         await asyncio.sleep(0)
+        missing_context = await get_card_action_registry().dispatch(
+            CardActionContext(
+                action="card.respond",
+                payload={"request_id": "req-guarded", "choice": "ok", "answer": "ok"},
+                user_id="ou_user",
+                chat_id="oc_current",
+                message_id="",
+                session_key="session-current",
+            )
+        )
         wrong_chat = await get_card_action_registry().dispatch(
             CardActionContext(
                 action="card.respond",
@@ -537,13 +547,14 @@ def test_feishu_card_respond_ignores_wrong_chat_and_stale_callbacks(monkeypatch)
                 session_key="session-current",
             )
         )
-        return wrong_chat, json.loads(raw), stale
+        return missing_context, wrong_chat, json.loads(raw), stale
 
     try:
-        wrong_chat, result, stale = asyncio.run(scenario())
+        missing_context, wrong_chat, result, stale = asyncio.run(scenario())
     finally:
         clear_session_vars(tokens)
 
+    assert missing_context.kind == "noop"
     assert wrong_chat.kind == "noop"
     assert result["success"] is False
     assert "Timed out" in result["error"]
