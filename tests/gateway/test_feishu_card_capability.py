@@ -21,6 +21,7 @@ from gateway.cards.actions import (
     register_card_action,
 )
 from gateway.cards.renderers.feishu import render_feishu_card
+from gateway.platforms import feishu as feishu_platform
 from gateway.platforms.feishu import FeishuAdapter
 
 
@@ -198,7 +199,23 @@ def _stop_background_loop(loop, thread):
     loop.close()
 
 
-def test_feishu_card_action_trigger_registered_action_returns_replacement_card():
+def _patch_feishu_callback_classes(monkeypatch):
+    class FakeCallBackCard:
+        pass
+
+    class FakeP2CardActionTriggerResponse:
+        def __init__(self):
+            self.card = None
+
+    monkeypatch.setattr(feishu_platform, "CallBackCard", FakeCallBackCard)
+    monkeypatch.setattr(
+        feishu_platform,
+        "P2CardActionTriggerResponse",
+        FakeP2CardActionTriggerResponse,
+    )
+
+
+def test_feishu_card_action_trigger_registered_action_returns_replacement_card(monkeypatch):
     loop, thread = _start_background_loop()
     action_name = "test.auth.cancel.phase2"
 
@@ -216,6 +233,7 @@ def test_feishu_card_action_trigger_registered_action_returns_replacement_card()
         )
 
     register_card_action(action_name, cancel)
+    _patch_feishu_callback_classes(monkeypatch)
     adapter = FeishuAdapter.__new__(FeishuAdapter)
     adapter._loop = loop
     data = SimpleNamespace(
@@ -246,6 +264,7 @@ def test_feishu_card_action_trigger_registered_action_returns_replacement_card()
 
 def test_feishu_card_action_trigger_unknown_action_falls_back(monkeypatch):
     loop, thread = _start_background_loop()
+    _patch_feishu_callback_classes(monkeypatch)
     adapter = FeishuAdapter.__new__(FeishuAdapter)
     adapter._loop = loop
     submitted = []
