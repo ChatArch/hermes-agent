@@ -9,13 +9,27 @@ host-resolved macOS path to a remote SSH shell.
 import json
 from pathlib import Path
 
-from tools.file_operations import PatchResult, WriteResult
+from tools.file_operations import PatchResult, ReadResult, SearchMatch, SearchResult, WriteResult
 
 
 class _RecordingFileOps:
     def __init__(self):
+        self.read_calls = []
+        self.search_calls = []
         self.write_calls = []
         self.patch_calls = []
+
+    def read_file(self, path, offset=1, limit=500):
+        self.read_calls.append((path, offset, limit))
+        return ReadResult(content="1|hello\n", total_lines=1, file_size=6)
+
+    def search(self, pattern, path=".", target="content", file_glob=None,
+               limit=50, offset=0, output_mode="content", context=0):
+        self.search_calls.append((pattern, path, target, file_glob, limit, offset, output_mode, context))
+        return SearchResult(
+            matches=[SearchMatch(path=path, line_number=1, content="hello")],
+            total_count=1,
+        )
 
     def write_file(self, path, content):
         self.write_calls.append((path, content))
@@ -61,6 +75,65 @@ def _configure_system_ssh_backend(monkeypatch):
     monkeypatch.setenv("TERMINAL_SSH_USER", "rex")
     monkeypatch.setenv("TERMINAL_SSH_KEY", "/redacted/key")
     monkeypatch.setenv("TERMINAL_CWD", "/home/rex/work")
+
+
+
+def test_read_file_ssh_session_passes_backend_path_not_host_resolved(monkeypatch):
+    """read_file must send backend paths to SSH file operations."""
+    from tools import file_tools
+    from tools import terminal_tool
+
+    task_id = "ssh-read-session"
+    requested = "/home/rex/work/report.md"
+    host_resolved = "/System/Volumes/Data/home/rex/work/report.md"
+    ops = _RecordingFileOps()
+    _install_common_stubs(monkeypatch, file_tools, requested, host_resolved, ops)
+    _register_ssh_task(terminal_tool, task_id)
+
+    try:
+        result = json.loads(file_tools.read_file_tool(requested, offset=2, limit=3, task_id=task_id))
+    finally:
+        terminal_tool.clear_task_env_overrides(task_id)
+        file_tools.clear_file_ops_cache(task_id)
+
+    assert not result.get("error"), result
+    assert ops.read_calls == [(requested, 2, 3)]
+    assert "/System/Volumes/Data" not in str(ops.read_calls)
+
+
+def test_search_files_ssh_session_passes_backend_path_not_host_resolved(monkeypatch):
+    """search_files must search backend paths under SSH session overrides."""
+    from tools import file_tools
+    from tools import terminal_tool
+
+    task_id = "ssh-search-session"
+    requested = "/home/rex/work"
+    host_resolved = "/System/Volumes/Data/home/rex/work"
+    ops = _RecordingFileOps()
+    _install_common_stubs(monkeypatch, file_tools, requested, host_resolved, ops)
+    _register_ssh_task(terminal_tool, task_id)
+
+    try:
+        result = json.loads(
+            file_tools.search_tool(
+                "hello",
+                path=requested,
+                target="content",
+                file_glob="*.md",
+                limit=7,
+                offset=1,
+                output_mode="content",
+                context=2,
+                task_id=task_id,
+            )
+        )
+    finally:
+        terminal_tool.clear_task_env_overrides(task_id)
+        file_tools.clear_file_ops_cache(task_id)
+
+    assert not result.get("error"), result
+    assert ops.search_calls == [("hello", requested, "content", "*.md", 7, 1, "content", 2)]
+    assert "/System/Volumes/Data" not in str(ops.search_calls)
 
 
 def test_write_file_system_ssh_backend_passes_backend_path_not_host_resolved(monkeypatch):
