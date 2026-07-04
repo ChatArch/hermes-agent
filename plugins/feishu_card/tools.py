@@ -37,8 +37,14 @@ FEISHU_CARD_SCHEMA = {
             "session_key": {"type": "string", "description": "Optional session key to embed in button values."},
             "verification_url": {"type": "string", "description": "Authorization URL for authorization_preview."},
             "flow_id": {"type": "string", "description": "Opaque authorization flow id for authorization_preview."},
-            "chat_id": {"type": "string", "description": "Feishu chat id for action=send."},
-            "thread_id": {"type": "string", "description": "Optional Feishu thread/topic id for action=send."},
+            "chat_id": {
+                "type": "string",
+                "description": "Feishu chat id for action=send. Omit inside a Feishu gateway session to send to the current conversation.",
+            },
+            "thread_id": {
+                "type": "string",
+                "description": "Optional Feishu thread/topic id for action=send. Omit inside a Feishu gateway session to keep the card in the current thread.",
+            },
             "reply_to": {"type": "string", "description": "Optional Feishu message id to reply to."},
             "title": {"type": "string"},
             "body": {"type": "string"},
@@ -133,6 +139,29 @@ def _render_for_args(args: dict[str, Any]) -> dict[str, Any]:
     return render_feishu_card(card, session_key=session_key)
 
 
+def _current_feishu_session_target() -> tuple[str, str, str]:
+    """Return the current Feishu gateway target from session ContextVars.
+
+    This mirrors how built-in approval cards (tool approval, SSH Mode, update
+    prompts) naturally route back to the active conversation: the gateway seeds
+    ``HERMES_SESSION_CHAT_ID`` and ``HERMES_SESSION_THREAD_ID`` for the current
+    task, then platform send methods receive the thread via ``metadata``.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return "", "", ""
+
+    platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
+    if platform != "feishu":
+        return "", "", ""
+    return (
+        get_session_env("HERMES_SESSION_CHAT_ID", "").strip(),
+        get_session_env("HERMES_SESSION_THREAD_ID", "").strip(),
+        get_session_env("HERMES_SESSION_KEY", "").strip(),
+    )
+
+
 def feishu_card_tool(args: dict[str, Any]) -> str:
     action = str(args.get("action") or "").strip()
     session_key = str(args.get("session_key") or "") or None
@@ -166,12 +195,20 @@ async def feishu_card_tool_async(args: dict[str, Any]) -> str:
     if action != "send":
         return feishu_card_tool(args)
 
+    session_chat_id, session_thread_id, session_key = _current_feishu_session_target()
     chat_id = str(args.get("chat_id") or "").strip()
+    target_from_session = False
     if not chat_id:
-        return _err("chat_id is required for send")
+        chat_id = session_chat_id
+        target_from_session = bool(chat_id)
+    if not chat_id:
+        return _err("chat_id is required for send outside a Feishu gateway session")
 
     try:
-        rendered = _render_for_args(args)
+        effective_args = dict(args)
+        if not effective_args.get("session_key") and session_key:
+            effective_args["session_key"] = session_key
+        rendered = _render_for_args(effective_args)
         from gateway.config import Platform
         from gateway.run import _gateway_runner_ref
 
@@ -186,6 +223,8 @@ async def feishu_card_tool_async(args: dict[str, Any]) -> str:
             return _err("Live Feishu adapter does not support send_card")
 
         thread_id = str(args.get("thread_id") or "").strip()
+        if not thread_id and target_from_session:
+            thread_id = session_thread_id
         reply_to = str(args.get("reply_to") or "").strip() or None
         metadata = {"thread_id": thread_id} if thread_id else None
         result = await send_card(chat_id, rendered, reply_to=reply_to, metadata=metadata)

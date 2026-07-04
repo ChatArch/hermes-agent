@@ -145,6 +145,57 @@ def test_feishu_card_tool_schema_describes_flexible_card_dsl():
     assert "raw_feishu" in result["schema"]["escape_hatches"]
 
 
+def test_feishu_card_tool_send_defaults_to_current_feishu_session(monkeypatch):
+    sent = []
+
+    class Adapter:
+        async def send_card(self, chat_id, card, *, reply_to=None, metadata=None):
+            sent.append({"chat_id": chat_id, "card": card, "reply_to": reply_to, "metadata": metadata})
+            return SimpleNamespace(success=True, message_id="om_sent", thread_id="omt_sent", error=None)
+
+    fake_gateway_run = ModuleType("gateway.run")
+    fake_gateway_run._gateway_runner_ref = lambda: SimpleNamespace(adapters={Platform.FEISHU: Adapter()})
+    monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    tokens = set_session_vars(
+        platform="feishu",
+        chat_id="oc_current",
+        thread_id="omt_current",
+        session_key="session-current",
+        message_id="om_current",
+    )
+    try:
+        raw = asyncio.run(
+            feishu_card_tool_async(
+                {
+                    "action": "send",
+                    "card": {
+                        "header": {"title": "当前会话卡片", "color": "green"},
+                        "elements": [
+                            {
+                                "type": "actions",
+                                "layout": "equal",
+                                "buttons": [{"text": "确认", "style": "primary", "action": "auth.authorize"}],
+                            }
+                        ],
+                    },
+                },
+            )
+        )
+    finally:
+        clear_session_vars(tokens)
+    result = json.loads(raw)
+
+    assert result == {"success": True, "message_id": "om_sent", "thread_id": "omt_sent"}
+    assert sent[0]["chat_id"] == "oc_current"
+    assert sent[0]["metadata"] == {"thread_id": "omt_current"}
+    assert sent[0]["reply_to"] is None
+    button_value = sent[0]["card"]["elements"][0]["columns"][0]["elements"][0]["value"]
+    assert button_value["session_key"] == "session-current"
+
+
 def test_feishu_card_tool_send_uses_live_feishu_adapter(monkeypatch):
     sent = []
 
