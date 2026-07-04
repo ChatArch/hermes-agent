@@ -2322,7 +2322,7 @@ def terminal_tool(
                         session_key=session_key,
                     )
 
-                if getattr(proc_session, "exited", False):
+                if getattr(proc_session, "exited", False) is True:
                     result_data = {
                         "output": getattr(proc_session, "output_buffer", "") or "",
                         "session_id": proc_session.id,
