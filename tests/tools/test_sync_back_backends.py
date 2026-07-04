@@ -95,6 +95,66 @@ def _make_mock_daytona_env():
     return env
 
 
+
+class TestSSHNoDefaultHermesSync:
+    """SSH targets are real machines; default SSH execution must not sync ~/.hermes."""
+
+    def test_ssh_environment_does_not_sync_local_hermes_by_default(self, monkeypatch):
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/u")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+
+        calls = []
+
+        def forbidden_remote_dirs(self):
+            calls.append("ensure_remote_dirs")
+            raise AssertionError("default SSH must not create remote ~/.hermes dirs")
+
+        class ForbiddenSyncManager:
+            def __init__(self, **kwargs):
+                calls.append("FileSyncManager")
+                raise AssertionError("default SSH must not instantiate FileSyncManager")
+
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", forbidden_remote_dirs)
+        monkeypatch.setattr(ssh_env, "FileSyncManager", ForbiddenSyncManager)
+
+        env = SSHEnvironment(host="h", user="u")
+        env._before_execute()
+        env.cleanup()
+
+        assert env._sync_manager is None
+        assert calls == []
+
+    def test_ssh_environment_sync_is_explicit_opt_in_only(self, monkeypatch):
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/u")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+
+        calls = []
+
+        class TrackingSyncManager:
+            def __init__(self, **kwargs):
+                calls.append("init")
+
+            def sync(self, **kwargs):
+                calls.append("sync")
+
+            def sync_back(self):
+                calls.append("sync_back")
+
+        monkeypatch.setattr(ssh_env, "FileSyncManager", TrackingSyncManager)
+
+        env = SSHEnvironment(host="h", user="u", sync_hermes_files=True)
+        env._before_execute()
+        env.control_socket = Path("/nonexistent/socket")
+        env.cleanup()
+
+        assert calls == ["init", "sync", "sync"]
+
+
 # =====================================================================
 # SSH bulk download
 # =====================================================================
@@ -181,7 +241,7 @@ class TestSSHCleanup:
 
         monkeypatch.setattr(ssh_env, "FileSyncManager", TrackingSyncManager)
 
-        env = SSHEnvironment(host="h", user="u")
+        env = SSHEnvironment(host="h", user="u", sync_hermes_files=True, sync_back_on_cleanup=True)
         # Ensure control_socket does not exist so cleanup skips the SSH exit call
         env.control_socket = Path("/nonexistent/socket")
 
@@ -211,7 +271,7 @@ class TestSSHCleanup:
 
         monkeypatch.setattr(ssh_env, "FileSyncManager", TrackingSyncManager)
 
-        env = SSHEnvironment(host="h", user="u")
+        env = SSHEnvironment(host="h", user="u", sync_hermes_files=True, sync_back_on_cleanup=True)
 
         # Create a fake control socket so cleanup tries the SSH exit
         import tempfile
@@ -429,7 +489,7 @@ class TestBulkDownloadWiring:
 
         monkeypatch.setattr(ssh_env, "FileSyncManager", CaptureSyncManager)
 
-        SSHEnvironment(host="h", user="u")
+        SSHEnvironment(host="h", user="u", sync_hermes_files=True)
 
         assert "bulk_download_fn" in captured_kwargs
         assert callable(captured_kwargs["bulk_download_fn"])

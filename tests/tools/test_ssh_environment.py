@@ -146,6 +146,11 @@ class TestControlSocketPath:
         # real mkdir so __init__ can proceed.
         from pathlib import Path as _Path
         monkeypatch.setattr(_Path, "mkdir", lambda *a, **k: None)
+        monkeypatch.setattr(_Path, "chmod", lambda *a, **k: None)
+        monkeypatch.setattr("tools.environments.ssh.os.access", lambda *a, **k: True)
+        monkeypatch.setattr("tools.environments.ssh.os.getuid", lambda: 501)
+        monkeypatch.setattr(_Path, "is_symlink", lambda *a, **k: False)
+        monkeypatch.setattr(_Path, "stat", lambda *a, **k: type("S", (), {"st_uid": 501, "st_mode": 0o700})())
 
         env = SSHEnvironment(
             host="9373:9b91:4480:558d:708e:e601:24e8:d8d0",
@@ -167,6 +172,56 @@ class TestControlSocketPath:
         first = SSHEnvironment(host="example.com", user="alice", port=2222)
         second = SSHEnvironment(host="example.com", user="alice", port=2222)
         assert first.control_socket == second.control_socket
+
+    def test_control_dir_is_local_user_isolated_and_private(self, monkeypatch, tmp_path):
+        """ControlMaster sockets live in a local-user private temp dir, not a global /tmp/hermes-ssh."""
+        monkeypatch.setattr("tools.environments.ssh.tempfile.gettempdir", lambda: str(tmp_path))
+        expected_suffix = ssh_env.SSHEnvironment._control_dir_suffix()
+
+        env = SSHEnvironment(host="example.com", user="alice", port=2222)
+
+        assert env.control_dir == tmp_path / f"hssh-{expected_suffix}"
+        assert env.control_dir.exists()
+        assert env.control_dir.stat().st_mode & 0o777 == 0o700
+        assert "hermes-ssh" not in str(env.control_dir)
+        assert str(env.control_socket).startswith(str(env.control_dir))
+
+    def test_unwritable_control_dir_fails_before_ssh_connect(self, monkeypatch, tmp_path):
+        """A polluted per-user temp dir should fail clearly before OpenSSH emits bind noise."""
+        monkeypatch.setattr("tools.environments.ssh.tempfile.gettempdir", lambda: str(tmp_path))
+        monkeypatch.setattr("tools.environments.ssh.os.access", lambda *a, **k: False)
+        monkeypatch.setattr(
+            "tools.environments.ssh.subprocess.run",
+            lambda *a, **k: pytest.fail("SSH connection should not be attempted when control dir is unwritable"),
+        )
+
+        with pytest.raises(RuntimeError, match="SSH control socket directory is not writable"):
+            SSHEnvironment(host="example.com", user="alice", port=2222)
+
+    def test_control_dir_owned_by_other_user_fails_before_ssh_connect(self, monkeypatch, tmp_path):
+        """Do not reuse a pre-existing per-user socket dir owned by another local user."""
+        monkeypatch.setattr("tools.environments.ssh.tempfile.gettempdir", lambda: str(tmp_path))
+        monkeypatch.setattr("tools.environments.ssh.os.getuid", lambda: 12345)
+        from pathlib import Path as _Path
+        monkeypatch.setattr(_Path, "mkdir", lambda *a, **k: None)
+        monkeypatch.setattr(_Path, "is_symlink", lambda *a, **k: False)
+        monkeypatch.setattr(_Path, "stat", lambda *a, **k: type("S", (), {"st_uid": 99999, "st_mode": 0o700})())
+        with pytest.raises(RuntimeError, match="owned by another local user"):
+            ssh_env.SSHEnvironment._make_control_dir()
+
+    def test_control_dir_group_accessible_mode_fails(self, monkeypatch, tmp_path):
+        """Even current-user dirs must not remain group/other accessible."""
+        monkeypatch.setattr("tools.environments.ssh.tempfile.gettempdir", lambda: str(tmp_path))
+        monkeypatch.setattr("tools.environments.ssh.os.getuid", lambda: 12345)
+        monkeypatch.setattr("tools.environments.ssh.os.access", lambda *a, **k: True)
+        from pathlib import Path as _Path
+        monkeypatch.setattr(_Path, "mkdir", lambda *a, **k: None)
+        monkeypatch.setattr(_Path, "chmod", lambda *a, **k: None)
+        monkeypatch.setattr(_Path, "is_symlink", lambda *a, **k: False)
+        monkeypatch.setattr(_Path, "stat", lambda *a, **k: type("S", (), {"st_uid": 12345, "st_mode": 0o775})())
+
+        with pytest.raises(RuntimeError, match="must be private"):
+            ssh_env.SSHEnvironment._make_control_dir()
 
     def test_path_differs_for_different_targets(self):
         """Different (user, host, port) triples must produce different paths."""

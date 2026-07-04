@@ -62,15 +62,17 @@ class SSHEnvironment(BaseEnvironment):
                  timeout: int = 60, port: int = 22, key_path: str = "",
                  identities_only: bool = True, known_hosts_path: str | Path = "",
                  host_key_policy: str = "accept-new", persistent: bool = True,
-                 sync_back_on_cleanup: bool = True):
+                 sync_back_on_cleanup: bool = False,
+                 sync_hermes_files: bool = False):
         super().__init__(cwd=cwd, timeout=timeout)
         self._persistent = bool(persistent)
-        # SSH is a live remote machine, not an ephemeral container filesystem.
-        # Pulling the whole remote ~/.hermes tree back during normal section
-        # switch/off or interpreter shutdown can block for minutes after the
-        # user's command has already completed. File tools operate directly over
-        # the SSH environment, so cleanup should only close the ControlMaster by
-        # default; callers can opt into sync-back explicitly if needed.
+        # SSH targets are real, long-lived machines with their own filesystem
+        # and possibly their own Hermes installation.  Unlike disposable
+        # container backends, default SSH execution must not upload local
+        # ~/.hermes resources or pull remote ~/.hermes back.  Terminal and file
+        # tools operate directly on the remote target; Hermes control-plane
+        # state stays local.
+        self._sync_hermes_files = bool(sync_hermes_files)
         self._sync_back_on_cleanup = bool(sync_back_on_cleanup)
         self._cleaned = False
         self.host = host
@@ -87,8 +89,7 @@ class SSHEnvironment(BaseEnvironment):
         self.known_hosts_path.touch(exist_ok=True)
         self.host_key_policy = _normalize_host_key_policy(host_key_policy)
 
-        self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
-        self.control_dir.mkdir(parents=True, exist_ok=True)
+        self.control_dir = self._make_control_dir()
         # Keep the socket filename short and deterministic so the full path
         # stays under the 104-byte sun_path limit that macOS enforces on
         # Unix domain sockets. A raw ``user@host:port`` — especially with an
@@ -104,18 +105,65 @@ class SSHEnvironment(BaseEnvironment):
         _ensure_ssh_available()
         self._establish_connection()
         self._remote_home = self._detect_remote_home()
-
-        self._ensure_remote_dirs()
-        self._sync_manager = FileSyncManager(
-            get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
-            upload_fn=self._scp_upload,
-            delete_fn=self._ssh_delete,
-            bulk_upload_fn=self._ssh_bulk_upload,
-            bulk_download_fn=self._ssh_bulk_download,
-        )
-        self._sync_manager.sync(force=True)
+        self._sync_manager = None
+        if self._sync_hermes_files:
+            self._ensure_remote_dirs()
+            self._sync_manager = FileSyncManager(
+                get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
+                upload_fn=self._scp_upload,
+                delete_fn=self._ssh_delete,
+                bulk_upload_fn=self._ssh_bulk_upload,
+                bulk_download_fn=self._ssh_bulk_download,
+            )
+            self._sync_manager.sync(force=True)
 
         self.init_session()
+
+    @staticmethod
+    def _control_dir_suffix() -> str:
+        """Return a short local-user suffix for ControlMaster socket dirs."""
+        getuid = getattr(os, "getuid", None)
+        if callable(getuid):
+            return str(getuid())
+        user = os.getenv("USERNAME") or os.getenv("USER") or "user"
+        return hashlib.sha256(user.encode()).hexdigest()[:8]
+
+    @classmethod
+    def _make_control_dir(cls) -> Path:
+        """Create a local-user-isolated OpenSSH ControlMaster directory.
+
+        ``/tmp`` is shared across local users on Linux/macOS.  A fixed global
+        directory such as ``/tmp/hermes-ssh`` can be created by one gateway user
+        and then block another user from binding a control socket.  Use a short
+        per-local-user directory name to avoid cross-user permission pollution
+        while preserving the macOS Unix-socket path length budget.
+        """
+        control_dir = Path(tempfile.gettempdir()) / f"hssh-{cls._control_dir_suffix()}"
+        control_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if control_dir.is_symlink():
+            raise RuntimeError(f"SSH control socket directory must not be a symlink: {control_dir}")
+        getuid = getattr(os, "getuid", None)
+        expected_uid = getuid() if callable(getuid) else None
+        if expected_uid is not None:
+            actual_uid = control_dir.stat().st_uid
+            if actual_uid != expected_uid:
+                raise RuntimeError(
+                    "SSH control socket directory is owned by another local user: "
+                    f"{control_dir} (uid {actual_uid}, expected {expected_uid})"
+                )
+        try:
+            control_dir.chmod(0o700)
+        except OSError:
+            logger.debug("SSH: failed to chmod control dir %s", control_dir, exc_info=True)
+        if not os.access(control_dir, os.W_OK | os.X_OK):
+            raise RuntimeError(f"SSH control socket directory is not writable: {control_dir}")
+        final_mode = control_dir.stat().st_mode & 0o777
+        if final_mode & 0o077:
+            raise RuntimeError(
+                "SSH control socket directory must be private to the local user: "
+                f"{control_dir} (mode {final_mode:o})"
+            )
+        return control_dir
 
     def _build_ssh_command(self, extra_args: list | None = None) -> list:
         cmd = ["ssh"]
@@ -383,8 +431,9 @@ class SSHEnvironment(BaseEnvironment):
             raise RuntimeError(f"remote rm failed: {result.stderr.strip()}")
 
     def _before_execute(self) -> None:
-        """Sync files to remote via FileSyncManager (rate-limited internally)."""
-        self._sync_manager.sync()
+        """No-op by default; SSH targets must not receive local Hermes sync."""
+        if self._sync_manager is not None:
+            self._sync_manager.sync()
 
     # ------------------------------------------------------------------
     # Execution

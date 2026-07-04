@@ -1108,9 +1108,21 @@ def execute_code(
     if not code or not code.strip():
         return tool_error("No code provided.")
 
-    # Dispatch: remote backends use file-based RPC, local uses UDS
-    from tools.terminal_tool import _get_env_config
-    env_type = _get_env_config()["env_type"]
+    # Dispatch: remote backends use file-based RPC, local uses UDS.  Use the
+    # *effective* backend after section/session SSH overrides, not only the
+    # process-global TERMINAL_ENV config; otherwise SSH Mode would still run
+    # top-level execute_code locally while nested terminal/file tools route to
+    # the SSH target.
+    from tools.terminal_tool import (
+        _get_env_config,
+        apply_task_env_overrides,
+        resolve_task_overrides,
+    )
+    env_config = apply_task_env_overrides(
+        _get_env_config(),
+        resolve_task_overrides(task_id),
+    )
+    env_type = env_config["env_type"]
 
     # execute_code runs arbitrary Python (subprocess/os.system/...) that never
     # passes through terminal()/DANGEROUS_PATTERNS, so guard the whole script
