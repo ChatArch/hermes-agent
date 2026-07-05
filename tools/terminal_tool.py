@@ -2322,6 +2322,23 @@ def terminal_tool(
                         session_key=session_key,
                     )
 
+                if getattr(proc_session, "exited", False) is True:
+                    result_data = {
+                        "output": getattr(proc_session, "output_buffer", "") or "",
+                        "session_id": proc_session.id,
+                        "pid": proc_session.pid,
+                        "exit_code": proc_session.exit_code if proc_session.exit_code is not None else -1,
+                        "error": getattr(proc_session, "output_buffer", "") or "Background process failed to start",
+                        "status": "error",
+                        "completion_reason": getattr(proc_session, "completion_reason", "failed_start"),
+                        "termination_source": getattr(proc_session, "termination_source", "failed_start"),
+                    }
+                    if approval_note:
+                        result_data["approval"] = approval_note
+                    if pty_disabled_reason:
+                        result_data["pty_note"] = pty_disabled_reason
+                    return json.dumps(result_data, ensure_ascii=False)
+
                 result_data = {
                     "output": "Background process started",
                     "session_id": proc_session.id,

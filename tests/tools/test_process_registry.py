@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -365,8 +366,9 @@ class TestStdinHelpers:
         lockout (#17959). For interactive stdin → PTY mode is now the only
         supported path.
         """
+        python = shlex.quote(sys.executable)
         session = registry.spawn_local(
-            'python3 -c "import sys; print(sys.stdin.read().strip())"',
+            f'{python} -c "import sys; print(sys.stdin.read().strip())"',
             cwd=str(tmp_path),
             use_pty=True,
         )
@@ -610,6 +612,39 @@ class TestSpawnEnvSanitization:
 
         args, kwargs = env.commands[0]
         assert kwargs.get("rewrite_compound_background") is False
+
+    def test_spawn_via_env_uses_non_login_shell_for_wrapped_command(self, registry):
+        """Env-backed background commands must not use login shell for the payload.
+
+        SSHEnvironment/BaseEnvironment already sources the session snapshot and
+        cd's to the effective cwd before launching the background wrapper. Using
+        `bash -lc` again for the user payload lets remote login-profile behavior
+        swallow the command while returning 0, producing empty logs and missing
+        side effects.
+        """
+
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def get_temp_dir(self):
+                return "/tmp"
+
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
+                return {"output": "4321\n", "returncode": 0}
+
+        env = FakeEnv()
+        fake_thread = MagicMock()
+
+        with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"):
+            registry.spawn_via_env(env, "pwd; echo hello")
+
+        bg_command = env.commands[0][0]
+        assert "nohup bash -c " in bg_command
+        assert "nohup bash -lc " not in bg_command
+        assert "nohup bash -l -c " not in bg_command
 
     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
         session = _make_session(sid="proc_space")

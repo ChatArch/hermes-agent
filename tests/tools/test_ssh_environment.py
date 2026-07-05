@@ -14,6 +14,7 @@ _SSH_HOST = os.getenv("TERMINAL_SSH_HOST", "")
 _SSH_USER = os.getenv("TERMINAL_SSH_USER", "")
 _SSH_PORT = int(os.getenv("TERMINAL_SSH_PORT", "22"))
 _SSH_KEY = os.getenv("TERMINAL_SSH_KEY", "")
+_SSH_CWD = os.getenv("TERMINAL_CWD", "~")
 
 _has_ssh = bool(_SSH_HOST and _SSH_USER)
 
@@ -31,6 +32,8 @@ def _run(command, task_id="ssh_test", **kwargs):
 def _cleanup(task_id="ssh_test"):
     from tools.terminal_tool import cleanup_vm
     cleanup_vm(task_id)
+    if task_id != "default":
+        cleanup_vm("default")
 
 
 class TestBuildSSHCommand:
@@ -311,6 +314,7 @@ def _setup_ssh_env(monkeypatch, persistent: bool):
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_SSH_HOST", _SSH_HOST)
     monkeypatch.setenv("TERMINAL_SSH_USER", _SSH_USER)
+    monkeypatch.setenv("TERMINAL_CWD", _SSH_CWD)
     monkeypatch.setenv("TERMINAL_SSH_PERSISTENT", "true" if persistent else "false")
     if _SSH_PORT != 22:
         monkeypatch.setenv("TERMINAL_SSH_PORT", str(_SSH_PORT))
@@ -374,6 +378,35 @@ class TestPersistentSSH:
         r = _run("echo oops >&2")
         assert r["exit_code"] == 0
         assert "oops" in r["output"]
+
+    def test_background_process_captures_output_and_remote_side_effect(self):
+        from tools.process_registry import process_registry
+
+        probe = ".trash/hermes-ssh-background-regression"
+        _run(f"mkdir -p {probe}; rm -f {probe}/bg.txt")
+        try:
+            started = _run(
+                "pwd; whoami; hostname; "
+                f"printf bg-ok > {probe}/bg.txt; "
+                "printf SSH_BACKGROUND_STDOUT",
+                background=True,
+            )
+            assert started["exit_code"] == 0
+            assert started.get("pid"), started
+            sid = started["session_id"]
+
+            waited = process_registry.wait(sid, timeout=15)
+
+            assert waited["status"] == "exited"
+            assert waited["exit_code"] == 0
+            assert "SSH_BACKGROUND_STDOUT" in waited["output"]
+            assert "/" in waited["output"]
+
+            side_effect = _run(f"cat {probe}/bg.txt")
+            assert side_effect["exit_code"] == 0
+            assert side_effect["output"].strip() == "bg-ok"
+        finally:
+            _run(f"rm -rf {probe}")
 
     def test_multiline_output(self):
         r = _run("echo a; echo b; echo c")

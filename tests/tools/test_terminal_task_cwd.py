@@ -159,6 +159,64 @@ def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     }]
 
 
+def test_nonlocal_background_failed_start_is_not_reported_as_started(monkeypatch):
+    """Env-backed background launch failures must surface as errors.
+
+    If spawn_via_env cannot extract a backend PID, process_registry returns a
+    failed-start session that is not tracked. terminal_tool must not hand the
+    model a fake session_id that later makes process.wait report not_found.
+    """
+
+    class FakeEnv:
+        env = {}
+        cwd = "/remote/work"
+
+    class FakeRegistry:
+        pending_watchers = []
+
+        def spawn_via_env(self, **kwargs):
+            return SimpleNamespace(
+                id="proc_failed",
+                pid=None,
+                exited=True,
+                exit_code=-1,
+                completion_reason="failed_start",
+                termination_source="failed_start",
+                output_buffer="cd: /missing: No such file or directory",
+            )
+
+    import tools.process_registry as process_registry_mod
+
+    task_id = "ssh-bg-failed-start"
+    monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: FakeEnv()})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {task_id: {"env_type": "ssh", "cwd": "/remote/work"}})
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {**_minimal_terminal_config(cwd="/remote/work"), "env_type": "ssh"})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda value: value or "default")
+    monkeypatch.setattr(
+        terminal_tool,
+        "_check_all_guards",
+        lambda command, env_type: {"approved": True},
+    )
+    monkeypatch.setattr(process_registry_mod, "process_registry", FakeRegistry())
+
+    result = json.loads(
+        terminal_tool.terminal_tool(
+            command="sleep 1",
+            task_id=task_id,
+            background=True,
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["exit_code"] == -1
+    assert result["completion_reason"] == "failed_start"
+    assert result["session_id"] == "proc_failed"
+    assert "Background process started" not in result.get("output", "")
+    assert "cd: /missing" in result["error"]
+
+
 def test_registering_cwd_override_updates_live_env_cwd(monkeypatch):
     """An ACP ``update_cwd`` (re-)registered mid-session must win over a
     previously ``cd``-ed live ``env.cwd``.

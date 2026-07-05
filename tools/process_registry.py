@@ -555,7 +555,7 @@ class ProcessRegistry:
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
                 pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", f"set +m; {command}"],
+                    [user_shell, "-lc", f"set +m; {command}"],
                     cwd=session.cwd,
                     env=pty_env,
                     dimensions=(30, 120),
@@ -598,7 +598,7 @@ class ProcessRegistry:
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
         proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {command}"],
+            [user_shell, "-lc", f"set +m; {command}"],
             text=True,
             cwd=session.cwd,
             env=bg_env,
@@ -696,7 +696,7 @@ class ProcessRegistry:
         quoted_exit_path = shlex.quote(exit_path)
         bg_command = (
             f"mkdir -p {quoted_temp_dir} && "
-            f"( nohup bash -lc {quoted_command} > {quoted_log_path} 2>&1; "
+            f"( nohup bash -c {quoted_command} > {quoted_log_path} 2>&1; "
             f"rc=$?; printf '%s\\n' \"$rc\" > {quoted_exit_path} ) & "
             f"echo $! > {quoted_pid_path} && cat {quoted_pid_path}"
         )
