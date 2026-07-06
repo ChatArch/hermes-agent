@@ -136,7 +136,7 @@ async def test_interrupt_without_payload_returns_usage_and_does_not_interrupt():
 
 
 @pytest.mark.asyncio
-async def test_interrupt_with_pending_sentinel_reports_starting():
+async def test_interrupt_with_pending_sentinel_queues_payload_for_next_turn():
     from gateway.run import _AGENT_PENDING_SENTINEL
 
     runner, adapter = _make_runner(_session_entry())
@@ -146,9 +146,9 @@ async def test_interrupt_with_pending_sentinel_reports_starting():
     result = await runner._handle_message(_make_event("/interrupt take over"))
 
     assert result is not None
-    assert "starting" in str(result).lower()
+    assert "queued" in str(result).lower()
     assert runner._pending_messages == {}
-    assert adapter._pending_messages == {}
+    assert adapter._pending_messages[sk].text == "take over"
 
 
 @pytest.mark.asyncio
@@ -170,12 +170,16 @@ async def test_interrupt_failure_does_not_echo_exception_text():
 
 
 @pytest.mark.asyncio
-async def test_interrupt_without_active_agent_reports_no_active_run():
+async def test_interrupt_without_active_agent_sends_payload_as_normal_message():
     runner, adapter = _make_runner(_session_entry())
+    runner._dispatch_event_to_agent = AsyncMock(return_value="agent-result")
 
     result = await runner._handle_message(_make_event("/interrupt stop that"))
 
-    assert result is not None
-    assert "no active" in str(result).lower() or "not running" in str(result).lower()
+    assert result == "agent-result"
+    await_args = runner._dispatch_event_to_agent.await_args
+    assert await_args is not None
+    dispatched_event = await_args.args[0]
+    assert dispatched_event.text == "stop that"
     assert runner._pending_messages == {}
     assert adapter._pending_messages == {}
