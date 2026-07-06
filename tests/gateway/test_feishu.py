@@ -2978,6 +2978,39 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_dedents_nested_list_fenced_code_blocks(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = json.loads(
+            adapter._build_post_payload(
+                "- 只更新模型渠道：\n"
+                "  - 原来：\n"
+                "    ```toml\n"
+                "    [projects.agent]\n"
+                "    type = \"codex\"\n"
+                "    ```\n"
+                "\n"
+                "  - 现在：\n"
+                "    ```toml\n"
+                "    [projects.agent]\n"
+                "    type = \"cursor\"\n"
+                "    ```"
+            )
+        )
+
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [{"tag": "md", "text": "- 只更新模型渠道：\n  - 原来："}],
+                [{"tag": "md", "text": "```toml\n[projects.agent]\ntype = \"codex\"\n```"}],
+                [{"tag": "md", "text": "\n  - 现在："}],
+                [{"tag": "md", "text": "```toml\n[projects.agent]\ntype = \"cursor\"\n```"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_keeps_fence_like_code_lines_inside_code_block(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
