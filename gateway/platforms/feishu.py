@@ -582,6 +582,7 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     rows: List[List[Dict[str, str]]] = []
     current: List[str] = []
     in_code_block = False
+    code_block_indent = ""
 
     def _flush_current() -> None:
         nonlocal current
@@ -591,6 +592,11 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
         if segment.strip():
             rows.append([{"tag": "md", "text": segment}])
         current = []
+
+    def _dedent_code_line(raw_line: str) -> str:
+        if not code_block_indent:
+            return raw_line
+        return raw_line[len(code_block_indent):] if raw_line.startswith(code_block_indent) else raw_line
 
     for raw_line in content.splitlines():
         stripped_line = raw_line.strip()
@@ -603,13 +609,17 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
         if is_fence:
             if not in_code_block:
                 _flush_current()
-            current.append(raw_line)
+                code_block_indent = raw_line[: len(raw_line) - len(raw_line.lstrip())]
+                current.append(stripped_line)
+            else:
+                current.append(stripped_line)
+                code_block_indent = ""
             in_code_block = not in_code_block
             if not in_code_block:
                 _flush_current()
             continue
 
-        current.append(raw_line)
+        current.append(_dedent_code_line(raw_line) if in_code_block else raw_line)
 
     _flush_current()
     return rows or [[{"tag": "md", "text": content}]]
