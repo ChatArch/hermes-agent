@@ -7171,10 +7171,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return "Usage: /interrupt <prompt>"
                 running_agent = self._running_agents.get(_quick_key)
                 if running_agent is _AGENT_PENDING_SENTINEL:
-                    return "Agent is still starting — use /stop to force-unlock, or try /interrupt again once it is running."
+                    # The agent is not ready to accept an interrupt yet; keep
+                    # the user's payload as the next normal turn instead of
+                    # discarding it behind a transient startup state.
+                    adapter = self.adapters.get(source.platform)
+                    if adapter:
+                        queued_event = MessageEvent(
+                            text=interrupt_text,
+                            message_type=MessageType.TEXT,
+                            source=event.source,
+                            message_id=event.message_id,
+                            channel_prompt=event.channel_prompt,
+                        )
+                        self._enqueue_fifo(_quick_key, queued_event, adapter)
+                    return "Agent is still starting — /interrupt payload queued for the next turn."
                 interrupt_method = getattr(running_agent, "interrupt", None)
                 if not running_agent or not callable(interrupt_method):
-                    return "No active agent is running — send the message normally instead."
+                    adapter = self.adapters.get(source.platform)
+                    if adapter:
+                        queued_event = MessageEvent(
+                            text=interrupt_text,
+                            message_type=MessageType.TEXT,
+                            source=event.source,
+                            message_id=event.message_id,
+                            channel_prompt=event.channel_prompt,
+                        )
+                        self._enqueue_fifo(_quick_key, queued_event, adapter)
+                    return "No interruptible agent is running — /interrupt payload queued for the next turn."
                 try:
                     interrupt_method(interrupt_text)
                 except Exception as exc:
@@ -7660,7 +7683,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_stop_command(event)
 
         if canonical == "interrupt":
-            return "No active agent is running — /interrupt only works while Hermes is busy. Send the prompt normally instead."
+            # No active agent means there is nothing to interrupt. Match
+            # /steer's idle behavior: strip the command and send the payload
+            # through the normal agent path instead of dropping it.
+            interrupt_payload = event.get_command_args().strip()
+            if not interrupt_payload:
+                return "Usage: /interrupt <prompt>  (no agent is running; nothing to interrupt)"
+            try:
+                event.text = interrupt_payload
+            except Exception:
+                pass
+            command = None
+            canonical = None
         
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)

@@ -113,7 +113,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("tasks",)),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
-    CommandDef("interrupt", "Interrupt the active run with a follow-up prompt", "Session",
+    CommandDef("interrupt", "Interrupt the active run, or send the prompt normally when idle", "Session",
                gateway_only=True, args_hint="<prompt>"),
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
                args_hint="<prompt>"),
