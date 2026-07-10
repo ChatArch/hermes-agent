@@ -226,6 +226,13 @@ class TestParseReasoningEffort:
         """Every level listed in VALID_REASONING_EFFORTS is accepted as-is."""
         assert parse_reasoning_effort(level) == {"enabled": True, "effort": level}
 
+    def test_reasoning_efforts_include_codex_stronger_levels(self):
+        """Hermes accepts Codex's stronger reasoning efforts."""
+        efforts = set(VALID_REASONING_EFFORTS)
+        assert {"max", "ultra"}.issubset(efforts)
+        assert VALID_REASONING_EFFORTS.index("xhigh") < VALID_REASONING_EFFORTS.index("max")
+        assert VALID_REASONING_EFFORTS.index("max") < VALID_REASONING_EFFORTS.index("ultra")
+
     @pytest.mark.parametrize(
         "raw, expected_effort",
         [
@@ -233,6 +240,8 @@ class TestParseReasoningEffort:
             ("High", "high"),
             ("  low  ", "low"),
             ("\tXHIGH\n", "xhigh"),
+            ("MAX", "max"),
+            ("  Ultra  ", "ultra"),
             ("None", False),
         ],
     )
@@ -246,7 +255,7 @@ class TestParseReasoningEffort:
 
     @pytest.mark.parametrize(
         "value",
-        ["bogus", "very-high", "max", "0", "off", "true", "default"],
+        ["bogus", "very-high", "0", "off", "true", "default"],
     )
     def test_unknown_levels_return_none(self, value):
         """Unrecognized strings fall back to the caller default (None)."""
@@ -255,11 +264,11 @@ class TestParseReasoningEffort:
     def test_known_supported_levels_are_documented(self):
         """Guard against silently dropping a documented level.
 
-        The docstring promises "minimal", "low", "medium", "high", "xhigh".
+        The docstring promises Codex's known reasoning efforts.
         If someone removes one from VALID_REASONING_EFFORTS without updating
         the docstring, this test will fail and force the call out.
         """
-        documented = {"minimal", "low", "medium", "high", "xhigh"}
+        documented = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
 
 

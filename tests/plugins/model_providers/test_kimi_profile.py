@@ -60,15 +60,22 @@ class TestKimiReasoningWireShape:
         assert extra_body == {"thinking": {"type": "enabled"}}
         assert top_level == {}
 
-    @pytest.mark.parametrize("effort", ["", "garbage", "xhigh", "max"])
+    @pytest.mark.parametrize("effort", ["", "garbage"])
     def test_unrecognized_effort_falls_back_to_thinking(self, kimi_profile, effort):
-        """Unknown/strong efforts aren't in Moonshot's low|medium|high set, so
-        we drop to the thinking toggle rather than sending an invalid effort."""
+        """Unknown efforts fall back to the thinking toggle."""
         extra_body, top_level = kimi_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort}
         )
         assert extra_body == {"thinking": {"type": "enabled"}}
         assert top_level == {}
+
+    @pytest.mark.parametrize("effort", ["xhigh", "max", "ultra"])
+    def test_strong_efforts_clamp_to_high(self, kimi_profile, effort):
+        extra_body, top_level = kimi_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort}
+        )
+        assert top_level == {"reasoning_effort": "high"}
+        assert "thinking" not in extra_body
 
     def test_disabled_sends_thinking_disabled_only(self, kimi_profile):
         extra_body, top_level = kimi_profile.build_api_kwargs_extras(

@@ -2956,11 +2956,11 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
         {
             "id": "1",
             "method": "config.set",
-            "params": {"session_id": "sid", "key": "reasoning", "value": "low"},
+            "params": {"session_id": "sid", "key": "reasoning", "value": "ultra"},
         }
     )
-    assert resp_effort["result"]["value"] == "low"
-    assert agent.reasoning_config == {"enabled": True, "effort": "low"}
+    assert resp_effort["result"]["value"] == "ultra"
+    assert agent.reasoning_config == {"enabled": True, "effort": "ultra"}
 
     resp_show = server.handle_request(
         {
