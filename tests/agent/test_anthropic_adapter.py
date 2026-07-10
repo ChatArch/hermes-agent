@@ -1181,17 +1181,6 @@ class TestBuildAnthropicKwargs:
         assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
         assert kwargs["output_config"] == {"effort": "max"}
 
-    def test_reasoning_config_maps_ultra_to_max_for_anthropic_models(self):
-        kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-7",
-            messages=[{"role": "user", "content": "maximum reasoning please"}],
-            tools=None,
-            max_tokens=4096,
-            reasoning_config={"enabled": True, "effort": "ultra"},
-        )
-        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
-        assert kwargs["output_config"] == {"effort": "max"}
-
     def test_opus_4_7_strips_sampling_params(self):
         # Opus 4.7 returns 400 on non-default temperature/top_p/top_k.
         # build_anthropic_kwargs must strip them as a safety net even if an

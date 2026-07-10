@@ -60,8 +60,8 @@ class TestDeepSeekThinkingWireShape:
         )
         assert top_level == {"reasoning_effort": effort}
 
-    @pytest.mark.parametrize("effort", ["xhigh", "max", "ultra", "MAX", "  Max  ", "  Ultra  "])
-    def test_xhigh_max_and_ultra_normalize_to_max(self, deepseek_profile, effort):
+    @pytest.mark.parametrize("effort", ["xhigh", "max", "MAX", "  Max  "])
+    def test_xhigh_and_max_normalize_to_max(self, deepseek_profile, effort):
         _, top_level = deepseek_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort},
             model="deepseek-v4-pro",

@@ -30,7 +30,7 @@ class TestParseReasoningConfig(unittest.TestCase):
         self.assertEqual(result, {"enabled": False})
 
     def test_valid_levels(self):
-        for level in ("low", "medium", "high", "xhigh", "max", "ultra", "minimal"):
+        for level in ("low", "medium", "high", "xhigh", "max", "minimal"):
             result = self._parse(level)
             self.assertIsNotNone(result)
             self.assertTrue(result.get("enabled"))
@@ -41,6 +41,7 @@ class TestParseReasoningConfig(unittest.TestCase):
         self.assertIsNone(self._parse("  "))
 
     def test_unknown_returns_none(self):
+        self.assertIsNone(self._parse("ultra"))
         self.assertIsNone(self._parse("turbo"))
 
     def test_case_insensitive(self):

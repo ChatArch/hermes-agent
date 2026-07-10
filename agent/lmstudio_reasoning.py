@@ -14,16 +14,7 @@ from typing import List, Optional
 
 # LM Studio accepts these top-level reasoning_effort values via its
 # OpenAI-compatible chat.completions endpoint.
-_LM_VALID_EFFORTS = {
-    "none",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-    "ultra",
-}
+_LM_VALID_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 
 # Toggle-style models publish allowed_options as ["off","on"] in /api/v1/models.
 # Map them onto the OpenAI-compatible request vocabulary.
