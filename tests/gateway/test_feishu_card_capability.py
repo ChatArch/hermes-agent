@@ -11,6 +11,7 @@ from gateway.cards import (
     Button,
     Card,
     CardHeader,
+    Image,
     Markdown,
     Note,
     RawFeishuCard,
@@ -119,6 +120,18 @@ def test_raw_feishu_card_escape_hatch_is_returned_without_rewriting():
     assert render_feishu_card(RawFeishuCard(raw)) is raw
 
 
+def test_render_feishu_card_supports_image_elements():
+    rendered = render_feishu_card(Card(elements=[Image(image_key="img_v3_dummy", alt="chart")]))
+
+    assert rendered["elements"] == [
+        {
+            "tag": "img",
+            "img_key": "img_v3_dummy",
+            "alt": {"tag": "plain_text", "content": "chart"},
+        }
+    ]
+
+
 def test_build_feishu_authorization_card_is_generic_card_composition():
     card = build_feishu_authorization_card(
         verification_url="https://accounts.feishu.cn/oauth/v1/device/verify?user_code=REDACTED",
@@ -129,10 +142,10 @@ def test_build_feishu_authorization_card_is_generic_card_composition():
 
     assert isinstance(card, Card)
     rendered = render_feishu_card(card, session_key="session-2")
-    buttons = rendered["elements"][1]["columns"]
-    assert buttons[0]["elements"][0]["value"]["action"] == "auth.authorize"
-    assert buttons[0]["elements"][0]["value"]["flow_id"] == "flow-2"
-    assert buttons[1]["elements"][0]["value"]["action"] == "auth.cancel"
+    actions = rendered["elements"][1]["actions"]
+    assert actions[0]["value"]["action"] == "auth.authorize"
+    assert actions[0]["value"]["flow_id"] == "flow-2"
+    assert actions[1]["value"]["action"] == "auth.cancel"
 
 
 def test_card_action_registry_routes_registered_handlers():
