@@ -53,7 +53,7 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if normalized_model.startswith("gemini-2.5-"):
         return thinking_config
 
-    if effort not in {"minimal", "low", "medium", "high", "xhigh"}:
+    if effort not in {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
         effort = "medium"
 
     # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
@@ -63,13 +63,13 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         if "flash" in normalized_model:
             if effort in {"minimal", "low"}:
                 thinking_config["thinkingLevel"] = "low"
-            elif effort in {"high", "xhigh"}:
+            elif effort in {"high", "xhigh", "max", "ultra"}:
                 thinking_config["thinkingLevel"] = "high"
             else:
                 thinking_config["thinkingLevel"] = "medium"
         elif "pro" in normalized_model:
             thinking_config["thinkingLevel"] = (
-                "high" if effort in {"high", "xhigh"} else "low"
+                "high" if effort in {"high", "xhigh", "max", "ultra"} else "low"
             )
 
     return thinking_config
@@ -344,7 +344,9 @@ class ChatCompletionsTransport(ProviderTransport):
                 _kimi_effort = "medium"
                 if reasoning_config and isinstance(reasoning_config, dict):
                     _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in {"low", "medium", "high"}:
+                    if _e in {"xhigh", "max", "ultra"}:
+                        _kimi_effort = "high"
+                    elif _e in {"low", "medium", "high"}:
                         _kimi_effort = _e
                 api_kwargs["reasoning_effort"] = _kimi_effort
 
@@ -359,7 +361,9 @@ class ChatCompletionsTransport(ProviderTransport):
                 _tokenhub_effort = "high"
                 if reasoning_config and isinstance(reasoning_config, dict):
                     _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in {"low", "medium", "high"}:
+                    if _e in {"xhigh", "max", "ultra"}:
+                        _tokenhub_effort = "high"
+                    elif _e in {"low", "medium", "high"}:
                         _tokenhub_effort = _e
                 api_kwargs["reasoning_effort"] = _tokenhub_effort
 
