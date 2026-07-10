@@ -226,12 +226,10 @@ class TestParseReasoningEffort:
         """Every level listed in VALID_REASONING_EFFORTS is accepted as-is."""
         assert parse_reasoning_effort(level) == {"enabled": True, "effort": level}
 
-    def test_reasoning_efforts_include_codex_stronger_levels(self):
-        """Hermes accepts Codex's stronger reasoning efforts."""
-        efforts = set(VALID_REASONING_EFFORTS)
-        assert {"max", "ultra"}.issubset(efforts)
+    def test_reasoning_efforts_include_max_after_xhigh(self):
+        """The shared effort order includes max after xhigh."""
+        assert "max" in VALID_REASONING_EFFORTS
         assert VALID_REASONING_EFFORTS.index("xhigh") < VALID_REASONING_EFFORTS.index("max")
-        assert VALID_REASONING_EFFORTS.index("max") < VALID_REASONING_EFFORTS.index("ultra")
 
     @pytest.mark.parametrize(
         "raw, expected_effort",
@@ -241,7 +239,6 @@ class TestParseReasoningEffort:
             ("  low  ", "low"),
             ("\tXHIGH\n", "xhigh"),
             ("MAX", "max"),
-            ("  Ultra  ", "ultra"),
             ("None", False),
         ],
     )
@@ -264,11 +261,11 @@ class TestParseReasoningEffort:
     def test_known_supported_levels_are_documented(self):
         """Guard against silently dropping a documented level.
 
-        The docstring promises Codex's known reasoning efforts.
+        The docstring promises the supported reasoning efforts.
         If someone removes one from VALID_REASONING_EFFORTS without updating
         the docstring, this test will fail and force the call out.
         """
-        documented = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+        documented = {"minimal", "low", "medium", "high", "xhigh", "max"}
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
 
 

@@ -75,20 +75,6 @@ class TestCodexBuildKwargs:
         )
         assert kw.get("reasoning", {}).get("effort") == "high"
 
-    def test_codex_responses_accepts_parsed_ultra_effort(self, transport):
-        """The new parser value must reach the Responses API payload."""
-        from hermes_constants import parse_reasoning_effort
-
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="gpt-5.6-sol",
-            messages=messages,
-            tools=[],
-            reasoning_config=parse_reasoning_effort("ultra"),
-        )
-
-        assert kw.get("reasoning", {}).get("effort") == "ultra"
-
     def test_reasoning_disabled(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

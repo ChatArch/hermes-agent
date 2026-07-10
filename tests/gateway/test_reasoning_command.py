@@ -124,22 +124,22 @@ class TestReasoningCommand:
         assert "takes effect on next message" in result
 
     @pytest.mark.asyncio
-    async def test_handle_reasoning_command_accepts_ultra_global(self, tmp_path, monkeypatch):
+    async def test_handle_reasoning_command_accepts_shared_max_effort(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
-        config_path.write_text("agent:\n  reasoning_effort: xhigh\n", encoding="utf-8")
+        config_path.write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
 
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
 
         runner = _make_runner()
-        runner._reasoning_config = {"enabled": True, "effort": "xhigh"}
+        runner._reasoning_config = {"enabled": True, "effort": "medium"}
 
-        result = await runner._handle_reasoning_command(_make_event("/reasoning ultra --global"))
+        result = await runner._handle_reasoning_command(_make_event("/reasoning max --global"))
 
         saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert saved["agent"]["reasoning_effort"] == "ultra"
-        assert runner._reasoning_config == {"enabled": True, "effort": "ultra"}
+        assert saved["agent"]["reasoning_effort"] == "max"
+        assert runner._reasoning_config == {"enabled": True, "effort": "max"}
         assert "saved to config" in result
 
     @pytest.mark.asyncio
@@ -161,27 +161,6 @@ class TestReasoningCommand:
         assert saved["agent"]["reasoning_effort"] == "medium"
         assert runner._session_reasoning_overrides[session_key] == {"enabled": True, "effort": "high"}
         assert runner._reasoning_config == {"enabled": True, "effort": "high"}
-        assert "session only" in result
-
-    @pytest.mark.asyncio
-    async def test_handle_reasoning_command_accepts_max_session_only(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-        config_path = hermes_home / "config.yaml"
-        config_path.write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
-
-        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-
-        runner = _make_runner()
-        event = _make_event("/reasoning max")
-        session_key = runner._session_key_for_source(event.source)
-
-        result = await runner._handle_reasoning_command(event)
-
-        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert saved["agent"]["reasoning_effort"] == "medium"
-        assert runner._session_reasoning_overrides[session_key] == {"enabled": True, "effort": "max"}
-        assert runner._reasoning_config == {"enabled": True, "effort": "max"}
         assert "session only" in result
 
     @pytest.mark.asyncio

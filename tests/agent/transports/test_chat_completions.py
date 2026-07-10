@@ -379,30 +379,6 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["extra_body"]["google"]["thinking_config"]["thinking_level"] == "high"
 
-    @pytest.mark.parametrize("effort", ["max", "ultra"])
-    def test_gemini_openai_compat_stronger_efforts_clamp_to_high(self, transport, effort):
-        msgs = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="gemini-3-flash-preview",
-            messages=msgs,
-            provider_name="gemini",
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
-            reasoning_config={"enabled": True, "effort": effort},
-        )
-        assert kw["extra_body"]["extra_body"]["google"]["thinking_config"]["thinking_level"] == "high"
-
-    @pytest.mark.parametrize("effort", ["max", "ultra"])
-    def test_gemini_openai_compat_pro_stronger_efforts_clamp_to_high(self, transport, effort):
-        msgs = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="google/gemini-3.1-pro-preview",
-            messages=msgs,
-            provider_name="gemini",
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
-            reasoning_config={"enabled": True, "effort": effort},
-        )
-        assert kw["extra_body"]["extra_body"]["google"]["thinking_config"]["thinking_level"] == "high"
-
     def test_google_gemini_cli_keeps_top_level_thinking_config(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -703,17 +679,6 @@ class TestChatCompletionsLmStudioReasoning:
             lmstudio_reasoning_options=["off", "low", "medium", "high"],
         )
         assert kw["reasoning_effort"] == "high"
-
-    @pytest.mark.parametrize("effort", ["max", "ultra"])
-    def test_passes_through_stronger_efforts_when_allowed(self, transport, effort):
-        kw = transport.build_kwargs(
-            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
-            is_lmstudio=True,
-            supports_reasoning=True,
-            reasoning_config={"effort": effort},
-            lmstudio_reasoning_options=["off", "low", "medium", "high", "max", "ultra"],
-        )
-        assert kw["reasoning_effort"] == effort
 
     def test_passes_through_aliased_on_for_toggle(self, transport):
         # User has reasoning enabled at the default "medium"; toggle model

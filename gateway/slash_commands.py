@@ -34,6 +34,7 @@ from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
+from hermes_constants import VALID_REASONING_EFFORTS
 from hermes_cli.config import cfg_get
 from utils import (
     atomic_json_write,
@@ -2142,10 +2143,11 @@ class GatewaySlashCommandsMixin:
             self._reasoning_config = self._load_reasoning_config()
             self._evict_cached_agent(session_key)
             return t("gateway.reasoning.reset_done")
-        from hermes_constants import parse_reasoning_effort
-
-        parsed = parse_reasoning_effort(effort)
-        if parsed is None:
+        if effort == "none":
+            parsed = {"enabled": False}
+        elif effort in VALID_REASONING_EFFORTS:
+            parsed = {"enabled": True, "effort": effort}
+        else:
             return t(
                 "gateway.reasoning.unknown_arg",
                 arg=effort or raw_args.lower(),

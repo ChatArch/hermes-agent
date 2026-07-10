@@ -49,7 +49,6 @@ class TestOpenCodeGoKimiReasoning:
         [
             "xhigh",
             "max",
-            "ultra",
         ],
     )
     def test_strong_efforts_clamp_to_high(self, opencode_go_profile, effort):
@@ -113,8 +112,8 @@ class TestOpenCodeGoDeepSeekThinking:
         assert extra_body == {"thinking": {"type": "enabled"}}
         assert top_level == {}
 
-    def test_xhigh_max_and_ultra_normalize_to_max(self, opencode_go_profile):
-        for effort in ("xhigh", "max", "ultra"):
+    def test_xhigh_and_max_normalize_to_max(self, opencode_go_profile):
+        for effort in ("xhigh", "max"):
             extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
                 reasoning_config={"enabled": True, "effort": effort},
                 model="deepseek/deepseek-v4-pro",
