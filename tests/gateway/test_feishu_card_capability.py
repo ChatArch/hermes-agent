@@ -114,6 +114,65 @@ def test_feishu_adapter_send_card_sends_interactive_payload(monkeypatch):
     assert calls[0]["metadata"] == {"thread_id": "omt_root"}
 
 
+def test_feishu_adapter_raw_interactive_reply_uses_metadata_anchor(monkeypatch):
+    replies = []
+    creates = []
+
+    class MessageApi:
+        @staticmethod
+        def reply(request):
+            replies.append(request)
+            return SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_card", thread_id="omt_thread"))
+
+        @staticmethod
+        def create(request):  # pragma: no cover - reply path must be used
+            creates.append(request)
+            return SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_created"))
+
+    adapter = FeishuAdapter.__new__(FeishuAdapter)
+    adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=MessageApi)))
+
+    def reply_body(**kwargs):
+        return SimpleNamespace(
+            content=kwargs["content"],
+            msg_type=kwargs["msg_type"],
+            reply_in_thread=kwargs["reply_in_thread"],
+            uuid=kwargs["uuid_value"],
+        )
+
+    monkeypatch.setattr(
+        FeishuAdapter,
+        "_build_reply_message_body",
+        staticmethod(reply_body),
+    )
+    monkeypatch.setattr(
+        FeishuAdapter,
+        "_build_reply_message_request",
+        staticmethod(lambda message_id, request_body: SimpleNamespace(message_id=message_id, request_body=request_body)),
+    )
+
+    payload = json.dumps({"elements": [{"tag": "markdown", "content": "hello"}]}, ensure_ascii=False)
+    response = asyncio.run(
+        adapter._send_raw_message(
+            chat_id="oc_chat",
+            msg_type="interactive",
+            payload=payload,
+            reply_to=None,
+            metadata={"thread_id": "omt_current", "reply_to_message_id": "om_trigger"},
+        )
+    )
+
+    assert response.success()
+    assert creates == []
+    assert len(replies) == 1
+    request = replies[0]
+    assert request.message_id == "om_trigger"
+    assert request.request_body.msg_type == "interactive"
+    assert request.request_body.content == payload
+    assert request.request_body.reply_in_thread is True
+    assert request.request_body.uuid
+
+
 def test_raw_feishu_card_escape_hatch_is_returned_without_rewriting():
     raw = {"config": {"wide_screen_mode": False}, "elements": [{"tag": "hr"}]}
 

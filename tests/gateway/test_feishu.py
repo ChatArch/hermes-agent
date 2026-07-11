@@ -1697,6 +1697,38 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.source.message_id, "om_command")
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_gateway_session_env_uses_feishu_source_message_id(self):
+        from gateway.config import Platform
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionContext, SessionSource
+        from gateway.session_context import clear_session_vars, get_session_env
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        context = SessionContext(
+            source=SessionSource(
+                platform=Platform.FEISHU,
+                chat_id="oc_chat",
+                chat_type="group",
+                user_id="ou_user",
+                thread_id="omt_current",
+                message_id="om_trigger",
+            ),
+            connected_platforms=[Platform.FEISHU],
+            home_channels={},
+            session_key="feishu:oc_chat:omt_current",
+            session_id="session-id",
+        )
+
+        tokens = runner._set_session_env(context)
+        try:
+            self.assertEqual(get_session_env("HERMES_SESSION_PLATFORM"), "feishu")
+            self.assertEqual(get_session_env("HERMES_SESSION_CHAT_ID"), "oc_chat")
+            self.assertEqual(get_session_env("HERMES_SESSION_THREAD_ID"), "omt_current")
+            self.assertEqual(get_session_env("HERMES_SESSION_MESSAGE_ID"), "om_trigger")
+        finally:
+            clear_session_vars(tokens)
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_extract_text_file_injects_content(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
