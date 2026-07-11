@@ -332,6 +332,21 @@ def _run_agent(
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
 
+    agent_cfg = cfg.get("agent") or {}
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
+    reasoning_config = None
+    reasoning_effort = str(agent_cfg.get("reasoning_effort") or "").strip()
+    if reasoning_effort:
+        from hermes_constants import parse_reasoning_effort
+
+        reasoning_config = parse_reasoning_effort(reasoning_effort)
+        if reasoning_config is None:
+            logging.warning(
+                "Unknown reasoning_effort '%s' in oneshot config; using default",
+                reasoning_effort,
+            )
+
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -344,6 +359,7 @@ def _run_agent(
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
+        reasoning_config=reasoning_config,
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction
