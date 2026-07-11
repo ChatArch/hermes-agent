@@ -168,6 +168,54 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     assert result.api_key == "no-key-required"
 
 
+def test_switch_model_keeps_current_named_custom_provider(monkeypatch):
+    """Typing a saved custom-provider model must not hop to a catalog provider."""
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "test-key",
+            "base_url": "https://gateway.example.com/openai/v1",
+            "api_mode": "codex_responses",
+        },
+    )
+
+    def fail_detector(*_args, **_kwargs):
+        raise AssertionError("named custom provider should skip provider auto-detection")
+
+    monkeypatch.setattr("hermes_cli.models.detect_provider_for_model", fail_detector)
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="gpt-5.6-sol",
+        current_provider="custom:crs.tencent-am.wzhecnu.cn",
+        current_model="gpt-5.5",
+        current_base_url="https://gateway.example.com/openai/v1",
+        current_api_key="",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "crs.tencent-am.wzhecnu.cn",
+                "base_url": "https://gateway.example.com/openai/v1",
+                "api_mode": "codex_responses",
+                "model": "gpt-5.5",
+                "models": {
+                    "gpt-5.5": {"context_length": 1050000},
+                    "gpt-5.6-sol": {"context_length": 1050000},
+                },
+            }
+        ],
+    )
+
+    assert result.success is True
+    assert result.new_model == "gpt-5.6-sol"
+    assert result.target_provider == "custom:crs.tencent-am.wzhecnu.cn"
+    assert result.api_key == "test-key"
+    assert result.base_url == "https://gateway.example.com/openai/v1"
+    assert result.api_mode == "codex_responses"
+
+
 def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):
     """Multiple custom_providers entries sharing a name should produce one row
     with all models collected, not N duplicate rows."""
