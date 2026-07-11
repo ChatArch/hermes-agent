@@ -98,7 +98,6 @@ try:
         GetChatRequest,
         GetMessageRequest,
         GetMessageResourceRequest,
-        ListMessageRequest,
         P2ImMessageMessageReadV1,
         ReplyMessageRequest,
         ReplyMessageRequestBody,
@@ -1379,7 +1378,6 @@ def check_feishu_requirements() -> bool:
             CreateMessageRequest, CreateMessageRequestBody,
             DeleteMessageRequest,
             GetChatRequest, GetMessageRequest, GetMessageResourceRequest,
-            ListMessageRequest,
             P2ImMessageMessageReadV1,
             ReplyMessageRequest, ReplyMessageRequestBody,
             UpdateMessageRequest, UpdateMessageRequestBody,
@@ -1405,7 +1403,6 @@ def check_feishu_requirements() -> bool:
             "GetChatRequest": GetChatRequest,
             "GetMessageRequest": GetMessageRequest,
             "GetMessageResourceRequest": GetMessageResourceRequest,
-            "ListMessageRequest": ListMessageRequest,
             "P2ImMessageMessageReadV1": P2ImMessageMessageReadV1,
             "ReplyMessageRequest": ReplyMessageRequest,
             "ReplyMessageRequestBody": ReplyMessageRequestBody,
@@ -3719,6 +3716,7 @@ class FeishuAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
+            message_id=message_id,
         )
         normalized = MessageEvent(
             text=text,
@@ -5060,44 +5058,6 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_create_message_request(receive_id_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
 
-    async def resolve_thread_reply_anchor(self, thread_id: str) -> Optional[str]:
-        """Resolve an ``omt_`` topic/thread id to a usable ``om_`` reply anchor.
-
-        This mirrors lark-cli's ``im +threads-messages-list`` flow: list the
-        thread container via ``GET /open-apis/im/v1/messages`` and use a real
-        message id with the reply API. Feishu's reply endpoint accepts ``om_``
-        message ids, not ``omt_`` thread ids.
-        """
-        if not self._client or not thread_id:
-            return None
-        try:
-            request = self._build_list_thread_messages_request(thread_id=thread_id)
-            response = await asyncio.to_thread(self._client.im.v1.message.list, request)
-            if not self._response_succeeded(response):
-                logger.warning(
-                    "[Feishu] Failed to resolve thread reply anchor for %s: %s",
-                    thread_id,
-                    getattr(response, "msg", None) or getattr(response, "error", None) or "message.list failed",
-                )
-                return None
-
-            data = getattr(response, "data", None)
-            items = getattr(data, "items", None) or []
-            first_valid_anchor = None
-            for item in items:
-                message_id = str(getattr(item, "message_id", "") or "")
-                if not message_id.startswith("om_"):
-                    continue
-                if first_valid_anchor is None:
-                    first_valid_anchor = message_id
-                sender = getattr(item, "sender", None)
-                if str(getattr(sender, "sender_type", "") or "") == "user":
-                    return message_id
-            return first_valid_anchor
-        except Exception as exc:
-            logger.warning("[Feishu] Failed to resolve thread reply anchor for %s: %s", thread_id, exc)
-            return None
-
     @staticmethod
     def _response_succeeded(response: Any) -> bool:
         return bool(response and getattr(response, "success", lambda: False)())
@@ -5309,30 +5269,6 @@ class FeishuAdapter(BasePlatformAdapter):
         if "GetMessageRequest" in globals():
             return GetMessageRequest.builder().message_id(message_id).build()
         return SimpleNamespace(message_id=message_id)
-
-    @staticmethod
-    def _build_list_thread_messages_request(*, thread_id: str, page_size: int = 20) -> Any:
-        request_cls = globals().get("ListMessageRequest")
-        if request_cls is not None:
-            builder = (
-                request_cls.builder()
-                .container_id_type("thread")
-                .container_id(thread_id)
-                .sort_type("ByCreateTimeDesc")
-                .page_size(page_size)
-            )
-            card_msg_content_type = getattr(builder, "card_msg_content_type", None)
-            if callable(card_msg_content_type):
-                builder = card_msg_content_type("raw_card_content")
-            build = getattr(builder, "build")
-            return build()
-        return SimpleNamespace(
-            container_id_type="thread",
-            container_id=thread_id,
-            sort_type="ByCreateTimeDesc",
-            page_size=page_size,
-            card_msg_content_type="raw_card_content",
-        )
 
     @staticmethod
     def _build_message_resource_request(*, message_id: str, file_key: str, resource_type: str) -> Any:

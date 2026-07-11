@@ -265,50 +265,6 @@ def test_feishu_card_tool_request_interaction_preflights_invalid_thread_anchor(m
     assert "omt_ is a thread id, not a message id" in result["error"]
 
 
-def test_feishu_card_tool_send_resolves_missing_thread_anchor(monkeypatch):
-    sent = []
-
-    class Adapter:
-        async def resolve_thread_reply_anchor(self, thread_id):
-            assert thread_id == "omt_current"
-            return "om_resolved"
-
-        async def send_card(self, chat_id, card, *, reply_to=None, metadata=None):
-            sent.append({"chat_id": chat_id, "card": card, "reply_to": reply_to, "metadata": metadata})
-            return SimpleNamespace(success=True, message_id="om_sent", thread_id="omt_current", error=None)
-
-    fake_gateway_run = ModuleType("gateway.run")
-    fake_gateway_run._gateway_runner_ref = lambda: SimpleNamespace(adapters={Platform.FEISHU: Adapter()})
-    monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
-
-    from gateway.session_context import clear_session_vars, set_session_vars
-
-    tokens = set_session_vars(
-        platform="feishu",
-        chat_id="oc_current",
-        thread_id="omt_current",
-        session_key="session-current",
-        message_id="",
-    )
-    try:
-        raw = asyncio.run(
-            feishu_card_tool_async(
-                {
-                    "action": "send",
-                    "card": {"elements": [{"type": "markdown", "content": "hello"}]},
-                }
-            )
-        )
-    finally:
-        clear_session_vars(tokens)
-    result = json.loads(raw)
-
-    assert result["success"] is True
-    assert sent[0]["chat_id"] == "oc_current"
-    assert sent[0]["reply_to"] is None
-    assert sent[0]["metadata"] == {"thread_id": "omt_current", "reply_to_message_id": "om_resolved"}
-
-
 def test_feishu_card_tool_request_interaction_returns_user_button_payload(monkeypatch):
     sent = []
 

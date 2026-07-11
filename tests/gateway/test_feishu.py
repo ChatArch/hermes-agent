@@ -1694,6 +1694,7 @@ class TestAdapterBehavior(unittest.TestCase):
         event = adapter._dispatch_inbound_event.await_args.args[0]
         self.assertEqual(event.message_type.value, "command")
         self.assertEqual(event.text, "/help test")
+        self.assertEqual(event.source.message_id, "om_command")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_text_file_injects_content(self):
