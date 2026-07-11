@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from gateway.cards.model import Actions, Button, Card, Divider, Markdown, Note, RawFeishuCard
+from gateway.cards.model import Actions, Button, Card, Divider, Image, Markdown, Note, RawFeishuCard
 
 
 def _plain_text(content: str) -> dict[str, str]:
@@ -75,6 +75,14 @@ def render_feishu_card(card: Card | RawFeishuCard, *, session_key: str | None = 
             elements.append({"tag": "markdown", "content": element.content})
         elif isinstance(element, Divider):
             elements.append({"tag": "hr"})
+        elif isinstance(element, Image):
+            elements.append(
+                {
+                    "tag": "img",
+                    "img_key": element.image_key,
+                    "alt": _plain_text(element.alt or "image"),
+                }
+            )
         elif isinstance(element, Actions):
             rendered_actions = _render_actions(element, session_key=session_key)
             if rendered_actions:

@@ -113,6 +113,58 @@ def test_feishu_card_tool_preview_renders_custom_card_spec():
     }
 
 
+def test_feishu_card_tool_preview_normalizes_model_escaped_newlines():
+    result = _json_result(
+        {
+            "action": "preview",
+            "card": {
+                "elements": [
+                    {"type": "markdown", "content": "第一行\\n第二行"},
+                    {"type": "note", "content": "备注一\\r\\n备注二"},
+                ]
+            },
+        }
+    )
+
+    assert result["success"] is True
+    assert result["rendered"]["elements"][0]["content"] == "第一行\n第二行"
+    assert result["rendered"]["elements"][1]["elements"][0]["content"] == "备注一\n备注二"
+
+
+def test_feishu_card_tool_preview_supports_image_elements():
+    result = _json_result(
+        {
+            "action": "preview",
+            "card": {
+                "elements": [
+                    {"type": "markdown", "content": "图文卡片"},
+                    {"type": "image", "image_key": "img_v3_dummy", "alt": "示例图"},
+                ]
+            },
+        }
+    )
+
+    assert result["success"] is True
+    assert result["rendered"]["elements"][1] == {
+        "tag": "img",
+        "img_key": "img_v3_dummy",
+        "alt": {"tag": "plain_text", "content": "示例图"},
+    }
+
+
+def test_feishu_card_tool_validate_rejects_bad_image_key():
+    result = _json_result(
+        {
+            "action": "validate",
+            "card": {"elements": [{"type": "image", "image_key": "file_not_image"}]},
+        }
+    )
+
+    assert result["success"] is True
+    assert result["valid"] is False
+    assert "image_key must be an uploaded Feishu image key" in "; ".join(result["diagnostics"]["errors"])
+
+
 def test_feishu_card_tool_authorization_preview_uses_generic_renderer():
     result = _json_result(
         {
@@ -128,8 +180,9 @@ def test_feishu_card_tool_authorization_preview_uses_generic_renderer():
     assert result["success"] is True
     rendered = result["rendered"]
     assert rendered["header"]["title"]["content"] == "飞书授权请求"
-    authorize = rendered["elements"][1]["columns"][0]["elements"][0]
-    cancel = rendered["elements"][1]["columns"][1]["elements"][0]
+    actions = rendered["elements"][1]["actions"]
+    authorize = actions[0]
+    cancel = actions[1]
     assert authorize["url"].startswith("https://accounts.feishu.cn/oauth/v1/device/verify")
     assert authorize["value"]["action"] == "auth.authorize"
     assert authorize["value"]["flow_id"] == "flow-tool"
@@ -143,6 +196,131 @@ def test_feishu_card_tool_schema_describes_flexible_card_dsl():
     assert "markdown" in result["schema"]["element_types"]
     assert "actions" in result["schema"]["element_types"]
     assert "raw_feishu" in result["schema"]["escape_hatches"]
+    assert result["schema"]["validation"]["routing"].startswith("Feishu topic sends require")
+    card_schema = result["schema"]["card_schema"]
+    assert card_schema["properties"]["elements"]["type"] == "array"
+    assert "raw_feishu" in card_schema["properties"]
+    assert result["schema"]["official_message_contract"]["reply_thread_message"]["path"].endswith("/reply")
+    assert "lark_oapi ReplyMessageRequestBody" in result["schema"]["official_message_contract"]["reply_thread_message"]["source"]
+
+
+def test_feishu_card_tool_validate_reports_actionable_dsl_errors():
+    result = _json_result(
+        {
+            "action": "validate",
+            "card": {
+                "unsupported": True,
+                "header": {"title": "Bad", "color": "invisible", "extra": "nope"},
+                "elements": [
+                    {
+                        "type": "actions",
+                        "layout": "grid",
+                        "extra": "nope",
+                        "buttons": [
+                            {"text": "Broken", "style": "loud", "payload": [], "extra": "nope"},
+                            {"style": "primary", "action": "missing_text"},
+                        ],
+                    }
+                ],
+            },
+        }
+    )
+
+    assert result["success"] is True
+    assert result["valid"] is False
+    errors = "; ".join(result["diagnostics"]["errors"])
+    assert "unsupported header.color" in errors
+    assert "unsupported card fields: unsupported" in errors
+    assert "unsupported header fields: extra" in errors
+    assert "unsupported fields on elements[0]: extra" in errors
+    assert "unsupported fields on elements[0].buttons[0]: extra" in errors
+    assert "unsupported actions layout" in errors
+    assert "unsupported elements[0].buttons[0].style" in errors
+    assert "elements[0].buttons[0].payload must be an object" in errors
+    assert "elements[0].buttons[1].text is required" in errors
+
+
+def test_feishu_card_tool_request_interaction_preflights_invalid_thread_anchor(monkeypatch):
+    class Adapter:
+        async def send_card(self, chat_id, card, *, reply_to=None, metadata=None):  # pragma: no cover - must not send
+            raise AssertionError("invalid thread anchor should fail before send_card")
+
+    fake_gateway_run = ModuleType("gateway.run")
+    fake_gateway_run._gateway_runner_ref = lambda: SimpleNamespace(adapters={Platform.FEISHU: Adapter()})
+    monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    tokens = set_session_vars(
+        platform="feishu",
+        chat_id="oc_current",
+        thread_id="omt_current",
+        session_key="session-current",
+        message_id="omt_current",
+    )
+    try:
+        raw = asyncio.run(
+            feishu_card_tool_async(
+                {
+                    "action": "request_interaction",
+                    "request_id": "req-invalid-anchor",
+                    "card": {
+                        "elements": [
+                            {
+                                "type": "actions",
+                                "buttons": [{"text": "确认", "action": "ok"}],
+                            }
+                        ]
+                    },
+                }
+            )
+        )
+    finally:
+        clear_session_vars(tokens)
+    result = json.loads(raw)
+
+    assert result["success"] is False
+    assert "omt_ is a thread id, not a message id" in result["error"]
+
+
+def test_feishu_card_tool_send_uses_current_session_reply_anchor(monkeypatch):
+    sent = []
+
+    class Adapter:
+        async def send_card(self, chat_id, card, *, reply_to=None, metadata=None):
+            sent.append({"chat_id": chat_id, "card": card, "reply_to": reply_to, "metadata": metadata})
+            return SimpleNamespace(success=True, message_id="om_sent", thread_id="omt_current", error=None)
+
+    fake_gateway_run = ModuleType("gateway.run")
+    setattr(fake_gateway_run, "_gateway_runner_ref", lambda: SimpleNamespace(adapters={Platform.FEISHU: Adapter()}))
+    monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    tokens = set_session_vars(
+        platform="feishu",
+        chat_id="oc_current",
+        thread_id="omt_current",
+        session_key="session-current",
+        message_id="om_trigger",
+    )
+    try:
+        raw = asyncio.run(
+            feishu_card_tool_async(
+                {
+                    "action": "send",
+                    "card": {"elements": [{"type": "markdown", "content": "hello"}]},
+                }
+            )
+        )
+    finally:
+        clear_session_vars(tokens)
+    result = json.loads(raw)
+
+    assert result["success"] is True
+    assert sent[0]["chat_id"] == "oc_current"
+    assert sent[0]["reply_to"] is None
+    assert sent[0]["metadata"] == {"thread_id": "omt_current", "reply_to_message_id": "om_trigger"}
 
 
 def test_feishu_card_tool_request_interaction_returns_user_button_payload(monkeypatch):
@@ -285,10 +463,10 @@ def test_feishu_card_tool_request_authorization_waits_for_current_session_choice
     assert result["message_id"] == "om_auth"
     assert sent[0]["chat_id"] == "oc_current"
     assert sent[0]["metadata"] == {"thread_id": "omt_current", "reply_to_message_id": "om_trigger"}
-    buttons = sent[0]["card"]["elements"][1]["columns"]
-    open_link = buttons[0]["elements"][0]
-    complete = buttons[1]["elements"][0]
-    cancel = buttons[2]["elements"][0]
+    buttons = sent[0]["card"]["elements"][1]["actions"]
+    open_link = buttons[0]
+    complete = buttons[1]
+    cancel = buttons[2]
     assert open_link["text"]["content"] == "打开授权链接"
     assert open_link["url"].startswith("https://accounts.feishu.cn/oauth/v1/device/verify")
     assert open_link["value"]["action"] == "open_link"

@@ -65,7 +65,13 @@ class Note:
     content: str
 
 
-CardElement = Markdown | Divider | Actions | Note
+@dataclass(slots=True)
+class Image:
+    image_key: str
+    alt: str = "image"
+
+
+CardElement = Markdown | Divider | Actions | Note | Image
 
 
 @dataclass(slots=True)
@@ -99,7 +105,7 @@ def build_feishu_authorization_card(
         elements=[
             Markdown(body),
             Actions(
-                layout="equal",
+                layout="row",
                 buttons=[
                     Button(
                         text="授权",

@@ -3716,6 +3716,7 @@ class FeishuAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
+            message_id=message_id,
         )
         normalized = MessageEvent(
             text=text,
