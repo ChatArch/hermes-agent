@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import threading
 import uuid
@@ -571,9 +572,20 @@ async def _send_rendered_card(
     if thread_id:
         anchor = str(reply_to or reply_to_message_id or "").strip()
         if not anchor:
+            resolver = getattr(adapter, "resolve_thread_reply_anchor", None)
+            if callable(resolver):
+                resolved = resolver(thread_id)
+                if inspect.isawaitable(resolved):
+                    resolved = await resolved
+                anchor = str(resolved or "").strip()
+                if anchor:
+                    reply_to_message_id = anchor
+                    metadata = _metadata_for_current_session(thread_id, reply_to_message_id)
+        if not anchor:
             raise ValueError(
                 "Feishu card sends inside a topic require a triggering om_ message id; "
-                "current context has thread_id but no reply anchor. Send from a fresh user message or pass reply_to=om_... ."
+                "current context has thread_id but no reply anchor and automatic thread lookup found no om_ message. "
+                "Send from a fresh user message or pass reply_to=om_... ."
             )
         if not _is_feishu_message_id(anchor):
             hint = "omt_ is a thread id, not a message id" if _is_feishu_thread_id(anchor) else "reply anchor must start with om_"
