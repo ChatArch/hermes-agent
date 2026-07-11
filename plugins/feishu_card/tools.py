@@ -256,6 +256,13 @@ def _is_feishu_thread_id(value: str | None) -> bool:
     return str(value or "").strip().startswith("omt_")
 
 
+def _normalize_card_text(value: Any) -> str:
+    """Convert common model-escaped newlines before Feishu card rendering."""
+
+    text = str(value or "")
+    return text.replace("\\r\\n", "\n").replace("\\n", "\n")
+
+
 def _unknown_keys(value: dict[str, Any], allowed: set[str]) -> list[str]:
     return sorted(str(key) for key in value if str(key) not in allowed)
 
@@ -400,7 +407,7 @@ def _card_from_spec(spec: dict[str, Any]) -> Card | RawFeishuCard:
             raise ValueError("each element must be an object")
         element_type = str(raw_element.get("type") or "").strip().lower()
         if element_type == "markdown":
-            elements.append(Markdown(str(raw_element.get("content") or "")))
+            elements.append(Markdown(_normalize_card_text(raw_element.get("content"))))
         elif element_type == "divider":
             elements.append(Divider())
         elif element_type == "image":
@@ -411,7 +418,7 @@ def _card_from_spec(spec: dict[str, Any]) -> Card | RawFeishuCard:
                 )
             )
         elif element_type == "note":
-            elements.append(Note(str(raw_element.get("content") or "")))
+            elements.append(Note(_normalize_card_text(raw_element.get("content"))))
         elif element_type == "actions":
             raw_buttons = raw_element.get("buttons") or []
             if not isinstance(raw_buttons, list):

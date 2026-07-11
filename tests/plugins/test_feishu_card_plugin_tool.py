@@ -113,6 +113,24 @@ def test_feishu_card_tool_preview_renders_custom_card_spec():
     }
 
 
+def test_feishu_card_tool_preview_normalizes_model_escaped_newlines():
+    result = _json_result(
+        {
+            "action": "preview",
+            "card": {
+                "elements": [
+                    {"type": "markdown", "content": "第一行\\n第二行"},
+                    {"type": "note", "content": "备注一\\r\\n备注二"},
+                ]
+            },
+        }
+    )
+
+    assert result["success"] is True
+    assert result["rendered"]["elements"][0]["content"] == "第一行\n第二行"
+    assert result["rendered"]["elements"][1]["elements"][0]["content"] == "备注一\n备注二"
+
+
 def test_feishu_card_tool_preview_supports_image_elements():
     result = _json_result(
         {

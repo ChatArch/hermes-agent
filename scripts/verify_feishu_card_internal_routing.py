@@ -14,10 +14,12 @@ This script exercises the Python implementation without contacting Feishu:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import contextlib
 import io
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -191,9 +193,107 @@ async def _verify_adapter_builds_sdk_reply_request():
     }
 
 
-async def main() -> None:
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Verify Hermes Feishu card routing.")
+    parser.add_argument(
+        "--live-send",
+        action="store_true",
+        help="After the offline verifier passes, send one real card through the Hermes feishu_card path.",
+    )
+    parser.add_argument("--chat-id", default=os.getenv("HERMES_SESSION_CHAT_ID"))
+    parser.add_argument("--thread-id", default=os.getenv("HERMES_SESSION_THREAD_ID"))
+    parser.add_argument("--reply-to", default=os.getenv("HERMES_SESSION_MESSAGE_ID"))
+    parser.add_argument("--session-key", default=os.getenv("HERMES_SESSION_KEY", "feishu-card-routing-live"))
+    return parser.parse_args(argv)
+
+
+async def _live_send_card(args: argparse.Namespace) -> dict[str, object]:
+    from gateway.config import Platform, PlatformConfig
+    import gateway.run as gateway_run
+    from gateway.platforms.feishu import FEISHU_DOMAIN, LARK_DOMAIN, FeishuAdapter
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionContext, SessionSource
+    from gateway.session_context import clear_session_vars
+    from plugins.feishu_card.tools import feishu_card_tool_async
+
+    _assert(bool(os.getenv("FEISHU_APP_ID")), "FEISHU_APP_ID is required for --live-send")
+    _assert(bool(os.getenv("FEISHU_APP_SECRET")), "FEISHU_APP_SECRET is required for --live-send")
+    _assert(bool(args.chat_id), "--chat-id or HERMES_SESSION_CHAT_ID is required for --live-send")
+    _assert(bool(args.thread_id), "--thread-id or HERMES_SESSION_THREAD_ID is required for --live-send")
+    _assert(bool(args.reply_to), "--reply-to om_... or HERMES_SESSION_MESSAGE_ID is required for --live-send")
+
+    chat_id = str(args.chat_id)
+    thread_id = str(args.thread_id)
+    reply_to = str(args.reply_to)
+
+    adapter = FeishuAdapter(PlatformConfig())
+    domain = FEISHU_DOMAIN if getattr(adapter, "_domain_name", "feishu") != "lark" else LARK_DOMAIN
+    adapter._client = adapter._build_lark_client(domain)
+
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id=chat_id,
+        chat_type="group",
+        user_id=os.getenv("HERMES_SESSION_USER_ID"),
+        thread_id=thread_id,
+        message_id=reply_to,
+    )
+    context = SessionContext(
+        source=source,
+        connected_platforms=[Platform.FEISHU],
+        home_channels={},
+        session_key=args.session_key,
+        session_id=os.getenv("HERMES_SESSION_ID", "feishu-card-routing-live"),
+    )
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    tokens = runner._set_session_env(context)
+    old_ref = gateway_run._gateway_runner_ref
+    gateway_run._gateway_runner_ref = lambda: SimpleNamespace(adapters={Platform.FEISHU: adapter})
+    try:
+        raw = await feishu_card_tool_async(
+            {
+                "action": "send",
+                "title": "Hermes routing live check",
+                "body": "Sent by scripts/verify_feishu_card_internal_routing.py --live-send, not lark-cli.",
+                "card": {
+                    "header": {"title": "数字小游戏 · verified script", "color": "blue"},
+                    "elements": [
+                        {
+                            "type": "markdown",
+                            "content": "这张卡片由验证脚本走 Hermes feishu_card -> FeishuAdapter -> Python SDK 发出。请选择一个数字：",
+                        },
+                        {
+                            "type": "actions",
+                            "buttons": [
+                                {"text": "17", "action": "guess_17", "payload": {"choice": "17", "via": "verify_script"}},
+                                {"text": "23", "action": "guess_23", "payload": {"choice": "23", "via": "verify_script"}},
+                                {"text": "41", "action": "guess_41", "payload": {"choice": "41", "via": "verify_script"}},
+                            ],
+                        },
+                    ],
+                },
+            }
+        )
+    finally:
+        gateway_run._gateway_runner_ref = old_ref
+        clear_session_vars(tokens)
+
+    result = json.loads(raw)
+    _assert(result.get("success") is True, f"live feishu_card send failed: {raw}")
+    return {
+        "success": True,
+        "message_id": result.get("message_id"),
+        "thread_id": result.get("thread_id"),
+        "reply_to_message_id": reply_to,
+        "used_lark_cli": False,
+    }
+
+
+async def main(argv: list[str] | None = None) -> None:
     from gateway.session_context import clear_session_vars
 
+    args = _parse_args(sys.argv[1:] if argv is None else argv)
     event = await _build_inbound_feishu_event()
     tokens = _set_and_verify_session_env(event)
     try:
@@ -202,22 +302,20 @@ async def main() -> None:
     finally:
         clear_session_vars(tokens)
 
-    print(
-        json.dumps(
-            {
-                "ok": True,
-                "inbound_source": {
-                    "chat_id": event.source.chat_id,
-                    "thread_id": event.source.thread_id,
-                    "message_id": event.source.message_id,
-                },
-                "feishu_card_metadata": card_send["metadata"],
-                "sdk_reply_request": sdk_reply,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
+    output = {
+        "ok": True,
+        "inbound_source": {
+            "chat_id": event.source.chat_id,
+            "thread_id": event.source.thread_id,
+            "message_id": event.source.message_id,
+        },
+        "feishu_card_metadata": card_send["metadata"],
+        "sdk_reply_request": sdk_reply,
+    }
+    if args.live_send:
+        output["live_send"] = await _live_send_card(args)
+
+    print(json.dumps(output, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
