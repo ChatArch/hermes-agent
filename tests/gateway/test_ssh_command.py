@@ -1,5 +1,6 @@
 """Tests for gateway /ssh V0 list/status/test behavior."""
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -7,6 +8,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.cards.actions import CardActionContext, get_card_action_registry
+from gateway.cards.renderers.feishu import render_feishu_card
 from gateway.platforms.base import CardReply, MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 
@@ -194,6 +196,33 @@ async def test_ssh_list_renders_targets_without_starting_agent(monkeypatch):
     assert "rexwzh" in text
     assert "id_ed25519" not in text
     assert "rex.oray" in text
+
+
+@pytest.mark.asyncio
+async def test_ssh_card_renders_only_feishu_supported_selector_blocks(monkeypatch):
+    import gateway.run as gateway_run
+    from gateway.ssh_targets import SshTarget
+
+    monkeypatch.setattr(
+        gateway_run,
+        "load_ssh_targets",
+        lambda: [
+            SshTarget(alias="rex.oray", host="rexwzh.oray", user="rexwzh"),
+            SshTarget(alias="hitk", host="hitk.internal", user="zhihong"),
+        ],
+        raising=False,
+    )
+
+    runner = _runner()
+    result = await runner._handle_ssh_command(_event("/ssh", thread_id="omt_thread"))
+
+    assert isinstance(result, CardReply)
+    rendered = render_feishu_card(result.card, session_key=result.session_key)
+    payload = json.dumps(rendered, ensure_ascii=False)
+    assert "multi_select_static" not in payload
+    assert payload.count('"tag": "select_static"') >= 2
+    assert "选择 SSH 目标并连接" in payload
+    assert "添加/移除 YOLO 授权" in payload
 
 
 @pytest.mark.asyncio
