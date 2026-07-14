@@ -345,9 +345,9 @@ def test_render_feishu_card_supports_list_item_and_select_workflows():
     }
 
     multi_selector = rendered["elements"][2]
-    assert multi_selector["tag"] == "multi_select_static"
+    assert multi_selector["tag"] == "select_static"
     assert multi_selector["placeholder"] == {"tag": "plain_text", "content": "选择 YOLO 目标"}
-    assert multi_selector["initial_options"] == [multi_selector["options"][0]["value"]]
+    assert multi_selector["initial_option"] == multi_selector["options"][0]["value"]
     yolo_payload = json.loads(multi_selector["options"][0]["value"])
     assert yolo_payload == {
         "action": "gateway.command.act",

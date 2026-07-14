@@ -114,25 +114,29 @@ def _render_select(element: Select, *, session_key: str | None) -> dict[str, Any
 
 
 def _render_multi_select(element: MultiSelect, *, session_key: str | None) -> dict[str, Any] | None:
+    # Feishu's current card API in this deployment rejects multi_select_static
+    # (ErrCode 11310). Render as a compact one-at-a-time selector instead.
     options = []
-    initial_options = []
+    rendered_initial = ""
     initial_values = set(element.initial_values or [])
     for option in element.options:
         rendered_value = _select_option_value(option, session_key=session_key)
         if not rendered_value:
             continue
         options.append({"text": _plain_text(option.text), "value": rendered_value})
-        if option.value in initial_values or option.text in initial_values or rendered_value in initial_values:
-            initial_options.append(rendered_value)
+        if not rendered_initial and (
+            option.value in initial_values or option.text in initial_values or rendered_value in initial_values
+        ):
+            rendered_initial = rendered_value
     if not options:
         return None
     rendered: dict[str, Any] = {
-        "tag": "multi_select_static",
+        "tag": "select_static",
         "placeholder": _plain_text(element.placeholder),
         "options": options,
     }
-    if initial_options:
-        rendered["initial_options"] = initial_options
+    if rendered_initial:
+        rendered["initial_option"] = rendered_initial
     return rendered
 
 

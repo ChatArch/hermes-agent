@@ -12962,7 +12962,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
     def _build_ssh_targets_card(self, section_key: str):
-        from gateway.cards.model import Actions, Button, Card, CardHeader, Divider, Markdown, MultiSelect, Select, SelectOption
+        from gateway.cards.model import Actions, Button, Card, CardHeader, Divider, Markdown, Select, SelectOption
 
         targets = load_ssh_targets()
         grant = get_ssh_yolo_grant(section_key)
@@ -12981,10 +12981,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         target_options = []
         yolo_options = [
             SelectOption(
-                text="全部 SSH 目标",
+                text=("✓ 全部 SSH 目标" if grant.allows_all else "全部 SSH 目标"),
                 value="all",
                 action="gateway.ssh.action",
-                payload={"op": "yolo_set"},
+                payload={"op": "yolo_toggle", "alias": "all"},
             )
         ]
         for target in targets:
@@ -13005,12 +13005,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     payload={"op": "use", "alias": target.alias},
                 )
             )
+            yolo_label = target.alias
+            if grant.enabled and (grant.allows_all or target.alias in grant.aliases):
+                yolo_label = "✓ " + yolo_label
             yolo_options.append(
                 SelectOption(
-                    text=target.alias,
+                    text=yolo_label,
                     value=target.alias,
                     action="gateway.ssh.action",
-                    payload={"op": "yolo_set"},
+                    payload={"op": "yolo_toggle", "alias": target.alias},
                 )
             )
         elements = [
@@ -13018,7 +13021,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ]
         if target_options:
             elements.append(Select("选择 SSH 目标并连接", options=target_options, initial_value=current_alias))
-            elements.append(MultiSelect("选择允许自动切换的目标", options=yolo_options, initial_values=list(grant.aliases)))
+            elements.append(Select("添加/移除 YOLO 授权", options=yolo_options))
         else:
             elements.append(Markdown("还没有配置 SSH 目标。"))
         buttons = []
@@ -13054,6 +13057,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
             self._evict_cached_agent(section_key)
+            return CardActionResponse.replace_card(self._build_ssh_targets_card(section_key))
+        if op == "yolo_toggle":
+            if alias and alias != "all" and find_ssh_target(targets, alias) is None:
+                return CardActionResponse.replace_card(
+                    Card(header=CardHeader(title="SSH YOLO", color="red"), elements=[Markdown(f"Unknown SSH target: `{alias}`")])
+                )
+            grant = get_ssh_yolo_grant(section_key)
+            if alias == "all":
+                if grant.enabled and grant.allows_all:
+                    set_ssh_yolo_grant(section_key, enabled=False, aliases=[])
+                else:
+                    set_ssh_yolo_grant(section_key, enabled=True, aliases=["all"])
+            elif alias:
+                aliases = [] if grant.allows_all else list(grant.aliases)
+                if alias in aliases:
+                    aliases = [item for item in aliases if item != alias]
+                else:
+                    aliases.append(alias)
+                set_ssh_yolo_grant(section_key, enabled=bool(aliases), aliases=aliases)
             return CardActionResponse.replace_card(self._build_ssh_targets_card(section_key))
         if op == "yolo_set":
             raw_values = ctx.payload.get("values")

@@ -219,10 +219,20 @@ async def test_ssh_card_actions_bind_and_yolo_target(monkeypatch, tmp_path):
     result = await runner._handle_ssh_command(event)
     assert isinstance(result, CardReply)
 
-    yolo_response = await get_card_action_registry().dispatch(
+    first_yolo_response = await get_card_action_registry().dispatch(
         CardActionContext(
             action="gateway.ssh.action",
-            payload={"op": "yolo_set", "values": ["rex.oray", "hitk"]},
+            payload={"op": "yolo_toggle", "alias": "rex.oray"},
+            user_id="ou_user",
+            chat_id="oc_chat",
+            message_id="om_ssh",
+            session_key=section_key,
+        )
+    )
+    second_yolo_response = await get_card_action_registry().dispatch(
+        CardActionContext(
+            action="gateway.ssh.action",
+            payload={"op": "yolo_toggle", "alias": "hitk"},
             user_id="ou_user",
             chat_id="oc_chat",
             message_id="om_ssh",
@@ -240,7 +250,8 @@ async def test_ssh_card_actions_bind_and_yolo_target(monkeypatch, tmp_path):
         )
     )
 
-    assert yolo_response.kind == "replace_card"
+    assert first_yolo_response.kind == "replace_card"
+    assert second_yolo_response.kind == "replace_card"
     assert use_response.kind == "replace_card"
     assert list(get_ssh_yolo_grant(section_key).aliases) == ["rex.oray", "hitk"]
     binding = get_ssh_binding(section_key)
