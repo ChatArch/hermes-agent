@@ -154,6 +154,24 @@ Host main.github.com
     assert "[REDACTED_PATH]" in rendered
 
 
+def test_gateway_runner_registers_workflow_card_actions_on_startup(monkeypatch):
+    import gateway.run as gateway_run
+
+    registered = {}
+
+    def fake_register(action, handler):
+        registered[action] = handler
+
+    monkeypatch.setattr(gateway_run, "register_card_action", fake_register)
+    runner = _runner()
+
+    runner._register_workflow_card_actions()
+
+    assert set(registered) == {"gateway.ssh.action", "gateway.reasoning.select"}
+    assert registered["gateway.ssh.action"].__self__ is runner
+    assert registered["gateway.reasoning.select"].__self__ is runner
+
+
 @pytest.mark.asyncio
 async def test_ssh_status_reports_current_section_without_binding():
     runner = _runner()

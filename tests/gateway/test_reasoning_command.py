@@ -12,6 +12,7 @@ import yaml
 import gateway.run as gateway_run
 from gateway.config import Platform
 from gateway.cards.actions import CardActionContext, get_card_action_registry
+from gateway.cards.renderers.feishu import render_feishu_card
 from gateway.platforms.base import CardReply, MessageEvent
 from gateway.session import SessionSource
 
@@ -128,6 +129,22 @@ class TestReasoningCommand:
         assert isinstance(result, CardReply)
         assert result.session_key == session_key
         assert result.card.header.title == "推理强度"
+        rendered = render_feishu_card(result.card, session_key=result.session_key)
+        assert rendered["header"]["title"]["content"] == "推理强度"
+        assert rendered["elements"][0]["tag"] == "markdown"
+        assert "当前：`medium`" in rendered["elements"][0]["content"]
+        effort_block = rendered["elements"][1]
+        assert effort_block["tag"] == "action"
+        effort_select = effort_block["actions"][0]
+        assert effort_select["tag"] == "select_static"
+        assert effort_select["placeholder"]["content"] == "选择推理强度"
+        assert [
+            option["text"]["content"] for option in effort_select["options"]
+        ] == ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+        reset_block = rendered["elements"][2]
+        assert reset_block["tag"] == "action"
+        assert reset_block["actions"][0]["tag"] == "button"
+        assert reset_block["actions"][0]["text"]["content"] == "重置"
         assert result.fallback_text
 
         response = await get_card_action_registry().dispatch(

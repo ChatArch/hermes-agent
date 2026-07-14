@@ -3031,8 +3031,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Register gateway-owned card actions at runner startup so live cards
         # sent for validation are still actionable even if the matching slash
         # command was not just invoked in this process.
-        register_card_action("gateway.ssh.action", self._handle_ssh_card_action)
-        register_card_action("gateway.reasoning.select", self._handle_reasoning_card_action)
+        self._register_workflow_card_actions()
         self._kanban_notifier_profile = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
@@ -12965,6 +12964,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reply_text=instruction or name,
             reset_existing_thread=False,
         )
+
+    def _register_workflow_card_actions(self) -> None:
+        """Register gateway-owned workflow card actions for this runner."""
+        register_card_action("gateway.ssh.action", self._handle_ssh_card_action)
+        register_card_action("gateway.reasoning.select", self._handle_reasoning_card_action)
 
     def _build_ssh_targets_card(self, section_key: str):
         from gateway.cards.model import Actions, Button, Card, CardHeader, Divider, Markdown, Select, SelectOption
