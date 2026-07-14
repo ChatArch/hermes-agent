@@ -127,11 +127,13 @@ def test_feishu_adapter_model_picker_drills_down_and_switches(monkeypatch):
             session_key="session-model",
             on_model_selected=on_model_selected,
             metadata={"thread_id": "omt_thread"},
+            reply_to="om_anchor",
         )
     )
 
     assert result.success is True
     assert sent[0]["chat_id"] == "oc_chat"
+    assert sent[0]["reply_to"] == "om_anchor"
     assert sent[0]["metadata"] == {"thread_id": "omt_thread"}
     assert sent[0]["card"]["header"]["title"]["content"] == "选择模型渠道"
     provider_elements = sent[0]["card"]["elements"]

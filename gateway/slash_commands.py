@@ -1715,7 +1715,8 @@ class GatewaySlashCommandsMixin:
                             lines.append(t("gateway.model.session_only_hint"))
                         return "\n".join(lines)
 
-                    metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                    reply_to = self._reply_anchor_for_event(event)
+                    metadata = self._thread_metadata_for_source(source, reply_to)
                     result = await adapter.send_model_picker(
                         chat_id=source.chat_id,
                         providers=providers,
@@ -1723,6 +1724,7 @@ class GatewaySlashCommandsMixin:
                         current_provider=current_provider,
                         session_key=session_key,
                         on_model_selected=_on_model_selected,
+                        reply_to=reply_to,
                         metadata=metadata,
                     )
                     if result.success:

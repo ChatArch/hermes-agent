@@ -124,7 +124,11 @@ class _FakePickerAdapter:
     """Adapter whose *type* exposes ``send_model_picker`` (the gate the handler
     checks via ``getattr(type(adapter), 'send_model_picker', None)``)."""
 
+    def __init__(self):
+        self.calls = []
+
     async def send_model_picker(self, **kwargs):
+        self.calls.append(kwargs)
         return _FakePickerResult()
 
     def _thread_metadata(self, *a, **k):  # pragma: no cover - not exercised
@@ -152,7 +156,8 @@ async def test_picker_path_offloads_list_picker_providers(_isolated_config, monk
     )
 
     runner = _make_runner()
-    runner.adapters = {Platform.TELEGRAM: _FakePickerAdapter()}
+    adapter = _FakePickerAdapter()
+    runner.adapters = {Platform.TELEGRAM: adapter}
     # Stub the metadata/anchor helpers the picker branch calls before sending.
     monkeypatch.setattr(runner, "_thread_metadata_for_source", lambda *a, **k: None, raising=False)
     monkeypatch.setattr(runner, "_reply_anchor_for_event", lambda *a, **k: None, raising=False)
@@ -161,6 +166,7 @@ async def test_picker_path_offloads_list_picker_providers(_isolated_config, monk
 
     # Picker "sent" => handler returns None.
     assert result is None
+    assert adapter.calls[0]["reply_to"] is None
     offloaded = spy.funcs_offloaded()
     assert _fake_list_picker_providers in offloaded, (
         "list_picker_providers must be dispatched via asyncio.to_thread "
@@ -192,3 +198,50 @@ async def test_picker_path_requests_moa_presets(_isolated_config, monkeypatch):
 
     assert result is None
     assert captured["include_moa"] is True
+
+
+@pytest.mark.asyncio
+async def test_picker_path_passes_reply_anchor_to_feishu_adapter(_isolated_config, monkeypatch):
+    """Feishu topic cards must be sent as replies to the triggering om_ message.
+
+    Sending only metadata/thread_id is not enough for Feishu topics; the adapter
+    needs reply_to so the card appears in the same visible conversation and its
+    callbacks map back to the live gateway.
+    """
+    fake_providers = [
+        {"slug": "custom:crs", "name": "CRS", "is_current": True, "models": ["gpt-x"], "total_models": 1}
+    ]
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_picker_providers",
+        lambda **kwargs: fake_providers,
+    )
+
+    runner = _make_runner()
+    adapter = _FakePickerAdapter()
+    runner.adapters = {Platform.FEISHU: adapter}
+    monkeypatch.setattr(runner, "_reply_anchor_for_event", lambda event: "om_anchor", raising=False)
+    monkeypatch.setattr(
+        runner,
+        "_thread_metadata_for_source",
+        lambda source, reply_to=None: {"thread_id": source.thread_id, "reply_to_seen": reply_to},
+        raising=False,
+    )
+    event = MessageEvent(
+        text="/model",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_chat",
+            chat_type="group",
+            thread_id="omt_thread",
+            user_id="ou_user",
+        ),
+        message_id="om_anchor",
+    )
+
+    result = await runner._handle_model_command(event)
+
+    assert result is None
+    assert adapter.calls[0]["chat_id"] == "oc_chat"
+    assert adapter.calls[0]["reply_to"] == "om_anchor"
+    assert adapter.calls[0]["metadata"] == {"thread_id": "omt_thread", "reply_to_seen": "om_anchor"}

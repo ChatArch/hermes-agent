@@ -1944,6 +1944,7 @@ class FeishuAdapter(BasePlatformAdapter):
         session_key: str,
         on_model_selected,
         metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None,
     ) -> SendResult:
         """Send a Feishu interactive provider/model picker.
 
@@ -1968,6 +1969,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return await self.send_card(
             chat_id,
             render_feishu_card(card, session_key=session_key),
+            reply_to=reply_to,
             metadata=metadata,
         )
 
