@@ -331,7 +331,9 @@ def test_render_feishu_card_supports_list_item_and_select_workflows():
         "alias": "zhihong.oray",
     }
 
-    selector = rendered["elements"][1]
+    selector_action = rendered["elements"][1]
+    assert selector_action["tag"] == "action"
+    selector = selector_action["actions"][0]
     assert selector["tag"] == "select_static"
     assert selector["placeholder"] == {"tag": "plain_text", "content": "选择 reasoning effort"}
     assert selector["initial_option"] == selector["options"][0]["value"]
@@ -344,7 +346,9 @@ def test_render_feishu_card_supports_list_item_and_select_workflows():
         "value": "xhigh",
     }
 
-    multi_selector = rendered["elements"][2]
+    multi_selector_action = rendered["elements"][2]
+    assert multi_selector_action["tag"] == "action"
+    multi_selector = multi_selector_action["actions"][0]
     assert multi_selector["tag"] == "select_static"
     assert multi_selector["placeholder"] == {"tag": "plain_text", "content": "选择 YOLO 目标"}
     assert multi_selector["initial_option"] == multi_selector["options"][0]["value"]

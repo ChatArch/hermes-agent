@@ -220,6 +220,13 @@ async def test_ssh_card_renders_only_feishu_supported_selector_blocks(monkeypatc
     rendered = render_feishu_card(result.card, session_key=result.session_key)
     payload = json.dumps(rendered, ensure_ascii=False)
     assert "multi_select_static" not in payload
+    selector_actions = [
+        element
+        for element in rendered["elements"]
+        if element.get("tag") == "action"
+        and any(action.get("tag") == "select_static" for action in element.get("actions", []))
+    ]
+    assert len(selector_actions) >= 2
     assert payload.count('"tag": "select_static"') >= 2
     assert "选择 SSH 目标并连接" in payload
     assert "添加/移除 YOLO 授权" in payload

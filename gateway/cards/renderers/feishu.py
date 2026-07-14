@@ -91,7 +91,14 @@ def _render_list_item(element: ListItem, *, session_key: str | None) -> dict[str
     }
 
 
-def _render_select(element: Select, *, session_key: str | None) -> dict[str, Any] | None:
+def _action_wrapped(control: dict[str, Any]) -> dict[str, Any]:
+    # Feishu renders interactive controls from an action block. A bare
+    # select_static inside elements[] can be accepted by the API but appear as
+    # non-interactive/empty in clients, which caused a false-positive live smoke.
+    return {"tag": "action", "actions": [control]}
+
+
+def _render_select_control(element: Select, *, session_key: str | None) -> dict[str, Any] | None:
     options = []
     rendered_initial = ""
     for option in element.options:
@@ -113,6 +120,11 @@ def _render_select(element: Select, *, session_key: str | None) -> dict[str, Any
     return rendered
 
 
+def _render_select(element: Select, *, session_key: str | None) -> dict[str, Any] | None:
+    control = _render_select_control(element, session_key=session_key)
+    return _action_wrapped(control) if control else None
+
+
 def _render_multi_select(element: MultiSelect, *, session_key: str | None) -> dict[str, Any] | None:
     # Feishu's current card API in this deployment rejects multi_select_static
     # (ErrCode 11310). Render as a compact one-at-a-time selector instead.
@@ -130,14 +142,14 @@ def _render_multi_select(element: MultiSelect, *, session_key: str | None) -> di
             rendered_initial = rendered_value
     if not options:
         return None
-    rendered: dict[str, Any] = {
+    control: dict[str, Any] = {
         "tag": "select_static",
         "placeholder": _plain_text(element.placeholder),
         "options": options,
     }
     if rendered_initial:
-        rendered["initial_option"] = rendered_initial
-    return rendered
+        control["initial_option"] = rendered_initial
+    return _action_wrapped(control)
 
 
 def render_feishu_card(card: Card | RawFeishuCard, *, session_key: str | None = None) -> dict[str, Any]:
