@@ -10506,7 +10506,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # permanently (every later message silently fans out through MoA).
             # Putting it in finally guarantees the revert on success, exception,
             # and interrupt alike.
-            self._restore_moa_one_shot(event, _quick_key)
+            self._restore_moa_one_shot(event, session_key)
             # Unconditional release covers every exit path. _release_running_agent_state
             # is idempotent (pop-on-absent is harmless) and, called without a
             # run_generation guard, always clears the slot regardless of which

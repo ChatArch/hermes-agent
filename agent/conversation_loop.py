@@ -1824,7 +1824,7 @@ def run_conversation(
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
                             return {
-                                "final_response": None,
+                                "final_response": _cap_error,
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
