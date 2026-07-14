@@ -2093,6 +2093,19 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+@dataclass(slots=True)
+class CardReply:
+    """Structured slash-command reply rendered as a gateway card when possible.
+
+    ``fallback_text`` preserves the existing text behavior for platforms without
+    card support or when card delivery fails.
+    """
+
+    card: Any
+    fallback_text: str = ""
+    session_key: Optional[str] = None
+
+
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
@@ -2176,9 +2189,10 @@ _RETRYABLE_ERROR_PATTERNS = (
 
 
 # Type for message handlers.  Handlers may return a plain string (normal
-# reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
-# ``None`` when the response was already delivered (e.g. via streaming).
-MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
+# reply), an ``EphemeralReply`` to opt the reply into auto-deletion, a
+# ``CardReply`` to request platform-native card delivery, or ``None`` when the
+# response was already delivered (e.g. via streaming).
+MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply", "CardReply"]]]]
 
 
 def resolve_channel_prompt(
@@ -4099,6 +4113,8 @@ class BasePlatformAdapter(ABC):
         """Unwrap a handler response into (text, ttl_seconds).
 
         Accepts a plain string, ``None``, or an :class:`EphemeralReply`.
+        Structured :class:`CardReply` values pass through unchanged so the
+        message pipeline can deliver them before text/media extraction.
         Returns ``(text, ttl)`` where ``ttl > 0`` means the caller should
         schedule a deletion via :meth:`_schedule_ephemeral_delete` after
         the send succeeds.  ``ttl`` is forced to 0 when the adapter
@@ -4207,6 +4223,55 @@ class BasePlatformAdapter(ABC):
         if not fallback_result.success:
             logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
         return fallback_result
+
+    async def send_card_reply(
+        self,
+        chat_id: str,
+        reply: CardReply,
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Deliver a structured gateway card with text fallback.
+
+        Card-capable adapters expose ``send_card(chat_id, rendered_card, ...)``.
+        The base layer renders generic cards for known platforms and falls back
+        to ``reply.fallback_text`` everywhere else.
+        """
+
+        send_card = getattr(self, "send_card", None)
+        if callable(send_card):
+            card_payload = reply.card
+            if not isinstance(card_payload, dict):
+                platform_name = _platform_name(getattr(self, "platform", None))
+                if platform_name == "feishu":
+                    from gateway.cards.renderers.feishu import render_feishu_card
+
+                    card_payload = render_feishu_card(card_payload, session_key=reply.session_key)
+                else:
+                    card_payload = None
+            if card_payload is not None:
+                maybe_result = send_card(
+                    chat_id,
+                    card_payload,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                result = await maybe_result if inspect.isawaitable(maybe_result) else maybe_result
+                if not isinstance(result, SendResult):
+                    return SendResult(success=False, error="Card sender returned invalid result")
+                if result.success or not reply.fallback_text:
+                    return result
+                logger.warning("[%s] Card send failed; falling back to text: %s", self.name, result.error)
+
+        if reply.fallback_text:
+            return await self._send_with_retry(
+                chat_id,
+                reply.fallback_text,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        return SendResult(success=False, error="Platform does not support gateway cards")
 
     @staticmethod
     def _merge_caption(existing_text: Optional[str], new_text: str) -> str:
@@ -4965,6 +5030,15 @@ class BasePlatformAdapter(ABC):
                     self.name,
                     session_key,
                 )
+                response = None
+            if isinstance(response, CardReply):
+                card_result = await self.send_card_reply(
+                    event.source.chat_id,
+                    response,
+                    reply_to=_reply_anchor_for_event(event),
+                    metadata=_mark_notify_metadata(_thread_metadata),
+                )
+                _record_delivery(card_result)
                 response = None
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
