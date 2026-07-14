@@ -2253,8 +2253,7 @@ DEFAULT_CONFIG = {
                                      # (floor 30s) to enforce a hard cap.
         "reasoning_effort": "",  # subagent effort: "ultra", "max", "xhigh", "high",
                                  # "medium", "low", "minimal", "none" (empty = inherit)
-        "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling
-        "max_async_children": 3,  # max concurrent background (background=true) subagents; new dispatches rejected at capacity
+        "max_concurrent_children": 3,  # max parallel children per batch and concurrent background subagents; floor of 1 enforced, no ceiling
         # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
         # and _get_orchestrator_enabled).  Floored at 1, no upper ceiling —
         # raise deliberately, each level multiplies API cost.

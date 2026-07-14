@@ -1514,7 +1514,16 @@ def apply_task_env_overrides(config: Dict[str, Any], overrides: Dict[str, Any] |
     if ov.get("env_type"):
         merged["env_type"] = str(ov["env_type"])
     if ov.get("cwd"):
-        merged["cwd"] = str(ov["cwd"])
+        override_cwd = str(ov["cwd"])
+        if merged.get("env_type") in _CONTAINER_BACKENDS and _is_unusable_container_cwd(override_cwd):
+            logger.info(
+                "Ignoring host/relative cwd override %r for %s backend; using %r instead.",
+                override_cwd,
+                merged.get("env_type"),
+                merged.get("cwd"),
+            )
+        else:
+            merged["cwd"] = override_cwd
     if "ssh_host" in ov:
         merged["ssh_host"] = str(ov.get("ssh_host") or "")
     if "ssh_user" in ov:

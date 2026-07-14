@@ -266,7 +266,7 @@ class TestResolveToolsetIncludeRegistry:
         merged = set(resolve_toolset("terminal"))
         static = set(resolve_toolset("terminal", include_registry=False))
 
-        assert static == {"terminal", "process"}, static
+        assert static == {"terminal", "process", "ssh_mode"}, static
         # read_terminal is registered into 'terminal' but is desktop-only and
         # not part of the static definition — it must only appear in the merged view.
         assert "read_terminal" in merged

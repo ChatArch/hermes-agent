@@ -87,7 +87,7 @@ class TestBlankSlateMinimalToolsets:
             {(d.get("function") or {}).get("name") or d.get("name") for d in defs}
         )
         assert names == ["patch", "process", "read_file", "search_files",
-                         "terminal", "write_file"]
+                         "ssh_mode", "terminal", "write_file"]
 
     def test_tool_schema_survives_disabled_toolsets_from_config(self):
         """Regression: disabled_toolsets must not erase the minimal Blank Slate
@@ -111,7 +111,7 @@ class TestBlankSlateMinimalToolsets:
             {(d.get("function") or {}).get("name") or d.get("name") for d in defs}
         )
         assert names == ["patch", "process", "read_file", "search_files",
-                         "terminal", "write_file"]
+                         "ssh_mode", "terminal", "write_file"]
 
 
 class TestBlankSlateMinimizeConfig:

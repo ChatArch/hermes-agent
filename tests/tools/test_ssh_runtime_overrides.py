@@ -257,7 +257,7 @@ def test_execute_code_top_level_dispatch_uses_session_context_override(monkeypat
     monkeypatch.setattr(code_exec, "_execute_remote", fake_execute_remote)
     monkeypatch.setattr(
         "tools.approval.check_execute_code_guard",
-        lambda code, env_type: {"approved": True},
+        lambda code, env_type, **kwargs: {"approved": True},
     )
     tokens = set_session_vars(platform="feishu", chat_id="chat", thread_id="thread", session_key=session_key)
     try:

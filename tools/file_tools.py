@@ -302,7 +302,7 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
         container_key = task_id
 
     with _file_ops_lock:
-        cached = _file_ops_cache.get(container_key) or _file_ops_cache.get(task_id)
+        cached = _file_ops_cache.get(task_id) or _file_ops_cache.get(container_key)
     if cached is not None:
         env = getattr(cached, "env", None)
         live_cwd = _live_cwd_if_owned(env, task_id)
@@ -488,6 +488,24 @@ def _is_remote_backend_task(task_id: str = "default") -> bool:
         return False
 
 
+def _remote_backend_cwd_for_task(task_id: str = "default") -> str | None:
+    """Return the backend cwd for SSH/container display keys, without host cwd fallbacks."""
+    try:
+        from tools.terminal_tool import (
+            _get_env_config,
+            apply_task_env_overrides,
+            resolve_task_overrides,
+        )
+
+        config = apply_task_env_overrides(
+            _get_env_config(), resolve_task_overrides(task_id)
+        )
+        cwd = str(config.get("cwd") or "").strip()
+        return cwd or None
+    except Exception:
+        return None
+
+
 def _remote_display_path_for_task(filepath: str, task_id: str = "default") -> str:
     """Return a stable backend-path key for remote file-tool bookkeeping.
 
@@ -501,7 +519,7 @@ def _remote_display_path_for_task(filepath: str, task_id: str = "default") -> st
         return raw
     if posixpath.isabs(raw):
         return posixpath.normpath(raw)
-    root = _authoritative_workspace_root(task_id)
+    root = _remote_backend_cwd_for_task(task_id)
     if root and not str(root).startswith("~"):
         return posixpath.normpath(posixpath.join(str(root), raw))
     return posixpath.normpath(raw)
@@ -1829,7 +1847,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             result_dict["resolved_path"] = _display_path
             if not result_dict.get("error"):
                 result_dict["files_modified"] = [_display_path]
-                _mark_verification_stale(task_id, [_resolved], session_id=session_id)
+                _mark_verification_stale(task_id, [_display_path], session_id=session_id)
             # Refresh stamps after the successful write so consecutive
             # writes by this task don't trigger false staleness warnings.
             _update_read_timestamp(path, task_id)

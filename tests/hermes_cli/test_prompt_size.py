@@ -120,7 +120,7 @@ def test_blank_slate_prompt_size_counts_only_minimal_tools(isolated_home):
 
     data = compute_prompt_breakdown("cli")
 
-    assert data["tools"]["count"] == 6
+    assert data["tools"]["count"] == 7
 
 
 def test_skills_index_reflects_installed_skills(isolated_home):
