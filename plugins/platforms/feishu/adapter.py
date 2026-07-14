@@ -3222,6 +3222,13 @@ class FeishuAdapter(BasePlatformAdapter):
 
         if P2CardActionTriggerResponse is None:
             return None
+        logger.info(
+            "[Feishu] Handled card action %s chat=%s message=%s result=%s",
+            action,
+            chat_id,
+            message_id,
+            getattr(result, "kind", type(result).__name__),
+        )
         response = P2CardActionTriggerResponse()
         if not isinstance(result, CardActionResponse):
             return response

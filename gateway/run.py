@@ -3028,6 +3028,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+        # Register gateway-owned card actions at runner startup so live cards
+        # sent for validation are still actionable even if the matching slash
+        # command was not just invoked in this process.
+        register_card_action("gateway.ssh.action", self._handle_ssh_card_action)
+        register_card_action("gateway.reasoning.select", self._handle_reasoning_card_action)
         self._kanban_notifier_profile = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
