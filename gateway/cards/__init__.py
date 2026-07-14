@@ -1,13 +1,20 @@
 """Composable gateway card primitives."""
 
 from gateway.cards.commands import (
+    COMMAND_CARD_ACTION_HOME,
     COMMAND_CARD_ACTION_OPEN_GROUP,
     COMMAND_CARD_ACTION_RUN,
     COMMAND_CARD_ACTION_TEXT_HELP,
     COMMAND_CENTER_GROUPS,
+    COMMAND_GROUP_ENTRIES,
+    CommandCardEntry,
     CommandCardGroup,
     build_command_center_card,
+    build_command_group_card,
+    build_commands_browse_card,
+    build_text_help_card,
     command_run_payload,
+    register_command_card_actions,
 )
 from gateway.cards.model import (
     Actions,
@@ -25,12 +32,15 @@ from gateway.cards.model import (
 __all__ = [
     "Actions",
     "Button",
+    "COMMAND_CARD_ACTION_HOME",
     "COMMAND_CARD_ACTION_OPEN_GROUP",
     "COMMAND_CARD_ACTION_RUN",
     "COMMAND_CARD_ACTION_TEXT_HELP",
     "COMMAND_CENTER_GROUPS",
+    "COMMAND_GROUP_ENTRIES",
     "Card",
     "CardHeader",
+    "CommandCardEntry",
     "CommandCardGroup",
     "Divider",
     "Image",
@@ -38,6 +48,10 @@ __all__ = [
     "Note",
     "RawFeishuCard",
     "build_command_center_card",
+    "build_command_group_card",
+    "build_commands_browse_card",
     "build_feishu_authorization_card",
+    "build_text_help_card",
     "command_run_payload",
+    "register_command_card_actions",
 ]

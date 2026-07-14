@@ -32,7 +32,7 @@ from typing import Any, Optional, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig
-from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
+from gateway.platforms.base import CardReply, EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
     AsyncSessionStore,
     SessionSource,
@@ -1315,8 +1315,8 @@ class GatewaySlashCommandsMixin:
 
         return format_banner_version_label()
 
-    async def _handle_help_command(self, event: MessageEvent) -> str:
-        """Handle /help command - list available commands."""
+    async def _handle_help_command(self, event: MessageEvent) -> Union[str, CardReply]:
+        """Handle /help command - list available commands or show a command card."""
         from gateway.run import _telegramize_command_mentions
         from hermes_cli.commands import gateway_help_lines
         lines = [
@@ -1336,10 +1336,46 @@ class GatewaySlashCommandsMixin:
                     lines.append(t("gateway.help.more_use_commands", count=len(sorted_cmds) - 10))
         except Exception:
             pass
-        return _telegramize_command_mentions(
+
+        source = getattr(event, "source", None)
+        fallback_text = _telegramize_command_mentions(
             "\n".join(lines),
-            getattr(getattr(event, "source", None), "platform", None),
+            getattr(source, "platform", None),
         )
+        adapter = None
+        if source is not None:
+            adapter = getattr(self, "adapters", {}).get(source.platform)
+        platform_value = str(getattr(getattr(source, "platform", None), "value", getattr(source, "platform", "")) or "")
+        if platform_value == "feishu" and callable(getattr(adapter, "send_card", None)):
+            try:
+                from gateway.cards.commands import build_command_center_card, register_command_card_actions
+                from gateway.run import _load_gateway_config
+
+                register_command_card_actions()
+                cfg = _load_gateway_config() or {}
+                model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+                current_model = model_cfg.get("default", "") if isinstance(model_cfg, dict) else ""
+                current_provider = model_cfg.get("provider", "") if isinstance(model_cfg, dict) else ""
+                try:
+                    busy = bool(self._running_agent_count())
+                except Exception:
+                    busy = False
+                try:
+                    session_key = self._session_key_for_source(source)
+                except Exception:
+                    session_key = None
+                return CardReply(
+                    card=build_command_center_card(
+                        provider=str(current_provider or ""),
+                        model=str(current_model or ""),
+                        busy=busy,
+                    ),
+                    fallback_text=fallback_text,
+                    session_key=session_key,
+                )
+            except Exception:
+                logger.debug("Failed to build Feishu /help command card", exc_info=True)
+        return fallback_text
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         from gateway.run import _telegramize_command_mentions
