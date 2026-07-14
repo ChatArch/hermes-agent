@@ -86,6 +86,15 @@ class Select:
 
 
 @dataclass(slots=True)
+class MultiSelect:
+    """A multi-choice selector for bulk command workflow state."""
+
+    placeholder: str
+    options: list[SelectOption]
+    initial_values: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class Note:
     content: str
 
@@ -96,7 +105,7 @@ class Image:
     alt: str = "image"
 
 
-CardElement = Markdown | Divider | Actions | ListItem | Select | Note | Image
+CardElement = Markdown | Divider | Actions | ListItem | Select | MultiSelect | Note | Image
 
 
 @dataclass(slots=True)

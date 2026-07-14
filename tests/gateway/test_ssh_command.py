@@ -42,6 +42,8 @@ def _card_text(card):
         button = getattr(element, "button", None)
         if button is not None:
             parts.append(getattr(button, "text", ""))
+        for option in getattr(element, "options", []) or []:
+            parts.append(getattr(option, "text", ""))
     return "\n".join(str(part) for part in parts if part)
 
 
@@ -159,10 +161,10 @@ async def test_ssh_status_reports_current_section_without_binding():
 
     assert isinstance(result, CardReply)
     assert result.session_key == build_session_key(_source(thread_id="omt_thread"))
-    assert result.card.header.title == "SSH Targets"
+    assert result.card.header.title == "SSH"
     text = _card_text(result.card)
-    assert "Backend: `local`" in text
-    assert "Binding: `none`" in text
+    assert "当前后端：`local`" in text
+    assert "当前绑定：`none`" in text
     assert "YOLO" in text
 
 
@@ -187,11 +189,11 @@ async def test_ssh_list_renders_targets_without_starting_agent(monkeypatch):
 
     assert isinstance(result, CardReply)
     text = _card_text(result.card)
-    assert "SSH Targets" == result.card.header.title
+    assert "SSH" == result.card.header.title
     assert "rex.oray" in text
     assert "rexwzh" in text
     assert "id_ed25519" not in text
-    assert "Use" in text
+    assert "rex.oray" in text
 
 
 @pytest.mark.asyncio
@@ -204,7 +206,10 @@ async def test_ssh_card_actions_bind_and_yolo_target(monkeypatch, tmp_path):
     monkeypatch.setattr(
         gateway_run,
         "load_ssh_targets",
-        lambda: [SshTarget(alias="rex.oray", host="rexwzh.oray", user="rexwzh", cwd="/home/rexwzh/Playground")],
+        lambda: [
+            SshTarget(alias="rex.oray", host="rexwzh.oray", user="rexwzh", cwd="/home/rexwzh/Playground"),
+            SshTarget(alias="hitk", host="hitk.internal", user="zhihong"),
+        ],
         raising=False,
     )
     runner = _runner()
@@ -217,7 +222,7 @@ async def test_ssh_card_actions_bind_and_yolo_target(monkeypatch, tmp_path):
     yolo_response = await get_card_action_registry().dispatch(
         CardActionContext(
             action="gateway.ssh.action",
-            payload={"op": "yolo", "alias": "rex.oray"},
+            payload={"op": "yolo_set", "values": ["rex.oray", "hitk"]},
             user_id="ou_user",
             chat_id="oc_chat",
             message_id="om_ssh",
@@ -237,11 +242,11 @@ async def test_ssh_card_actions_bind_and_yolo_target(monkeypatch, tmp_path):
 
     assert yolo_response.kind == "replace_card"
     assert use_response.kind == "replace_card"
-    assert list(get_ssh_yolo_grant(section_key).aliases) == ["rex.oray"]
+    assert list(get_ssh_yolo_grant(section_key).aliases) == ["rex.oray", "hitk"]
     binding = get_ssh_binding(section_key)
     assert binding is not None
     assert binding.alias == "rex.oray"
-    assert "Backend: `ssh`" in _card_text(use_response.card)
+    assert "当前后端：`ssh`" in _card_text(use_response.card)
 
 
 @pytest.mark.asyncio
@@ -346,7 +351,7 @@ async def test_ssh_help_prefers_local_and_keeps_off_as_alias():
     result = await runner._handle_ssh_command(event)
 
     assert isinstance(result, CardReply)
-    assert result.card.header.title == "SSH Targets"
+    assert result.card.header.title == "SSH"
     assert result.fallback_text
 
 
@@ -405,7 +410,7 @@ async def test_ssh_status_reports_current_thread_binding(monkeypatch, tmp_path):
 
     assert isinstance(result, CardReply)
     text = _card_text(result.card)
-    assert "Backend: `ssh`" in text
+    assert "当前后端：`ssh`" in text
     assert "rex.oray" in text
     assert "/secret/key" not in text
 

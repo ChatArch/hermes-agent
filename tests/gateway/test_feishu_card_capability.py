@@ -18,6 +18,7 @@ from gateway.cards import (
     Image,
     ListItem,
     Markdown,
+    MultiSelect,
     Note,
     RawFeishuCard,
     Select,
@@ -132,7 +133,7 @@ def test_feishu_adapter_model_picker_drills_down_and_switches(monkeypatch):
     assert result.success is True
     assert sent[0]["chat_id"] == "oc_chat"
     assert sent[0]["metadata"] == {"thread_id": "omt_thread"}
-    assert sent[0]["card"]["header"]["title"]["content"] == "Model Provider (1/1)"
+    assert sent[0]["card"]["header"]["title"]["content"] == "选择模型渠道"
     picker_id = next(iter(adapter._model_picker_state))
 
     model_page = asyncio.run(
@@ -148,7 +149,7 @@ def test_feishu_adapter_model_picker_drills_down_and_switches(monkeypatch):
         )
     )
     assert model_page.kind == "replace_card"
-    assert model_page.card.header.title == "Models (1/1)"
+    assert model_page.card.header.title == "选择模型"
 
     switched = asyncio.run(
         adapter._handle_model_picker_action(
@@ -305,6 +306,14 @@ def test_render_feishu_card_supports_list_item_and_select_workflows():
                     SelectOption(text="max", value="max", action="gateway.command.act", payload={"view": "reasoning", "effort": "max"}),
                 ],
             ),
+            MultiSelect(
+                placeholder="选择 YOLO 目标",
+                initial_values=["zhihong.oray"],
+                options=[
+                    SelectOption(text="zhihong.oray", value="zhihong.oray", action="gateway.command.act", payload={"view": "ssh", "op": "yolo_set"}),
+                    SelectOption(text="hitk", value="hitk", action="gateway.command.act", payload={"view": "ssh", "op": "yolo_set"}),
+                ],
+            ),
         ],
     )
 
@@ -333,6 +342,19 @@ def test_render_feishu_card_supports_list_item_and_select_workflows():
         "view": "reasoning",
         "effort": "xhigh",
         "value": "xhigh",
+    }
+
+    multi_selector = rendered["elements"][2]
+    assert multi_selector["tag"] == "multi_select_static"
+    assert multi_selector["placeholder"] == {"tag": "plain_text", "content": "选择 YOLO 目标"}
+    assert multi_selector["initial_options"] == [multi_selector["options"][0]["value"]]
+    yolo_payload = json.loads(multi_selector["options"][0]["value"])
+    assert yolo_payload == {
+        "action": "gateway.command.act",
+        "session_key": "session-workflow",
+        "view": "ssh",
+        "op": "yolo_set",
+        "value": "zhihong.oray",
     }
 
 
@@ -528,6 +550,47 @@ def test_feishu_card_action_trigger_parses_select_option_json_action(monkeypatch
     assert response.card.type == "raw"
     assert response.card.data["header"]["title"] == {"tag": "plain_text", "content": "已选择"}
     assert response.card.data["elements"][0] == {"tag": "markdown", "content": "xhigh"}
+
+
+def test_feishu_card_action_trigger_parses_multi_select_json_actions(monkeypatch):
+    loop, thread = _start_background_loop()
+    action_name = "test.multi.select.phase2"
+
+    async def handler(ctx: CardActionContext) -> CardActionResponse:
+        assert ctx.action == action_name
+        assert ctx.payload["values"] == ["zhihong.oray", "hitk"]
+        assert ctx.session_key == "session-multi"
+        return CardActionResponse.replace_card(
+            Card(header=CardHeader(title="多选已处理", color="green"), elements=[Markdown(",".join(ctx.payload["values"]))])
+        )
+
+    register_card_action(action_name, handler)
+    _patch_feishu_callback_classes(monkeypatch)
+    adapter = FeishuAdapter.__new__(FeishuAdapter)
+    adapter._loop = loop
+    _allow_all_interactive_callbacks(adapter)
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            action=SimpleNamespace(
+                value=[
+                    json.dumps({"action": action_name, "session_key": "session-multi", "op": "yolo_set", "value": "zhihong.oray"}, separators=(",", ":")),
+                    json.dumps({"action": action_name, "session_key": "session-multi", "op": "yolo_set", "value": "hitk"}, separators=(",", ":")),
+                ]
+            ),
+            operator=SimpleNamespace(open_id="ou_user", user_id="user_id"),
+            context=SimpleNamespace(open_chat_id="oc_chat", open_message_id="om_msg"),
+        )
+    )
+
+    try:
+        response = adapter._on_card_action_trigger(data)
+    finally:
+        _stop_background_loop(loop, thread)
+
+    assert response is not None
+    assert response.card.type == "raw"
+    assert response.card.data["header"]["title"] == {"tag": "plain_text", "content": "多选已处理"}
+    assert response.card.data["elements"][0] == {"tag": "markdown", "content": "zhihong.oray,hitk"}
 
 
 def test_feishu_card_action_trigger_unknown_action_falls_back(monkeypatch):

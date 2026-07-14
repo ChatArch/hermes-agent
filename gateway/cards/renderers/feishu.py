@@ -13,6 +13,7 @@ from gateway.cards.model import (
     Image,
     ListItem,
     Markdown,
+    MultiSelect,
     Note,
     RawFeishuCard,
     Select,
@@ -112,6 +113,29 @@ def _render_select(element: Select, *, session_key: str | None) -> dict[str, Any
     return rendered
 
 
+def _render_multi_select(element: MultiSelect, *, session_key: str | None) -> dict[str, Any] | None:
+    options = []
+    initial_options = []
+    initial_values = set(element.initial_values or [])
+    for option in element.options:
+        rendered_value = _select_option_value(option, session_key=session_key)
+        if not rendered_value:
+            continue
+        options.append({"text": _plain_text(option.text), "value": rendered_value})
+        if option.value in initial_values or option.text in initial_values or rendered_value in initial_values:
+            initial_options.append(rendered_value)
+    if not options:
+        return None
+    rendered: dict[str, Any] = {
+        "tag": "multi_select_static",
+        "placeholder": _plain_text(element.placeholder),
+        "options": options,
+    }
+    if initial_options:
+        rendered["initial_options"] = initial_options
+    return rendered
+
+
 def render_feishu_card(card: Card | RawFeishuCard, *, session_key: str | None = None) -> dict[str, Any]:
     """Render a generic Hermes card into Feishu interactive-card JSON data."""
 
@@ -149,6 +173,10 @@ def render_feishu_card(card: Card | RawFeishuCard, *, session_key: str | None = 
             rendered_select = _render_select(element, session_key=session_key)
             if rendered_select:
                 elements.append(rendered_select)
+        elif isinstance(element, MultiSelect):
+            rendered_multi_select = _render_multi_select(element, session_key=session_key)
+            if rendered_multi_select:
+                elements.append(rendered_multi_select)
         elif isinstance(element, Note):
             elements.append({"tag": "note", "elements": [_plain_text(element.content)]})
 

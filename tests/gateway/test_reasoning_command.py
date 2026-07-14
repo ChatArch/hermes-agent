@@ -127,7 +127,7 @@ class TestReasoningCommand:
 
         assert isinstance(result, CardReply)
         assert result.session_key == session_key
-        assert result.card.header.title == "Reasoning"
+        assert result.card.header.title == "推理强度"
         assert result.fallback_text
 
         response = await get_card_action_registry().dispatch(
@@ -142,7 +142,7 @@ class TestReasoningCommand:
         )
 
         assert response.kind == "replace_card"
-        assert response.card.header.title == "Reasoning updated"
+        assert response.card.header.title == "推理强度已更新"
         assert runner._session_reasoning_overrides[session_key] == {"enabled": True, "effort": "xhigh"}
 
     @pytest.mark.asyncio

@@ -1988,7 +1988,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return label
 
     def _build_model_picker_provider_card(self, picker_id: str, *, page: int = 0):
-        from gateway.cards.model import Actions, Button, Card, CardHeader, Divider, ListItem, Markdown, Note
+        from gateway.cards.model import Actions, Button, Card, CardHeader, Divider, Markdown, Select, SelectOption
         from hermes_cli.providers import get_label
 
         state = self._model_picker_state_for(picker_id)
@@ -1997,44 +1997,38 @@ class FeishuAdapter(BasePlatformAdapter):
         providers = list(state.get("providers") or [])
         current_provider = str(state.get("current_provider") or "")
         current_model = str(state.get("current_model") or "")
-        page_size = _FEISHU_MODEL_PICKER_PROVIDER_PAGE_SIZE
-        total = len(providers)
-        total_pages = max(1, (total + page_size - 1) // page_size)
-        page = max(0, min(int(page or 0), total_pages - 1))
-        start = page * page_size
-        shown = providers[start:start + page_size]
-
-        elements = [
-            Markdown(
-                f"Current: `{current_model or 'unknown'}`\n"
-                f"Provider: `{get_label(current_provider)}`\n\n"
-                "Pick a provider, then pick a model."
-            ),
-            Divider(),
-        ]
-        for provider in shown:
+        options: list[SelectOption] = []
+        initial = ""
+        for provider in providers:
             slug = str(provider.get("slug") or "")
+            if not slug:
+                continue
             count = int(provider.get("total_models") or len(provider.get("models") or []))
-            current = "  **current**" if provider.get("is_current") else ""
-            api_hint = str(provider.get("api_url") or "").strip()
-            detail = f"**{provider.get('name') or slug}** ({count} models){current}"
-            if api_hint and count == 0:
-                detail += f"\n`{api_hint}`"
-            elements.append(
-                ListItem(
-                    text=detail,
-                    button=Button(
-                        text="Models",
-                        action=_FEISHU_MODEL_PICKER_ACTION,
-                        payload={"picker_id": picker_id, "op": "provider", "provider": slug},
-                    ),
+            label = f"{provider.get('name') or slug} ({count})"
+            if provider.get("is_current"):
+                label = "✓ " + label
+                initial = slug
+            options.append(
+                SelectOption(
+                    text=label,
+                    value=slug,
+                    action=_FEISHU_MODEL_PICKER_ACTION,
+                    payload={"picker_id": picker_id, "op": "provider", "provider": slug},
                 )
             )
-        elements.extend(self._model_picker_nav_elements(picker_id, view="providers", page=page, total_pages=total_pages))
-        return Card(header=CardHeader(title=f"Model Provider ({page + 1}/{total_pages})", color="indigo"), elements=elements)
+
+        return Card(
+            header=CardHeader(title="选择模型渠道", color="indigo"),
+            elements=[
+                Markdown(f"当前模型：`{current_model or 'unknown'}`\n当前渠道：`{get_label(current_provider)}`"),
+                Select("选择渠道", options=options, initial_value=initial or current_provider),
+                Divider(),
+                Actions(buttons=[Button("✕ 取消", _FEISHU_MODEL_PICKER_ACTION, style="danger", payload={"picker_id": picker_id, "op": "cancel"})], layout="equal"),
+            ],
+        )
 
     def _build_model_picker_models_card(self, picker_id: str, provider_slug: str, *, page: int = 0):
-        from gateway.cards.model import Actions, Button, Card, CardHeader, Divider, ListItem, Markdown, Note
+        from gateway.cards.model import Actions, Button, Card, CardHeader, Divider, Markdown, Select, SelectOption
 
         state = self._model_picker_state_for(picker_id)
         if not state:
@@ -2045,68 +2039,40 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._build_model_picker_provider_card(picker_id, page=0)
         models = [str(item) for item in (provider.get("models") or [])]
         current_model = str(state.get("current_model") or "")
-        page_size = _FEISHU_MODEL_PICKER_MODEL_PAGE_SIZE
-        total = len(models)
-        total_pages = max(1, (total + page_size - 1) // page_size)
-        page = max(0, min(int(page or 0), total_pages - 1))
-        start = page * page_size
-        shown = models[start:start + page_size]
-
-        elements = [
-            Markdown(f"Provider: **{provider.get('name') or provider_slug}**\nCurrent: `{current_model or 'unknown'}`"),
-            Divider(),
-        ]
-        if not shown:
-            elements.append(Markdown("No models were listed for this provider. Try typed `/model <name> --provider ...`."))
-        for model_id in shown:
-            current = "  **current**" if model_id == current_model else ""
-            elements.append(
-                ListItem(
-                    text=f"`{model_id}`{current}",
-                    button=Button(
-                        text="Use",
-                        style="primary" if model_id != current_model else "default",
-                        action=_FEISHU_MODEL_PICKER_ACTION,
-                        payload={
-                            "picker_id": picker_id,
-                            "op": "model",
-                            "provider": provider_slug,
-                            "model": model_id,
-                        },
-                    ),
+        options: list[SelectOption] = []
+        initial = ""
+        for model_id in models:
+            label = self._short_model_label(model_id)
+            if model_id == current_model:
+                label = "✓ " + label
+                initial = model_id
+            options.append(
+                SelectOption(
+                    text=label,
+                    value=model_id,
+                    action=_FEISHU_MODEL_PICKER_ACTION,
+                    payload={"picker_id": picker_id, "op": "model", "provider": provider_slug, "model": model_id},
                 )
             )
-        elements.extend(
-            self._model_picker_nav_elements(
-                picker_id,
-                view="models",
-                page=page,
-                total_pages=total_pages,
-                provider=provider_slug,
-            )
-        )
-        return Card(header=CardHeader(title=f"Models ({page + 1}/{total_pages})", color="blue"), elements=elements)
 
-    def _model_picker_nav_elements(
-        self,
-        picker_id: str,
-        *,
-        view: str,
-        page: int,
-        total_pages: int,
-        provider: str = "",
-    ) -> list[Any]:
-        from gateway.cards.model import Actions, Button, Divider, Note
-
-        buttons = []
-        if view == "models":
-            buttons.append(Button("Back", _FEISHU_MODEL_PICKER_ACTION, payload={"picker_id": picker_id, "op": "back"}))
-        if page > 0:
-            buttons.append(Button("Prev", _FEISHU_MODEL_PICKER_ACTION, payload={"picker_id": picker_id, "op": view, "page": str(page - 1), "provider": provider}))
-        if page < total_pages - 1:
-            buttons.append(Button("Next", _FEISHU_MODEL_PICKER_ACTION, payload={"picker_id": picker_id, "op": view, "page": str(page + 1), "provider": provider}))
-        buttons.append(Button("Cancel", _FEISHU_MODEL_PICKER_ACTION, style="danger", payload={"picker_id": picker_id, "op": "cancel"}))
-        return [Divider(), Actions(buttons=buttons, layout="row"), Note("Clicks are gateway actions; they do not enter agent history.")]
+        elements = [
+            Markdown(f"渠道：`{provider.get('name') or provider_slug}`\n当前模型：`{current_model or 'unknown'}`"),
+        ]
+        if options:
+            elements.append(Select("选择模型", options=options, initial_value=initial))
+        else:
+            elements.append(Markdown("这个渠道没有返回模型列表。可以继续用文本命令 `/model <name> --provider ...`。"))
+        elements.extend([
+            Divider(),
+            Actions(
+                buttons=[
+                    Button("‹ 返回", _FEISHU_MODEL_PICKER_ACTION, payload={"picker_id": picker_id, "op": "back"}),
+                    Button("✕ 取消", _FEISHU_MODEL_PICKER_ACTION, style="danger", payload={"picker_id": picker_id, "op": "cancel"}),
+                ],
+                layout="equal",
+            ),
+        ])
+        return Card(header=CardHeader(title="选择模型", color="blue"), elements=elements)
 
     @staticmethod
     def _build_model_picker_expired_card():
@@ -3116,6 +3082,29 @@ class FeishuAdapter(BasePlatformAdapter):
             except json.JSONDecodeError:
                 parsed_action_value = {}
             action_value = parsed_action_value if isinstance(parsed_action_value, dict) else {}
+        elif isinstance(action_value, list):
+            parsed_items: list[dict[str, Any]] = []
+            selected_values: list[str] = []
+            for item in action_value:
+                parsed_item: Any = item
+                if isinstance(item, str):
+                    try:
+                        parsed_item = json.loads(item)
+                    except json.JSONDecodeError:
+                        selected_values.append(item)
+                        continue
+                if isinstance(parsed_item, dict):
+                    parsed_items.append(parsed_item)
+                    selected = parsed_item.get("value")
+                    if selected is not None:
+                        selected_values.append(str(selected))
+                elif parsed_item is not None:
+                    selected_values.append(str(parsed_item))
+            if parsed_items:
+                action_value = dict(parsed_items[0])
+                action_value["values"] = selected_values
+            else:
+                action_value = {}
         hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
         update_prompt_action = (
             action_value.get("hermes_update_prompt_action")

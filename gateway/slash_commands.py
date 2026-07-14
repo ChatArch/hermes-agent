@@ -2635,7 +2635,7 @@ class GatewaySlashCommandsMixin:
         return t("gateway.background.started", preview=preview, task_id=task_id)
 
     def _build_reasoning_selector_card(self, *, reasoning_config: dict | None, show_reasoning: bool, session_override: bool):
-        from gateway.cards.model import Actions, Button, Card, CardHeader, Divider, Markdown, Note, Select, SelectOption
+        from gateway.cards.model import Actions, Button, Card, CardHeader, Markdown, Select, SelectOption
 
         if reasoning_config is None:
             level = t("gateway.reasoning.level_default")
@@ -2658,18 +2658,16 @@ class GatewaySlashCommandsMixin:
             for effort in ("none", *VALID_REASONING_EFFORTS)
         ]
         return Card(
-            header=CardHeader(title="Reasoning", color="orange"),
+            header=CardHeader(title="推理强度", color="orange"),
             elements=[
-                Markdown(f"Current: `{level}`\nScope: `{scope}`\nDisplay: `{display}`"),
-                Select("Choose reasoning effort", options=options, initial_value=initial),
-                Divider(),
+                Markdown(f"当前：`{level}`\n范围：`{scope}`\n展示：`{display}`"),
+                Select("选择推理强度", options=options, initial_value=initial),
                 Actions(
                     buttons=[
-                        Button("Reset session", "gateway.reasoning.select", payload={"op": "reset"}),
+                        Button("重置", "gateway.reasoning.select", payload={"op": "reset"}),
                     ],
                     layout="row",
                 ),
-                Note("Typed /reasoning commands still work; card clicks update gateway state directly."),
             ],
         )
 
@@ -2714,10 +2712,10 @@ class GatewaySlashCommandsMixin:
             text = t("gateway.reasoning.set_session", effort=effort)
         return CardActionResponse.replace_card(
             Card(
-                header=CardHeader(title="Reasoning updated", color="green"),
+                header=CardHeader(title="推理强度已更新", color="green"),
                 elements=[
                     Markdown(text),
-                    Actions(buttons=[Button("Open selector", "gateway.reasoning.select", payload={"op": "open"})]),
+                    Actions(buttons=[Button("重新选择", "gateway.reasoning.select", payload={"op": "open"})]),
                 ],
             )
         )

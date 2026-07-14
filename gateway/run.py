@@ -12962,67 +12962,72 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
     def _build_ssh_targets_card(self, section_key: str):
-        from gateway.cards.model import Actions, Button, Card, CardHeader, Divider, ListItem, Markdown, Note
+        from gateway.cards.model import Actions, Button, Card, CardHeader, Divider, Markdown, MultiSelect, Select, SelectOption
 
         targets = load_ssh_targets()
         grant = get_ssh_yolo_grant(section_key)
         yolo_aliases = "all" if grant.allows_all else (", ".join(grant.aliases) if grant.aliases else "none")
         resolved = resolve_binding_target(section_key, targets=targets)
+        current_alias = ""
         if resolved is None:
-            status = "Backend: `local`\nBinding: `none`"
+            status = "当前后端：`local`\n当前绑定：`none`"
         else:
             binding, target = resolved
+            current_alias = binding.alias
             cwd = binding.cwd or target.cwd or ""
-            status = f"Backend: `ssh`\nBinding: `{binding.alias}`"
+            status = f"当前后端：`ssh`\n当前绑定：`{binding.alias}`"
             if cwd:
-                status += f"\nCWD: `{cwd}`"
-        elements = [
-            Markdown(f"{status}\nYOLO: `{'on' if grant.enabled else 'off'}` ({yolo_aliases})"),
-            Divider(),
+                status += f"\n目录：`{cwd}`"
+        target_options = []
+        yolo_options = [
+            SelectOption(
+                text="全部 SSH 目标",
+                value="all",
+                action="gateway.ssh.action",
+                payload={"op": "yolo_set"},
+            )
         ]
-        if not targets:
-            elements.append(Markdown("No Hermes SSH targets configured. Add targets to the Hermes SSH registry first."))
         for target in targets:
-            detail = f"**{target.alias}**"
-            host_bits = [bit for bit in (target.user, target.host) if bit]
-            if host_bits:
-                detail += f"\n`{'@'.join(host_bits)}`"
+            detail = target.alias
+            if target.user and target.host:
+                detail += f" · {target.user}@{target.host}"
+            elif target.host:
+                detail += f" · {target.host}"
             if target.cwd:
-                detail += f"\n`{target.cwd}`"
-            elements.append(
-                ListItem(
+                detail += f" · {target.cwd}"
+            if target.alias == current_alias:
+                detail = "✓ " + detail
+            target_options.append(
+                SelectOption(
                     text=detail,
-                    button=Button(
-                        "Use",
-                        "gateway.ssh.action",
-                        style="primary",
-                        payload={"op": "use", "alias": target.alias},
-                    ),
+                    value=target.alias,
+                    action="gateway.ssh.action",
+                    payload={"op": "use", "alias": target.alias},
                 )
             )
-            elements.append(
-                ListItem(
-                    text=f"Allow model auto-switch for `{target.alias}`",
-                    button=Button(
-                        "YOLO",
-                        "gateway.ssh.action",
-                        payload={"op": "yolo", "alias": target.alias},
-                    ),
+            yolo_options.append(
+                SelectOption(
+                    text=target.alias,
+                    value=target.alias,
+                    action="gateway.ssh.action",
+                    payload={"op": "yolo_set"},
                 )
             )
-        elements.extend([
-            Divider(),
-            Actions(
-                buttons=[
-                    Button("Refresh", "gateway.ssh.action", payload={"op": "open"}),
-                    Button("Local", "gateway.ssh.action", payload={"op": "local"}),
-                    Button("YOLO all", "gateway.ssh.action", payload={"op": "yolo", "alias": "all"}),
-                ],
-                layout="row",
-            ),
-            Note("Buttons update this Hermes section. Typed /ssh commands still work."),
-        ])
-        return Card(header=CardHeader(title="SSH Targets", color="wathet"), elements=elements)
+        elements = [
+            Markdown(f"{status}\nYOLO：`{'on' if grant.enabled else 'off'}`（{yolo_aliases}）"),
+        ]
+        if target_options:
+            elements.append(Select("选择 SSH 目标并连接", options=target_options, initial_value=current_alias))
+            elements.append(MultiSelect("选择允许自动切换的目标", options=yolo_options, initial_values=list(grant.aliases)))
+        else:
+            elements.append(Markdown("还没有配置 SSH 目标。"))
+        buttons = []
+        if current_alias:
+            buttons.append(Button("切回本地", "gateway.ssh.action", payload={"op": "local"}))
+        buttons.append(Button("✕ 关闭", "gateway.ssh.action", style="danger", payload={"op": "close"}))
+        if buttons:
+            elements.extend([Divider(), Actions(buttons=buttons, layout="equal" if len(buttons) == 2 else "row")])
+        return Card(header=CardHeader(title="SSH", color="wathet"), elements=elements)
 
     async def _handle_ssh_card_action(self, ctx):
         from gateway.cards.model import Card, CardHeader, Markdown
@@ -13037,6 +13042,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         targets = load_ssh_targets()
         if op == "open":
             return CardActionResponse.replace_card(self._build_ssh_targets_card(section_key))
+        if op == "close":
+            return CardActionResponse.replace_card(
+                Card(header=CardHeader(title="SSH", color="grey"), elements=[Markdown("已关闭。")])
+            )
         if op == "local":
             clear_ssh_binding(section_key)
             try:
@@ -13045,6 +13054,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
             self._evict_cached_agent(section_key)
+            return CardActionResponse.replace_card(self._build_ssh_targets_card(section_key))
+        if op == "yolo_set":
+            raw_values = ctx.payload.get("values")
+            if isinstance(raw_values, str):
+                selected = [raw_values]
+            elif isinstance(raw_values, (list, tuple, set)):
+                selected = [str(item or "").strip() for item in raw_values]
+            else:
+                selected = [str(ctx.payload.get("value") or ctx.payload.get("alias") or "").strip()]
+            selected = [item for item in selected if item]
+            known_aliases = {target.alias for target in targets}
+            if "all" in selected:
+                set_ssh_yolo_grant(section_key, enabled=True, aliases=["all"])
+            else:
+                unknown = [item for item in selected if item not in known_aliases]
+                if unknown:
+                    return CardActionResponse.replace_card(
+                        Card(header=CardHeader(title="SSH YOLO", color="red"), elements=[Markdown(f"Unknown SSH target: `{unknown[0]}`")])
+                    )
+                set_ssh_yolo_grant(section_key, enabled=bool(selected), aliases=selected)
             return CardActionResponse.replace_card(self._build_ssh_targets_card(section_key))
         if op == "yolo":
             if alias and alias != "all" and find_ssh_target(targets, alias) is None:
