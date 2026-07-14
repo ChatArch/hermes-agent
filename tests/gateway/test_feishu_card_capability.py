@@ -9,13 +9,19 @@ import pytest
 from gateway.cards import (
     Actions,
     Button,
+    COMMAND_CARD_ACTION_OPEN_GROUP,
+    COMMAND_CARD_ACTION_RUN,
+    COMMAND_CARD_ACTION_TEXT_HELP,
+    COMMAND_CENTER_GROUPS,
     Card,
     CardHeader,
     Image,
     Markdown,
     Note,
     RawFeishuCard,
+    build_command_center_card,
     build_feishu_authorization_card,
+    command_run_payload,
 )
 from gateway.cards.actions import (
     CardActionContext,
@@ -24,7 +30,8 @@ from gateway.cards.actions import (
     register_card_action,
 )
 from gateway.cards.renderers.feishu import render_feishu_card
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, CardReply, SendResult
 from plugins.platforms.feishu import adapter as feishu_platform
 from plugins.platforms.feishu.adapter import FeishuAdapter
 
@@ -603,3 +610,124 @@ def test_feishu_card_action_trigger_registered_action_allows_p2p_callback(monkey
     assert response is not None
     assert response.card.type == "raw"
     assert response.card.data["header"]["title"] == {"tag": "plain_text", "content": "DM 已处理"}
+
+
+class _CardCapableAdapter(BasePlatformAdapter):
+    def __init__(self):
+        super().__init__(PlatformConfig(), Platform.FEISHU)
+        self.card_sends = []
+        self.text_sends = []
+
+    async def connect(self, is_reconnect: bool = False) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        self.text_sends.append((chat_id, content, reply_to, metadata))
+        return SendResult(success=True, message_id="om_text")
+
+    async def send_card(self, chat_id, card, *, reply_to=None, metadata=None):
+        self.card_sends.append((chat_id, card, reply_to, metadata))
+        return SendResult(success=True, message_id="om_card")
+
+    async def get_chat_info(self, chat_id):
+        return {"name": chat_id, "type": "group"}
+
+
+class _TextOnlyAdapter(BasePlatformAdapter):
+    def __init__(self):
+        super().__init__(PlatformConfig(), Platform.TELEGRAM)
+        self.text_sends = []
+
+    async def connect(self, is_reconnect: bool = False) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        self.text_sends.append((chat_id, content, reply_to, metadata))
+        return SendResult(success=True, message_id="msg_text")
+
+    async def get_chat_info(self, chat_id):
+        return {"name": chat_id, "type": "group"}
+
+
+def test_command_center_card_uses_gateway_action_payloads():
+    card = build_command_center_card(
+        profile="work",
+        provider="custom:Crs.tencent-am.wzhecnu.cn",
+        model="gpt-5.5",
+        busy=True,
+    )
+
+    rendered = render_feishu_card(card, session_key="session-command-center")
+
+    assert len(COMMAND_CENTER_GROUPS) == 6
+    assert rendered["header"]["title"] == {"tag": "plain_text", "content": "Hermes Command Center"}
+    first_group = rendered["elements"][2 + 1]["columns"][0]["elements"][0]
+    assert first_group["value"] == {
+        "action": COMMAND_CARD_ACTION_OPEN_GROUP,
+        "session_key": "session-command-center",
+        "group": "session",
+    }
+    actions = rendered["elements"][6]["actions"]
+    assert actions[0]["value"] == {
+        "action": COMMAND_CARD_ACTION_TEXT_HELP,
+        "session_key": "session-command-center",
+        "command": "help",
+        "scope": "session",
+    }
+    assert actions[1]["value"]["action"] == COMMAND_CARD_ACTION_RUN
+    assert actions[1]["value"]["command"] == "commands"
+
+
+def test_command_run_payload_normalizes_without_synthetic_message_text():
+    assert command_run_payload("/model", args="gpt-5.5", scope="global") == {
+        "command": "model",
+        "args": "gpt-5.5",
+        "scope": "global",
+    }
+    with pytest.raises(ValueError, match="command cannot be empty"):
+        command_run_payload("/")
+
+
+def test_card_reply_renders_native_feishu_card_before_text_fallback():
+    adapter = _CardCapableAdapter()
+    reply = CardReply(
+        card=build_command_center_card(model="gpt-5.5"),
+        fallback_text="text fallback",
+        session_key="session-42",
+    )
+
+    result = asyncio.run(
+        adapter.send_card_reply(
+            "oc_chat",
+            reply,
+            reply_to="om_anchor",
+            metadata={"thread_id": "omt_thread"},
+        )
+    )
+
+    assert result.success is True
+    assert result.message_id == "om_card"
+    assert adapter.text_sends == []
+    chat_id, card, reply_to, metadata = adapter.card_sends[0]
+    assert chat_id == "oc_chat"
+    assert reply_to == "om_anchor"
+    assert metadata == {"thread_id": "omt_thread"}
+    assert card["header"]["title"] == {"tag": "plain_text", "content": "Hermes Command Center"}
+    assert card["elements"][0]["content"].endswith("Agent: `idle`")
+
+
+def test_card_reply_falls_back_to_text_on_non_card_platform():
+    adapter = _TextOnlyAdapter()
+    reply = CardReply(card=build_command_center_card(), fallback_text="plain help")
+
+    result = asyncio.run(adapter.send_card_reply("chat", reply, reply_to="reply-1"))
+
+    assert result.success is True
+    assert result.message_id == "msg_text"
+    assert adapter.text_sends == [("chat", "plain help", "reply-1", None)]
