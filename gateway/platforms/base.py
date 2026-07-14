@@ -4261,6 +4261,8 @@ class BasePlatformAdapter(ABC):
                 if not isinstance(result, SendResult):
                     return SendResult(success=False, error="Card sender returned invalid result")
                 if result.success or not reply.fallback_text:
+                    if result.success:
+                        logger.info("[%s] Sent card reply to %s", self.name, chat_id)
                     return result
                 logger.warning("[%s] Card send failed; falling back to text: %s", self.name, result.error)
 
