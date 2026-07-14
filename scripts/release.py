@@ -45,6 +45,11 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "DavidMetcalfe@users.noreply.github.com": "DavidMetcalfe",  # official main sync for PR #33 (desktop/statusbar tooltip commit used plain noreply form)
+    "agent@agents-Mac-mini.local": "agent",  # official main sync for PR #33 (upstream local author identity)
+    "gigakun@agentmail.to": "gigakun3030",  # official main sync for PR #33 (models catalog cleanup)
+    "jakub.wolniewicz@gmail.com": "jakub-wolniewicz",  # official main sync for PR #33 (desktop prompt overlay fix)
+    "markvlcek@gmail.com": "markvlcek",  # official main sync for PR #33 (desktop fallback models editor)
     "m.guttmann@journaway.com": "mguttmann",  # PR #63738 salvage (Anthropic setup-token pool auth normalization)
     "VrtxOmega@pm.me": "VrtxOmega",  # PR #43809 salvage (desktop: WSL folder-picker path bridge)
     "jake.long.vu@vucar.net": "jakelongvu-bot",  # PR #36683 partial salvage (approval: honor canonical approvals.timeout in gateway waits)
