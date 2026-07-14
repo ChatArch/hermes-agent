@@ -31,8 +31,9 @@ from typing import Any, Optional, Union
 
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
+from gateway.cards.actions import CardActionResponse, register_card_action
 from gateway.config import HomeChannel, Platform, PlatformConfig
-from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
+from gateway.platforms.base import CardReply, EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
     AsyncSessionStore,
     SessionSource,
@@ -2633,7 +2634,95 @@ class GatewaySlashCommandsMixin:
         preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
         return t("gateway.background.started", preview=preview, task_id=task_id)
 
-    async def _handle_reasoning_command(self, event: MessageEvent) -> str:
+    def _build_reasoning_selector_card(self, *, reasoning_config: dict | None, show_reasoning: bool, session_override: bool):
+        from gateway.cards.model import Actions, Button, Card, CardHeader, Divider, Markdown, Note, Select, SelectOption
+
+        if reasoning_config is None:
+            level = t("gateway.reasoning.level_default")
+            initial = ""
+        elif reasoning_config.get("enabled") is False:
+            level = t("gateway.reasoning.level_disabled")
+            initial = "none"
+        else:
+            initial = str(reasoning_config.get("effort") or "medium")
+            level = initial
+        scope = t("gateway.reasoning.scope_session") if session_override else t("gateway.reasoning.scope_global")
+        display = t("gateway.reasoning.display_on") if show_reasoning else t("gateway.reasoning.display_off")
+        options = [
+            SelectOption(
+                text=effort,
+                value=effort,
+                action="gateway.reasoning.select",
+                payload={"op": "set", "effort": effort},
+            )
+            for effort in ("none", *VALID_REASONING_EFFORTS)
+        ]
+        return Card(
+            header=CardHeader(title="Reasoning", color="orange"),
+            elements=[
+                Markdown(f"Current: `{level}`\nScope: `{scope}`\nDisplay: `{display}`"),
+                Select("Choose reasoning effort", options=options, initial_value=initial),
+                Divider(),
+                Actions(
+                    buttons=[
+                        Button("Reset session", "gateway.reasoning.select", payload={"op": "reset"}),
+                    ],
+                    layout="row",
+                ),
+                Note("Typed /reasoning commands still work; card clicks update gateway state directly."),
+            ],
+        )
+
+    async def _handle_reasoning_card_action(self, ctx):
+        from gateway.cards.model import Actions, Button, Card, CardHeader, Markdown
+
+        session_key = str(ctx.session_key or ctx.payload.get("session_key") or "")
+        if not session_key:
+            return CardActionResponse.replace_card(
+                Card(header=CardHeader(title="Reasoning", color="red"), elements=[Markdown("Missing session context; run `/reasoning` again.")])
+            )
+        op = str(ctx.payload.get("op") or "set")
+        if op == "open":
+            self._show_reasoning = self._load_show_reasoning()
+            reasoning_config = self._resolve_session_reasoning_config(session_key=session_key)
+            has_session_override = session_key in (getattr(self, "_session_reasoning_overrides", {}) or {})
+            return CardActionResponse.replace_card(
+                self._build_reasoning_selector_card(
+                    reasoning_config=reasoning_config,
+                    show_reasoning=self._show_reasoning,
+                    session_override=has_session_override,
+                )
+            )
+        if op == "reset":
+            self._set_session_reasoning_override(session_key, None)
+            self._reasoning_config = self._load_reasoning_config()
+            self._evict_cached_agent(session_key)
+            text = t("gateway.reasoning.reset_done")
+        else:
+            effort = str(ctx.payload.get("effort") or ctx.payload.get("value") or "").strip()
+            if effort == "none":
+                parsed = {"enabled": False}
+            elif effort in VALID_REASONING_EFFORTS:
+                parsed = {"enabled": True, "effort": effort}
+            else:
+                return CardActionResponse.replace_card(
+                    Card(header=CardHeader(title="Reasoning", color="red"), elements=[Markdown(t("gateway.reasoning.unknown_arg", arg=effort))])
+                )
+            self._reasoning_config = parsed
+            self._set_session_reasoning_override(session_key, parsed)
+            self._evict_cached_agent(session_key)
+            text = t("gateway.reasoning.set_session", effort=effort)
+        return CardActionResponse.replace_card(
+            Card(
+                header=CardHeader(title="Reasoning updated", color="green"),
+                elements=[
+                    Markdown(text),
+                    Actions(buttons=[Button("Open selector", "gateway.reasoning.select", payload={"op": "open"})]),
+                ],
+            )
+        )
+
+    async def _handle_reasoning_command(self, event: MessageEvent) -> str | CardReply:
         """Handle /reasoning command — manage reasoning effort and display toggle.
 
         Usage:
@@ -2701,12 +2790,24 @@ class GatewaySlashCommandsMixin:
                 if has_session_override
                 else t("gateway.reasoning.scope_global")
             )
-            return t(
+            status_text = t(
                 "gateway.reasoning.status",
                 level=level,
                 scope=scope,
                 display=display_state,
             )
+            if event.source.platform == Platform.FEISHU:
+                register_card_action("gateway.reasoning.select", self._handle_reasoning_card_action)
+                return CardReply(
+                    card=self._build_reasoning_selector_card(
+                        reasoning_config=rc,
+                        show_reasoning=self._show_reasoning,
+                        session_override=has_session_override,
+                    ),
+                    fallback_text=status_text,
+                    session_key=session_key,
+                )
+            return status_text
 
         # Display toggle (per-platform)
         platform_key = _platform_config_key(event.source.platform)

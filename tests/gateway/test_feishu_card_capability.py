@@ -16,9 +16,12 @@ from gateway.cards import (
     Card,
     CardHeader,
     Image,
+    ListItem,
     Markdown,
     Note,
     RawFeishuCard,
+    Select,
+    SelectOption,
     build_command_center_card,
     build_feishu_authorization_card,
     command_run_payload,
@@ -86,6 +89,89 @@ def test_render_feishu_card_supports_composable_authorization_shape():
         "tag": "note",
         "elements": [{"tag": "plain_text", "content": "Hermes 将在授权完成后继续。"}],
     }
+
+
+def test_feishu_adapter_model_picker_drills_down_and_switches(monkeypatch):
+    adapter = FeishuAdapter.__new__(FeishuAdapter)
+    adapter._client = object()
+    sent = []
+    selected = []
+
+    async def fake_send_card(chat_id, card, *, reply_to=None, metadata=None):
+        sent.append({"chat_id": chat_id, "card": card, "reply_to": reply_to, "metadata": metadata})
+        return SendResult(success=True, message_id="om_picker")
+
+    async def on_model_selected(chat_id, model_id, provider_slug):
+        selected.append((chat_id, model_id, provider_slug))
+        return f"Switched to {model_id} via {provider_slug}"
+
+    monkeypatch.setattr(adapter, "send_card", fake_send_card)
+    providers = [
+        {
+            "name": "CRS",
+            "slug": "custom:crs",
+            "models": ["gpt-5.6-sol", "gpt-5.5"],
+            "total_models": 2,
+            "is_current": True,
+        },
+        {"name": "OpenRouter", "slug": "openrouter", "models": ["openai/gpt-5"], "total_models": 1},
+    ]
+
+    result = asyncio.run(
+        adapter.send_model_picker(
+            chat_id="oc_chat",
+            providers=providers,
+            current_model="gpt-5.5",
+            current_provider="custom:crs",
+            session_key="session-model",
+            on_model_selected=on_model_selected,
+            metadata={"thread_id": "omt_thread"},
+        )
+    )
+
+    assert result.success is True
+    assert sent[0]["chat_id"] == "oc_chat"
+    assert sent[0]["metadata"] == {"thread_id": "omt_thread"}
+    assert sent[0]["card"]["header"]["title"]["content"] == "Model Provider (1/1)"
+    picker_id = next(iter(adapter._model_picker_state))
+
+    model_page = asyncio.run(
+        adapter._handle_model_picker_action(
+            CardActionContext(
+                action="feishu.model_picker",
+                payload={"picker_id": picker_id, "op": "provider", "provider": "custom:crs"},
+                user_id="ou_user",
+                chat_id="oc_chat",
+                message_id="om_picker",
+                session_key="session-model",
+            )
+        )
+    )
+    assert model_page.kind == "replace_card"
+    assert model_page.card.header.title == "Models (1/1)"
+
+    switched = asyncio.run(
+        adapter._handle_model_picker_action(
+            CardActionContext(
+                action="feishu.model_picker",
+                payload={
+                    "picker_id": picker_id,
+                    "op": "model",
+                    "provider": "custom:crs",
+                    "model": "gpt-5.6-sol",
+                },
+                user_id="ou_user",
+                chat_id="oc_chat",
+                message_id="om_picker",
+                session_key="session-model",
+            )
+        )
+    )
+    assert selected == [("oc_chat", "gpt-5.6-sol", "custom:crs")]
+    assert switched.kind == "replace_card"
+    assert switched.card.header.title == "Model switched"
+    assert "gpt-5.6-sol" in switched.card.elements[0].content
+    assert picker_id not in adapter._model_picker_state
 
 
 def test_feishu_adapter_send_card_sends_interactive_payload(monkeypatch):
@@ -196,6 +282,58 @@ def test_render_feishu_card_supports_image_elements():
             "alt": {"tag": "plain_text", "content": "chart"},
         }
     ]
+
+
+def test_render_feishu_card_supports_list_item_and_select_workflows():
+    card = Card(
+        header=CardHeader(title="操作入口", color="turquoise"),
+        elements=[
+            ListItem(
+                text="**zhihong.oray**\n/home/zhihong/Playground",
+                button=Button(
+                    text="Use",
+                    style="primary",
+                    action="gateway.command.act",
+                    payload={"view": "ssh", "op": "use", "alias": "zhihong.oray"},
+                ),
+            ),
+            Select(
+                placeholder="选择 reasoning effort",
+                initial_value="xhigh",
+                options=[
+                    SelectOption(text="xhigh", value="xhigh", action="gateway.command.act", payload={"view": "reasoning", "effort": "xhigh"}),
+                    SelectOption(text="max", value="max", action="gateway.command.act", payload={"view": "reasoning", "effort": "max"}),
+                ],
+            ),
+        ],
+    )
+
+    rendered = render_feishu_card(card, session_key="session-workflow")
+
+    row = rendered["elements"][0]
+    assert row["tag"] == "div"
+    assert row["text"] == {"tag": "lark_md", "content": "**zhihong.oray**\n/home/zhihong/Playground"}
+    assert row["extra"]["tag"] == "button"
+    assert row["extra"]["value"] == {
+        "action": "gateway.command.act",
+        "session_key": "session-workflow",
+        "view": "ssh",
+        "op": "use",
+        "alias": "zhihong.oray",
+    }
+
+    selector = rendered["elements"][1]
+    assert selector["tag"] == "select_static"
+    assert selector["placeholder"] == {"tag": "plain_text", "content": "选择 reasoning effort"}
+    assert selector["initial_option"] == selector["options"][0]["value"]
+    selected_payload = json.loads(selector["options"][0]["value"])
+    assert selected_payload == {
+        "action": "gateway.command.act",
+        "session_key": "session-workflow",
+        "view": "reasoning",
+        "effort": "xhigh",
+        "value": "xhigh",
+    }
 
 
 def test_build_feishu_authorization_card_is_generic_card_composition():
@@ -349,6 +487,47 @@ def test_feishu_card_action_trigger_registered_action_returns_replacement_card(m
     assert response.card.data["header"]["title"] == {"tag": "plain_text", "content": "授权已取消"}
     assert response.card.data["header"]["template"] == "red"
     assert response.card.data["elements"][0] == {"tag": "markdown", "content": "flow=flow-click"}
+
+
+def test_feishu_card_action_trigger_parses_select_option_json_action(monkeypatch):
+    loop, thread = _start_background_loop()
+    action_name = "test.select.option.phase2"
+
+    async def handler(ctx: CardActionContext) -> CardActionResponse:
+        assert ctx.action == action_name
+        assert ctx.payload["effort"] == "xhigh"
+        assert ctx.session_key == "session-select"
+        return CardActionResponse.replace_card(
+            Card(header=CardHeader(title="已选择", color="green"), elements=[Markdown(ctx.payload["effort"])])
+        )
+
+    register_card_action(action_name, handler)
+    _patch_feishu_callback_classes(monkeypatch)
+    adapter = FeishuAdapter.__new__(FeishuAdapter)
+    adapter._loop = loop
+    _allow_all_interactive_callbacks(adapter)
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            action=SimpleNamespace(
+                value=json.dumps(
+                    {"action": action_name, "effort": "xhigh", "session_key": "session-select"},
+                    separators=(",", ":"),
+                )
+            ),
+            operator=SimpleNamespace(open_id="ou_user", user_id="user_id"),
+            context=SimpleNamespace(open_chat_id="oc_chat", open_message_id="om_msg"),
+        )
+    )
+
+    try:
+        response = adapter._on_card_action_trigger(data)
+    finally:
+        _stop_background_loop(loop, thread)
+
+    assert response is not None
+    assert response.card.type == "raw"
+    assert response.card.data["header"]["title"] == {"tag": "plain_text", "content": "已选择"}
+    assert response.card.data["elements"][0] == {"tag": "markdown", "content": "xhigh"}
 
 
 def test_feishu_card_action_trigger_unknown_action_falls_back(monkeypatch):

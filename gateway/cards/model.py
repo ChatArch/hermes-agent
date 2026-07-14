@@ -61,6 +61,31 @@ class Actions:
 
 
 @dataclass(slots=True)
+class ListItem:
+    """A compact row with descriptive text and one primary action."""
+
+    text: str
+    button: Button
+
+
+@dataclass(slots=True)
+class SelectOption:
+    text: str
+    value: str = ""
+    action: str = ""
+    payload: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class Select:
+    """A dropdown-style chooser for structured command workflows."""
+
+    placeholder: str
+    options: list[SelectOption]
+    initial_value: str = ""
+
+
+@dataclass(slots=True)
 class Note:
     content: str
 
@@ -71,7 +96,7 @@ class Image:
     alt: str = "image"
 
 
-CardElement = Markdown | Divider | Actions | Note | Image
+CardElement = Markdown | Divider | Actions | ListItem | Select | Note | Image
 
 
 @dataclass(slots=True)

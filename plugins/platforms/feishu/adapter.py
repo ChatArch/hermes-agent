@@ -130,7 +130,7 @@ except ImportError:
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
-from gateway.cards.actions import CardActionContext, CardActionResponse, get_card_action_registry
+from gateway.cards.actions import CardActionContext, CardActionResponse, get_card_action_registry, register_card_action
 from gateway.cards.renderers.feishu import render_feishu_card
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -222,6 +222,9 @@ _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS = 30          # max seconds to read request
 _FEISHU_WEBHOOK_ANOMALY_THRESHOLD = 25             # consecutive error responses before WARNING log
 _FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hours) — matches openclaw
 _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup window (15 min)
+_FEISHU_MODEL_PICKER_ACTION = "feishu.model_picker"
+_FEISHU_MODEL_PICKER_PROVIDER_PAGE_SIZE = 8
+_FEISHU_MODEL_PICKER_MODEL_PAGE_SIZE = 8
 
 _APPROVAL_CHOICE_MAP: Dict[str, str] = {
     "approve_once": "once",
@@ -1540,6 +1543,8 @@ class FeishuAdapter(BasePlatformAdapter):
         # Update prompt button state (prompt_id → {session_key, message_id, chat_id})
         self._update_prompt_state: Dict[int, Dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
+        # Model picker state (picker_id → providers/callback/session metadata).
+        self._model_picker_state: Dict[str, Dict[str, Any]] = {}
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
@@ -1929,6 +1934,231 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
     # Outbound — send / edit / send_image / send_voice / …
     # =========================================================================
+
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Feishu interactive provider/model picker.
+
+        This mirrors Telegram's two-step picker while using the generic Hermes
+        card action registry so callbacks never become synthetic user messages.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        if not providers:
+            return SendResult(success=False, error="No providers available")
+        self._ensure_model_picker_state()
+        register_card_action(_FEISHU_MODEL_PICKER_ACTION, self._handle_model_picker_action)
+        picker_id = uuid.uuid4().hex
+        self._model_picker_state[picker_id] = {
+            "providers": providers,
+            "current_model": current_model,
+            "current_provider": current_provider,
+            "session_key": session_key,
+            "on_model_selected": on_model_selected,
+        }
+        card = self._build_model_picker_provider_card(picker_id, page=0)
+        return await self.send_card(
+            chat_id,
+            render_feishu_card(card, session_key=session_key),
+            metadata=metadata,
+        )
+
+    def _ensure_model_picker_state(self) -> None:
+        if not hasattr(self, "_model_picker_state"):
+            self._model_picker_state = {}
+
+    def _model_picker_state_for(self, picker_id: str) -> Dict[str, Any] | None:
+        self._ensure_model_picker_state()
+        state = self._model_picker_state.get(str(picker_id or ""))
+        return state if isinstance(state, dict) else None
+
+    @staticmethod
+    def _short_model_label(model_id: str, *, limit: int = 42) -> str:
+        label = str(model_id or "").split("/")[-1] or str(model_id or "")
+        if len(label) > limit:
+            return label[: limit - 1] + "…"
+        return label
+
+    def _build_model_picker_provider_card(self, picker_id: str, *, page: int = 0):
+        from gateway.cards.model import Actions, Button, Card, CardHeader, Divider, ListItem, Markdown, Note
+        from hermes_cli.providers import get_label
+
+        state = self._model_picker_state_for(picker_id)
+        if not state:
+            return self._build_model_picker_expired_card()
+        providers = list(state.get("providers") or [])
+        current_provider = str(state.get("current_provider") or "")
+        current_model = str(state.get("current_model") or "")
+        page_size = _FEISHU_MODEL_PICKER_PROVIDER_PAGE_SIZE
+        total = len(providers)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = max(0, min(int(page or 0), total_pages - 1))
+        start = page * page_size
+        shown = providers[start:start + page_size]
+
+        elements = [
+            Markdown(
+                f"Current: `{current_model or 'unknown'}`\n"
+                f"Provider: `{get_label(current_provider)}`\n\n"
+                "Pick a provider, then pick a model."
+            ),
+            Divider(),
+        ]
+        for provider in shown:
+            slug = str(provider.get("slug") or "")
+            count = int(provider.get("total_models") or len(provider.get("models") or []))
+            current = "  **current**" if provider.get("is_current") else ""
+            api_hint = str(provider.get("api_url") or "").strip()
+            detail = f"**{provider.get('name') or slug}** ({count} models){current}"
+            if api_hint and count == 0:
+                detail += f"\n`{api_hint}`"
+            elements.append(
+                ListItem(
+                    text=detail,
+                    button=Button(
+                        text="Models",
+                        action=_FEISHU_MODEL_PICKER_ACTION,
+                        payload={"picker_id": picker_id, "op": "provider", "provider": slug},
+                    ),
+                )
+            )
+        elements.extend(self._model_picker_nav_elements(picker_id, view="providers", page=page, total_pages=total_pages))
+        return Card(header=CardHeader(title=f"Model Provider ({page + 1}/{total_pages})", color="indigo"), elements=elements)
+
+    def _build_model_picker_models_card(self, picker_id: str, provider_slug: str, *, page: int = 0):
+        from gateway.cards.model import Actions, Button, Card, CardHeader, Divider, ListItem, Markdown, Note
+
+        state = self._model_picker_state_for(picker_id)
+        if not state:
+            return self._build_model_picker_expired_card()
+        providers = list(state.get("providers") or [])
+        provider = next((p for p in providers if str(p.get("slug") or "") == provider_slug), None)
+        if not provider:
+            return self._build_model_picker_provider_card(picker_id, page=0)
+        models = [str(item) for item in (provider.get("models") or [])]
+        current_model = str(state.get("current_model") or "")
+        page_size = _FEISHU_MODEL_PICKER_MODEL_PAGE_SIZE
+        total = len(models)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = max(0, min(int(page or 0), total_pages - 1))
+        start = page * page_size
+        shown = models[start:start + page_size]
+
+        elements = [
+            Markdown(f"Provider: **{provider.get('name') or provider_slug}**\nCurrent: `{current_model or 'unknown'}`"),
+            Divider(),
+        ]
+        if not shown:
+            elements.append(Markdown("No models were listed for this provider. Try typed `/model <name> --provider ...`."))
+        for model_id in shown:
+            current = "  **current**" if model_id == current_model else ""
+            elements.append(
+                ListItem(
+                    text=f"`{model_id}`{current}",
+                    button=Button(
+                        text="Use",
+                        style="primary" if model_id != current_model else "default",
+                        action=_FEISHU_MODEL_PICKER_ACTION,
+                        payload={
+                            "picker_id": picker_id,
+                            "op": "model",
+                            "provider": provider_slug,
+                            "model": model_id,
+                        },
+                    ),
+                )
+            )
+        elements.extend(
+            self._model_picker_nav_elements(
+                picker_id,
+                view="models",
+                page=page,
+                total_pages=total_pages,
+                provider=provider_slug,
+            )
+        )
+        return Card(header=CardHeader(title=f"Models ({page + 1}/{total_pages})", color="blue"), elements=elements)
+
+    def _model_picker_nav_elements(
+        self,
+        picker_id: str,
+        *,
+        view: str,
+        page: int,
+        total_pages: int,
+        provider: str = "",
+    ) -> list[Any]:
+        from gateway.cards.model import Actions, Button, Divider, Note
+
+        buttons = []
+        if view == "models":
+            buttons.append(Button("Back", _FEISHU_MODEL_PICKER_ACTION, payload={"picker_id": picker_id, "op": "back"}))
+        if page > 0:
+            buttons.append(Button("Prev", _FEISHU_MODEL_PICKER_ACTION, payload={"picker_id": picker_id, "op": view, "page": str(page - 1), "provider": provider}))
+        if page < total_pages - 1:
+            buttons.append(Button("Next", _FEISHU_MODEL_PICKER_ACTION, payload={"picker_id": picker_id, "op": view, "page": str(page + 1), "provider": provider}))
+        buttons.append(Button("Cancel", _FEISHU_MODEL_PICKER_ACTION, style="danger", payload={"picker_id": picker_id, "op": "cancel"}))
+        return [Divider(), Actions(buttons=buttons, layout="row"), Note("Clicks are gateway actions; they do not enter agent history.")]
+
+    @staticmethod
+    def _build_model_picker_expired_card():
+        from gateway.cards.model import Card, CardHeader, Markdown
+
+        return Card(
+            header=CardHeader(title="Model picker expired", color="grey"),
+            elements=[Markdown("Use `/model` again to open a fresh picker.")],
+        )
+
+    async def _handle_model_picker_action(self, ctx: CardActionContext) -> CardActionResponse:
+        from gateway.cards.model import Card, CardHeader, Markdown
+
+        picker_id = str(ctx.payload.get("picker_id") or "")
+        op = str(ctx.payload.get("op") or "providers")
+        state = self._model_picker_state_for(picker_id)
+        if not state:
+            return CardActionResponse.replace_card(self._build_model_picker_expired_card())
+        if op in {"providers", "page"}:
+            page = int(str(ctx.payload.get("page") or "0") or 0)
+            return CardActionResponse.replace_card(self._build_model_picker_provider_card(picker_id, page=page))
+        if op == "provider":
+            provider = str(ctx.payload.get("provider") or "")
+            return CardActionResponse.replace_card(self._build_model_picker_models_card(picker_id, provider, page=0))
+        if op == "models":
+            provider = str(ctx.payload.get("provider") or "")
+            page = int(str(ctx.payload.get("page") or "0") or 0)
+            return CardActionResponse.replace_card(self._build_model_picker_models_card(picker_id, provider, page=page))
+        if op == "back":
+            return CardActionResponse.replace_card(self._build_model_picker_provider_card(picker_id, page=0))
+        if op == "cancel":
+            self._model_picker_state.pop(picker_id, None)
+            return CardActionResponse.replace_card(
+                Card(header=CardHeader(title="Model picker cancelled", color="grey"), elements=[Markdown("No model was changed.")])
+            )
+        if op == "model":
+            provider = str(ctx.payload.get("provider") or "")
+            model_id = str(ctx.payload.get("model") or "")
+            callback = state.get("on_model_selected")
+            if not callable(callback) or not provider or not model_id:
+                return CardActionResponse.replace_card(self._build_model_picker_expired_card())
+            result = callback(ctx.chat_id, model_id, provider)
+            if inspect.isawaitable(result):
+                result = await result
+            text = str(result or "")
+            self._model_picker_state.pop(picker_id, None)
+            color = "red" if text.lower().startswith("error") or "失败" in text else "green"
+            title = "Model switch failed" if color == "red" else "Model switched"
+            return CardActionResponse.replace_card(
+                Card(header=CardHeader(title=title, color=color), elements=[Markdown(text or f"Switched to `{model_id}`.")])
+            )
+        return CardActionResponse.replace_card(self._build_model_picker_provider_card(picker_id, page=0))
 
     async def send_card(
         self,
@@ -2880,6 +3110,12 @@ class FeishuAdapter(BasePlatformAdapter):
         event = getattr(data, "event", None)
         action = getattr(event, "action", None)
         action_value = getattr(action, "value", {}) or {}
+        if isinstance(action_value, str):
+            try:
+                parsed_action_value = json.loads(action_value)
+            except json.JSONDecodeError:
+                parsed_action_value = {}
+            action_value = parsed_action_value if isinstance(parsed_action_value, dict) else {}
         hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
         update_prompt_action = (
             action_value.get("hermes_update_prompt_action")

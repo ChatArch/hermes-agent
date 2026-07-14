@@ -1802,8 +1802,10 @@ from gateway.ssh_bindings import (
     set_ssh_binding,
     set_ssh_yolo_grant,
 )
+from gateway.cards.actions import CardActionResponse, register_card_action
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    CardReply,
     EphemeralReply,
     MessageEvent,
     MessageType,
@@ -12959,12 +12961,139 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reset_existing_thread=False,
         )
 
-    async def _handle_ssh_command(self, event: MessageEvent) -> str:
+    def _build_ssh_targets_card(self, section_key: str):
+        from gateway.cards.model import Actions, Button, Card, CardHeader, Divider, ListItem, Markdown, Note
+
+        targets = load_ssh_targets()
+        grant = get_ssh_yolo_grant(section_key)
+        yolo_aliases = "all" if grant.allows_all else (", ".join(grant.aliases) if grant.aliases else "none")
+        resolved = resolve_binding_target(section_key, targets=targets)
+        if resolved is None:
+            status = "Backend: `local`\nBinding: `none`"
+        else:
+            binding, target = resolved
+            cwd = binding.cwd or target.cwd or ""
+            status = f"Backend: `ssh`\nBinding: `{binding.alias}`"
+            if cwd:
+                status += f"\nCWD: `{cwd}`"
+        elements = [
+            Markdown(f"{status}\nYOLO: `{'on' if grant.enabled else 'off'}` ({yolo_aliases})"),
+            Divider(),
+        ]
+        if not targets:
+            elements.append(Markdown("No Hermes SSH targets configured. Add targets to the Hermes SSH registry first."))
+        for target in targets:
+            detail = f"**{target.alias}**"
+            host_bits = [bit for bit in (target.user, target.host) if bit]
+            if host_bits:
+                detail += f"\n`{'@'.join(host_bits)}`"
+            if target.cwd:
+                detail += f"\n`{target.cwd}`"
+            elements.append(
+                ListItem(
+                    text=detail,
+                    button=Button(
+                        "Use",
+                        "gateway.ssh.action",
+                        style="primary",
+                        payload={"op": "use", "alias": target.alias},
+                    ),
+                )
+            )
+            elements.append(
+                ListItem(
+                    text=f"Allow model auto-switch for `{target.alias}`",
+                    button=Button(
+                        "YOLO",
+                        "gateway.ssh.action",
+                        payload={"op": "yolo", "alias": target.alias},
+                    ),
+                )
+            )
+        elements.extend([
+            Divider(),
+            Actions(
+                buttons=[
+                    Button("Refresh", "gateway.ssh.action", payload={"op": "open"}),
+                    Button("Local", "gateway.ssh.action", payload={"op": "local"}),
+                    Button("YOLO all", "gateway.ssh.action", payload={"op": "yolo", "alias": "all"}),
+                ],
+                layout="row",
+            ),
+            Note("Buttons update this Hermes section. Typed /ssh commands still work."),
+        ])
+        return Card(header=CardHeader(title="SSH Targets", color="wathet"), elements=elements)
+
+    async def _handle_ssh_card_action(self, ctx):
+        from gateway.cards.model import Card, CardHeader, Markdown
+
+        section_key = str(ctx.session_key or ctx.payload.get("session_key") or "")
+        if not section_key:
+            return CardActionResponse.replace_card(
+                Card(header=CardHeader(title="SSH", color="red"), elements=[Markdown("Missing session context; run `/ssh` again.")])
+            )
+        op = str(ctx.payload.get("op") or "open")
+        alias = str(ctx.payload.get("alias") or "").strip()
+        targets = load_ssh_targets()
+        if op == "open":
+            return CardActionResponse.replace_card(self._build_ssh_targets_card(section_key))
+        if op == "local":
+            clear_ssh_binding(section_key)
+            try:
+                from tools.terminal_tool import clear_task_env_overrides
+                clear_task_env_overrides(section_key)
+            except Exception:
+                pass
+            self._evict_cached_agent(section_key)
+            return CardActionResponse.replace_card(self._build_ssh_targets_card(section_key))
+        if op == "yolo":
+            if alias and alias != "all" and find_ssh_target(targets, alias) is None:
+                return CardActionResponse.replace_card(
+                    Card(header=CardHeader(title="SSH YOLO", color="red"), elements=[Markdown(f"Unknown SSH target: `{alias}`")])
+                )
+            if alias:
+                add_ssh_yolo_alias(section_key, alias)
+            else:
+                set_ssh_yolo_grant(section_key, enabled=True, aliases=get_ssh_yolo_grant(section_key).aliases)
+            return CardActionResponse.replace_card(self._build_ssh_targets_card(section_key))
+        if op == "use":
+            target = find_ssh_target(targets, alias)
+            if target is None:
+                return CardActionResponse.replace_card(
+                    Card(header=CardHeader(title="SSH", color="red"), elements=[Markdown(f"Unknown SSH target: `{alias}`")])
+                )
+            target_error = validate_ssh_target_for_runtime(target)
+            if target_error:
+                return CardActionResponse.replace_card(
+                    Card(header=CardHeader(title="SSH", color="red"), elements=[Markdown(target_error)])
+                )
+            set_ssh_binding(section_key, alias=alias, cwd=None)
+            overrides = resolve_binding_task_overrides(section_key, targets=targets)
+            if overrides:
+                try:
+                    from tools.terminal_tool import register_task_env_overrides
+                    register_task_env_overrides(section_key, overrides)
+                except Exception:
+                    pass
+            self._evict_cached_agent(section_key)
+            return CardActionResponse.replace_card(self._build_ssh_targets_card(section_key))
+        return CardActionResponse.replace_card(self._build_ssh_targets_card(section_key))
+
+    async def _handle_ssh_command(self, event: MessageEvent) -> str | CardReply:
         """Handle gateway `/ssh` section backend commands."""
 
         raw_args = event.get_command_args().strip()
         parts = raw_args.split()
         action = parts[0].lower() if parts else "help"
+        section_key = self._session_key_for_source(event.source)
+
+        if event.source.platform == Platform.FEISHU and action in {"help", "", "list", "status"}:
+            register_card_action("gateway.ssh.action", self._handle_ssh_card_action)
+            return CardReply(
+                card=self._build_ssh_targets_card(section_key),
+                fallback_text=render_ssh_targets(load_ssh_targets()),
+                session_key=section_key,
+            )
 
         if action in {"help", ""}:
             return (
@@ -12981,8 +13110,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if action == "list":
             return render_ssh_targets(load_ssh_targets())
-
-        section_key = self._session_key_for_source(event.source)
 
         if action == "status":
             grant = get_ssh_yolo_grant(section_key)

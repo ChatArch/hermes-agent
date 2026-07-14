@@ -11,7 +11,8 @@ import yaml
 
 import gateway.run as gateway_run
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.cards.actions import CardActionContext, get_card_action_registry
+from gateway.platforms.base import CardReply, MessageEvent
 from gateway.session import SessionSource
 
 
@@ -107,6 +108,42 @@ class TestReasoningCommand:
         assert "**Display:** on ✓" in result
         assert runner._reasoning_config == {"enabled": False}
         assert runner._show_reasoning is True
+
+    @pytest.mark.asyncio
+    async def test_reasoning_feishu_returns_selector_and_click_sets_session(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "agent:\n  reasoning_effort: medium\ndisplay:\n  show_reasoning: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        event = _make_event("/reasoning", platform=Platform.FEISHU)
+        session_key = runner._session_key_for_source(event.source)
+
+        result = await runner._handle_reasoning_command(event)
+
+        assert isinstance(result, CardReply)
+        assert result.session_key == session_key
+        assert result.card.header.title == "Reasoning"
+        assert result.fallback_text
+
+        response = await get_card_action_registry().dispatch(
+            CardActionContext(
+                action="gateway.reasoning.select",
+                payload={"op": "set", "effort": "xhigh"},
+                user_id="ou_user",
+                chat_id="oc_chat",
+                message_id="om_reasoning",
+                session_key=session_key,
+            )
+        )
+
+        assert response.kind == "replace_card"
+        assert response.card.header.title == "Reasoning updated"
+        assert runner._session_reasoning_overrides[session_key] == {"enabled": True, "effort": "xhigh"}
 
     @pytest.mark.asyncio
     async def test_handle_reasoning_command_updates_config_and_cache(self, tmp_path, monkeypatch):

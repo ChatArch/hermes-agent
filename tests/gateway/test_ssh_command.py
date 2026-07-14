@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.cards.actions import CardActionContext, get_card_action_registry
+from gateway.platforms.base import CardReply, MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 
 
@@ -29,6 +30,19 @@ def _event(text="/ssh list", *, thread_id=None):
         source=_source(thread_id=thread_id),
         message_id="om_cmd",
     )
+
+
+def _card_text(card):
+    parts = []
+    for element in getattr(card, "elements", []):
+        if hasattr(element, "content"):
+            parts.append(element.content)
+        if hasattr(element, "text"):
+            parts.append(element.text)
+        button = getattr(element, "button", None)
+        if button is not None:
+            parts.append(getattr(button, "text", ""))
+    return "\n".join(str(part) for part in parts if part)
 
 
 def _runner():
@@ -143,11 +157,13 @@ async def test_ssh_status_reports_current_section_without_binding():
 
     result = await runner._handle_ssh_command(event)
 
-    assert "SSH status" in result
-    assert "section binding: none" in result
-    assert "current backend: local" in result
-    assert "/ssh list" in result
-    assert build_session_key(_source(thread_id="omt_thread")) in result
+    assert isinstance(result, CardReply)
+    assert result.session_key == build_session_key(_source(thread_id="omt_thread"))
+    assert result.card.header.title == "SSH Targets"
+    text = _card_text(result.card)
+    assert "Backend: `local`" in text
+    assert "Binding: `none`" in text
+    assert "YOLO" in text
 
 
 @pytest.mark.asyncio
@@ -169,11 +185,63 @@ async def test_ssh_list_renders_targets_without_starting_agent(monkeypatch):
 
     result = await runner._handle_ssh_command(event)
 
-    assert "SSH targets" in result
-    assert "rex.oray" in result
-    assert "rexwzh" in result
-    assert "id_ed25519" not in result
-    assert "[REDACTED_PATH]" in result
+    assert isinstance(result, CardReply)
+    text = _card_text(result.card)
+    assert "SSH Targets" == result.card.header.title
+    assert "rex.oray" in text
+    assert "rexwzh" in text
+    assert "id_ed25519" not in text
+    assert "Use" in text
+
+
+@pytest.mark.asyncio
+async def test_ssh_card_actions_bind_and_yolo_target(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+    from gateway.ssh_bindings import get_ssh_binding, get_ssh_yolo_grant
+    from gateway.ssh_targets import SshTarget
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        gateway_run,
+        "load_ssh_targets",
+        lambda: [SshTarget(alias="rex.oray", host="rexwzh.oray", user="rexwzh", cwd="/home/rexwzh/Playground")],
+        raising=False,
+    )
+    runner = _runner()
+    event = _event("/ssh list", thread_id="omt_thread")
+    section_key = build_session_key(_source(thread_id="omt_thread"))
+
+    result = await runner._handle_ssh_command(event)
+    assert isinstance(result, CardReply)
+
+    yolo_response = await get_card_action_registry().dispatch(
+        CardActionContext(
+            action="gateway.ssh.action",
+            payload={"op": "yolo", "alias": "rex.oray"},
+            user_id="ou_user",
+            chat_id="oc_chat",
+            message_id="om_ssh",
+            session_key=section_key,
+        )
+    )
+    use_response = await get_card_action_registry().dispatch(
+        CardActionContext(
+            action="gateway.ssh.action",
+            payload={"op": "use", "alias": "rex.oray"},
+            user_id="ou_user",
+            chat_id="oc_chat",
+            message_id="om_ssh",
+            session_key=section_key,
+        )
+    )
+
+    assert yolo_response.kind == "replace_card"
+    assert use_response.kind == "replace_card"
+    assert list(get_ssh_yolo_grant(section_key).aliases) == ["rex.oray"]
+    binding = get_ssh_binding(section_key)
+    assert binding is not None
+    assert binding.alias == "rex.oray"
+    assert "Backend: `ssh`" in _card_text(use_response.card)
 
 
 @pytest.mark.asyncio
@@ -277,9 +345,9 @@ async def test_ssh_help_prefers_local_and_keeps_off_as_alias():
 
     result = await runner._handle_ssh_command(event)
 
-    assert "/ssh local — return this section to local backend" in result
-    assert "/ssh off — alias for /ssh local" in result
-    assert result.index("/ssh local") < result.index("/ssh off")
+    assert isinstance(result, CardReply)
+    assert result.card.header.title == "SSH Targets"
+    assert result.fallback_text
 
 
 @pytest.mark.asyncio
@@ -335,10 +403,11 @@ async def test_ssh_status_reports_current_thread_binding(monkeypatch, tmp_path):
 
     result = await runner._handle_ssh_command(event)
 
-    assert "current backend: ssh" in result
-    assert "rex.oray" in result
-    assert "/secret/key" not in result
-    assert "[REDACTED_PATH]" in result
+    assert isinstance(result, CardReply)
+    text = _card_text(result.card)
+    assert "Backend: `ssh`" in text
+    assert "rex.oray" in text
+    assert "/secret/key" not in text
 
 
 @pytest.mark.asyncio

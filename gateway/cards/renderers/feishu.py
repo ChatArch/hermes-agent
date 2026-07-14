@@ -2,9 +2,22 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from gateway.cards.model import Actions, Button, Card, Divider, Image, Markdown, Note, RawFeishuCard
+from gateway.cards.model import (
+    Actions,
+    Button,
+    Card,
+    Divider,
+    Image,
+    ListItem,
+    Markdown,
+    Note,
+    RawFeishuCard,
+    Select,
+    SelectOption,
+)
 
 
 def _plain_text(content: str) -> dict[str, str]:
@@ -17,6 +30,19 @@ def _button_value(button: Button, *, session_key: str | None) -> dict[str, str]:
         value["session_key"] = session_key
     value.update(button.payload)
     return value
+
+
+def _select_option_value(option: SelectOption, *, session_key: str | None) -> str:
+    value = option.value.strip()
+    if option.action:
+        payload = {"action": option.action}
+        if session_key:
+            payload["session_key"] = session_key
+        payload.update(option.payload)
+        if value:
+            payload.setdefault("value", value)
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return value or option.text
 
 
 def _render_button(button: Button, *, session_key: str | None) -> dict[str, Any]:
@@ -56,6 +82,36 @@ def _render_actions(element: Actions, *, session_key: str | None) -> dict[str, A
     return {"tag": "action", "actions": buttons}
 
 
+def _render_list_item(element: ListItem, *, session_key: str | None) -> dict[str, Any]:
+    return {
+        "tag": "div",
+        "text": {"tag": "lark_md", "content": element.text},
+        "extra": _render_button(element.button, session_key=session_key),
+    }
+
+
+def _render_select(element: Select, *, session_key: str | None) -> dict[str, Any] | None:
+    options = []
+    rendered_initial = ""
+    for option in element.options:
+        rendered_value = _select_option_value(option, session_key=session_key)
+        if not rendered_value:
+            continue
+        options.append({"text": _plain_text(option.text), "value": rendered_value})
+        if element.initial_value and element.initial_value in {option.value, rendered_value, option.text}:
+            rendered_initial = rendered_value
+    if not options:
+        return None
+    rendered: dict[str, Any] = {
+        "tag": "select_static",
+        "placeholder": _plain_text(element.placeholder),
+        "options": options,
+    }
+    if rendered_initial:
+        rendered["initial_option"] = rendered_initial
+    return rendered
+
+
 def render_feishu_card(card: Card | RawFeishuCard, *, session_key: str | None = None) -> dict[str, Any]:
     """Render a generic Hermes card into Feishu interactive-card JSON data."""
 
@@ -87,6 +143,12 @@ def render_feishu_card(card: Card | RawFeishuCard, *, session_key: str | None = 
             rendered_actions = _render_actions(element, session_key=session_key)
             if rendered_actions:
                 elements.append(rendered_actions)
+        elif isinstance(element, ListItem):
+            elements.append(_render_list_item(element, session_key=session_key))
+        elif isinstance(element, Select):
+            rendered_select = _render_select(element, session_key=session_key)
+            if rendered_select:
+                elements.append(rendered_select)
         elif isinstance(element, Note):
             elements.append({"tag": "note", "elements": [_plain_text(element.content)]})
 
