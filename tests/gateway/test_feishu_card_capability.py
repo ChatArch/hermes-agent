@@ -25,8 +25,8 @@ from gateway.cards.actions import (
 )
 from gateway.cards.renderers.feishu import render_feishu_card
 from gateway.config import Platform
-from gateway.platforms import feishu as feishu_platform
-from gateway.platforms.feishu import FeishuAdapter
+from plugins.platforms.feishu import adapter as feishu_platform
+from plugins.platforms.feishu.adapter import FeishuAdapter
 
 
 def test_render_feishu_card_supports_composable_authorization_shape():
