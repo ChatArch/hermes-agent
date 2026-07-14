@@ -624,6 +624,65 @@ def test_feishu_card_action_trigger_parses_multi_select_json_actions(monkeypatch
     assert response.card.data["elements"][0] == {"tag": "markdown", "content": "zhihong.oray,hitk"}
 
 
+def test_feishu_model_picker_provider_select_callback_returns_model_card(monkeypatch):
+    loop, thread = _start_background_loop()
+    _patch_feishu_callback_classes(monkeypatch)
+    adapter = FeishuAdapter.__new__(FeishuAdapter)
+    adapter._loop = loop
+    _allow_all_interactive_callbacks(adapter)
+    adapter._model_picker_state = {
+        "picker-live": {
+            "providers": [
+                {
+                    "slug": "custom:crs",
+                    "name": "CRS",
+                    "models": ["gpt-5.6-sol", "gpt-5.5"],
+                    "total_models": 2,
+                    "is_current": True,
+                }
+            ],
+            "current_model": "gpt-5.6-sol",
+            "current_provider": "custom:crs",
+            "session_key": "session-model",
+        }
+    }
+    register_card_action(feishu_platform._FEISHU_MODEL_PICKER_ACTION, adapter._handle_model_picker_action)
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            action=SimpleNamespace(
+                value=json.dumps(
+                    {
+                        "action": feishu_platform._FEISHU_MODEL_PICKER_ACTION,
+                        "picker_id": "picker-live",
+                        "op": "provider",
+                        "provider": "custom:crs",
+                        "session_key": "session-model",
+                    },
+                    separators=(",", ":"),
+                )
+            ),
+            operator=SimpleNamespace(open_id="ou_user", user_id="user_id"),
+            context=SimpleNamespace(open_chat_id="oc_chat", open_message_id="om_msg"),
+        )
+    )
+
+    try:
+        response = adapter._on_card_action_trigger(data)
+    finally:
+        _stop_background_loop(loop, thread)
+
+    assert response is not None
+    assert response.card.type == "raw"
+    assert response.card.data["header"]["title"] == {"tag": "plain_text", "content": "选择模型"}
+    model_select = response.card.data["elements"][1]
+    assert model_select["tag"] == "action"
+    assert model_select["actions"][0]["tag"] == "select_static"
+    assert model_select["actions"][0]["placeholder"]["content"] == "选择模型"
+    assert [
+        option["text"]["content"] for option in model_select["actions"][0]["options"]
+    ] == ["✓ gpt-5.6-sol", "gpt-5.5"]
+
+
 def test_feishu_card_action_trigger_unknown_action_falls_back(monkeypatch):
     loop, thread = _start_background_loop()
     _patch_feishu_callback_classes(monkeypatch)
