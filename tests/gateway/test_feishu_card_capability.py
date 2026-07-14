@@ -134,6 +134,17 @@ def test_feishu_adapter_model_picker_drills_down_and_switches(monkeypatch):
     assert sent[0]["chat_id"] == "oc_chat"
     assert sent[0]["metadata"] == {"thread_id": "omt_thread"}
     assert sent[0]["card"]["header"]["title"]["content"] == "选择模型渠道"
+    provider_elements = sent[0]["card"]["elements"]
+    provider_select = provider_elements[1]
+    assert provider_select["tag"] == "action"
+    assert provider_select["actions"][0]["tag"] == "select_static"
+    assert provider_select["actions"][0]["placeholder"]["content"] == "选择渠道"
+    assert [
+        opt["text"]["content"] for opt in provider_select["actions"][0]["options"]
+    ] == ["✓ CRS (2)", "OpenRouter (1)"]
+    cancel_block = provider_elements[3]
+    assert cancel_block["tag"] == "column_set"
+    assert cancel_block["columns"][0]["elements"][0]["text"]["content"] == "✕ 取消"
     picker_id = next(iter(adapter._model_picker_state))
 
     model_page = asyncio.run(
@@ -150,6 +161,20 @@ def test_feishu_adapter_model_picker_drills_down_and_switches(monkeypatch):
     )
     assert model_page.kind == "replace_card"
     assert model_page.card.header.title == "选择模型"
+    rendered_model_page = render_feishu_card(model_page.card, session_key="session-model")
+    model_elements = rendered_model_page["elements"]
+    model_select = model_elements[1]
+    assert model_select["tag"] == "action"
+    assert model_select["actions"][0]["tag"] == "select_static"
+    assert model_select["actions"][0]["placeholder"]["content"] == "选择模型"
+    assert [
+        opt["text"]["content"] for opt in model_select["actions"][0]["options"]
+    ] == ["gpt-5.6-sol", "✓ gpt-5.5"]
+    nav_block = model_elements[3]
+    assert nav_block["tag"] == "column_set"
+    assert [
+        col["elements"][0]["text"]["content"] for col in nav_block["columns"]
+    ] == ["‹ 返回", "✕ 取消"]
 
     switched = asyncio.run(
         adapter._handle_model_picker_action(

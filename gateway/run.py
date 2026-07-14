@@ -3033,7 +3033,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # command was not just invoked in this process.
         register_card_action("gateway.ssh.action", self._handle_ssh_card_action)
         register_card_action("gateway.reasoning.select", self._handle_reasoning_card_action)
-        register_card_action("gateway.workflow.preview", self._handle_workflow_preview_card_action)
         self._kanban_notifier_profile = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
@@ -12965,79 +12964,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             command_name="template",
             reply_text=instruction or name,
             reset_existing_thread=False,
-        )
-
-    async def _handle_workflow_preview_card_action(self, ctx):
-        """Dry-run card callback used for live Feishu UI validation.
-
-        This proves the client can click/select and the gateway receives the
-        callback without mutating model, reasoning, or SSH state.
-        """
-        from gateway.cards.model import Actions, Button, Card, CardHeader, Divider, Markdown, Select, SelectOption
-
-        workflow = str(ctx.payload.get("workflow") or "").strip().lower()
-        op = str(ctx.payload.get("op") or "").strip().lower()
-        if workflow == "model" and op == "provider":
-            provider = str(ctx.payload.get("provider") or "").strip()
-            models_raw = ctx.payload.get("models") or []
-            if isinstance(models_raw, str):
-                models = [item.strip() for item in models_raw.split(",") if item.strip()]
-            elif isinstance(models_raw, (list, tuple)):
-                models = [str(item).strip() for item in models_raw if str(item).strip()]
-            else:
-                models = []
-            elements = [Markdown(f"已选择渠道：`{provider or 'unknown'}`\n验证模式：不会切换模型或写配置。")]
-            if models:
-                elements.append(
-                    Select(
-                        "选择模型（验证，不会切换）",
-                        options=[
-                            SelectOption(
-                                text=model,
-                                value=model,
-                                action="gateway.workflow.preview",
-                                payload={"workflow": "model", "op": "model", "provider": provider, "model": model},
-                            )
-                            for model in models
-                        ],
-                    )
-                )
-            else:
-                elements.append(Markdown("这个渠道没有模型列表。"))
-            elements.extend([
-                Divider(),
-                Actions(
-                    buttons=[
-                        Button("‹ 返回", "gateway.workflow.preview", payload={"workflow": "model", "op": "home"}),
-                        Button("✕ 关闭", "gateway.workflow.preview", style="danger", payload={"workflow": "model", "op": "close"}),
-                    ],
-                    layout="equal",
-                ),
-            ])
-            return CardActionResponse.replace_card(Card(header=CardHeader(title="选择模型", color="blue"), elements=elements))
-        if workflow == "model" and op == "model":
-            provider = str(ctx.payload.get("provider") or "").strip()
-            model = str(ctx.payload.get("model") or ctx.payload.get("value") or "").strip()
-            return CardActionResponse.replace_card(
-                Card(
-                    header=CardHeader(title="模型选择已收到", color="green"),
-                    elements=[Markdown(f"渠道：`{provider or 'unknown'}`\n模型：`{model or 'unknown'}`\n验证模式：没有调用 `switch_model()`，没有改配置。")],
-                )
-            )
-        if workflow == "reasoning":
-            effort = str(ctx.payload.get("effort") or ctx.payload.get("value") or "").strip()
-            label = "重置" if op == "reset" else (effort or op or "unknown")
-            return CardActionResponse.replace_card(
-                Card(
-                    header=CardHeader(title="推理强度选择已收到", color="green"),
-                    elements=[Markdown(f"选择：`{label}`\n验证模式：没有修改 session override，也没有写配置。")],
-                )
-            )
-        return CardActionResponse.replace_card(
-            Card(
-                header=CardHeader(title="交互已收到", color="green"),
-                elements=[Markdown(f"workflow=`{workflow or 'unknown'}`\nop=`{op or 'unknown'}`\n验证模式：没有改配置。")],
-            )
         )
 
     def _build_ssh_targets_card(self, section_key: str):
