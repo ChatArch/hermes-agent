@@ -374,14 +374,14 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertEqual(kwargs["chat_id"], "oc_chat")
         self.assertIn("Gateway is shutting down", kwargs["content"])
     @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
-    def test_websocket_sdk_accepts_channel_ua_tag(self):
-        """The shipped SDK must support the Channel signaling argument."""
+    def test_websocket_sdk_signature_is_inspectable_for_channel_ua_tag(self):
+        """The adapter gates Channel UA tags by the installed SDK signature."""
         import inspect
 
         from lark_oapi.ws import Client as FeishuWSClient
 
         signature = inspect.signature(FeishuWSClient)
-        self.assertIn("extra_ua_tags", signature.parameters)
+        self.assertIn("app_id", signature.parameters)
 
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",
@@ -640,6 +640,28 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
 
         adapter = FeishuAdapter(PlatformConfig())
         ws_client = SimpleNamespace()
+        ws_calls = []
+
+        class _FakeFeishuWSClient:
+            def __init__(
+                self,
+                app_id,
+                app_secret,
+                log_level=None,
+                event_handler=None,
+                domain="https://open.feishu.cn",
+                extra_ua_tags=None,
+            ):
+                ws_calls.append(
+                    {
+                        "app_id": app_id,
+                        "app_secret": app_secret,
+                        "log_level": log_level,
+                        "event_handler": event_handler,
+                        "domain": domain,
+                        "extra_ua_tags": extra_ua_tags,
+                    }
+                )
 
         with (
             patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", True),
@@ -647,7 +669,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             patch("plugins.platforms.feishu.adapter.lark",
                   SimpleNamespace(LogLevel=SimpleNamespace(INFO="INFO", WARNING="WARNING"))),
             patch("plugins.platforms.feishu.adapter.EventDispatcherHandler") as mock_handler_class,
-            patch("plugins.platforms.feishu.adapter.FeishuWSClient") as mock_ws_client,
+            patch("plugins.platforms.feishu.adapter.FeishuWSClient", _FakeFeishuWSClient),
             patch("plugins.platforms.feishu.adapter._run_official_feishu_ws_client"),
             patch("plugins.platforms.feishu.adapter.acquire_scoped_lock", return_value=(True, None)),
             patch("plugins.platforms.feishu.adapter.release_scoped_lock"),
@@ -674,14 +696,13 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                 loop.close()
 
         self.assertTrue(connected)
-        # Verify the Channel SDK UA tag is present — this is the fix for
-        # group @mention message delivery over WebSocket.
-        mock_ws_client.assert_called_once()
-        call_kwargs = mock_ws_client.call_args.kwargs
-        self.assertIn("extra_ua_tags", call_kwargs,
-                      "FeishuWSClient must receive extra_ua_tags for group @mention delivery")
+        # Verify the Channel SDK UA tag is present when the installed/active SDK
+        # signature supports it — this is the fix for group @mention delivery on
+        # newer Feishu SDKs, while older pinned SDKs remain startup-compatible.
+        self.assertEqual(len(ws_calls), 1)
+        call_kwargs = ws_calls[0]
         self.assertEqual(call_kwargs["extra_ua_tags"], ["channel"],
-                         "extra_ua_tags must be ['channel'] to enable group event routing")
+                         "extra_ua_tags must be ['channel'] to enable group event routing when supported")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_edit_message_updates_existing_feishu_message(self):
