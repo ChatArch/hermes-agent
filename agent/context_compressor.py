@@ -2940,7 +2940,14 @@ This compaction should PRIORITISE preserving all information related to the focu
     # Main compression entry point
     # ------------------------------------------------------------------
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, force: bool = False) -> List[Dict[str, Any]]:
+    def compress(
+        self,
+        messages: List[Dict[str, Any]],
+        current_tokens: int = None,
+        focus_topic: str = None,
+        force: bool = False,
+        local_fallback_only: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
         Algorithm:
@@ -2961,6 +2968,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             force: If True, clear any active summary-failure cooldown before
                 running so a manual ``/compress`` can retry immediately after
                 an auto-compression abort.  Auto-compress callers pass False.
+            local_fallback_only: If True, skip LLM summary generation and use
+                the deterministic local fallback summary.  This is reserved for
+                explicit rescue commands; normal /compress and auto-compress
+                keep the existing LLM-first behavior.
         """
         # Reset per-call summary failure state — callers inspect these fields
         # after compress() returns to decide whether to surface a warning.
@@ -3094,7 +3105,11 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         # Phase 3: Generate structured summary
         summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
-        summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
+        if local_fallback_only:
+            summary = None
+            self._last_summary_error = "local fallback compression requested"
+        else:
+            summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
@@ -3118,7 +3133,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # subsequent call fails the same way. So when the failure was an auth
         # error we abort regardless of abort_on_summary_failure, preserving
         # the conversation unchanged until the credential is fixed.
-        if not summary and (
+        if not local_fallback_only and not summary and (
             self.abort_on_summary_failure
             or self._last_summary_auth_failure
             or self._last_summary_network_failure

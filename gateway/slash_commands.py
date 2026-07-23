@@ -3078,8 +3078,17 @@ class GatewaySlashCommandsMixin:
                 example = t("gateway.footer.example_line", preview=preview)
         return t("gateway.footer.saved", state=state, example=example)
 
-    async def _handle_compress_command(self, event: MessageEvent) -> str:
-        """Handle /compress command -- manually compress conversation context.
+    async def _handle_compress_command(
+        self,
+        event: MessageEvent,
+        *,
+        local_fallback_only: bool = False,
+    ) -> str:
+        """Handle /compress and /compress-local conversation compaction.
+
+        ``/compress`` uses the normal LLM-first summarizer. ``/compress-local``
+        skips the summarizer and writes the deterministic local fallback summary
+        through the same guarded rotation / in-place archive machinery.
 
         Accepts an optional focus topic: ``/compress <focus>`` guides the
         summariser to preserve information related to *focus* while being
@@ -3160,7 +3169,7 @@ class GatewaySlashCommandsMixin:
                 source=source,
                 session_key=session_key,
             )
-            if not runtime_kwargs.get("api_key"):
+            if not local_fallback_only and not runtime_kwargs.get("api_key"):
                 return t("gateway.compress.no_provider")
 
             # Pass the FULL transcript (tool results included) — same
@@ -3235,7 +3244,14 @@ class GatewaySlashCommandsMixin:
                 loop = asyncio.get_running_loop()
                 compressed, _ = await loop.run_in_executor(
                     None,
-                    lambda: tmp_agent._compress_context(head, "", approx_tokens=approx_tokens, focus_topic=focus_topic, force=True)
+                    lambda: tmp_agent._compress_context(
+                        head,
+                        "",
+                        approx_tokens=approx_tokens,
+                        focus_topic=focus_topic,
+                        force=True,
+                        local_fallback_only=local_fallback_only,
+                    )
                 )
 
                 # Re-append the verbatim tail after the compressed head,
@@ -3343,6 +3359,8 @@ class GatewaySlashCommandsMixin:
             lines.append(summary["token_line"])
             if summary["note"]:
                 lines.append(summary["note"])
+            if local_fallback_only:
+                lines.append(t("gateway.compress.local_fallback_used"))
             if _summary_aborted:
                 lines.append(
                     t(

@@ -136,6 +136,34 @@ class TestCompress:
         assert compressor._last_compress_aborted is False
         assert compressor._last_summary_fallback_used is True
 
+    def test_local_fallback_only_skips_llm_even_when_abort_flag_set(self):
+        """Explicit rescue compression should be fully local and never call the summarizer."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                protect_first_n=1,
+                protect_last_n=2,
+                quiet_mode=True,
+                abort_on_summary_failure=True,
+            )
+
+        msgs = [{"role": "system", "content": "System prompt"}] + self._make_messages(8)
+        with (
+            patch.object(c, "_find_tail_cut_by_tokens", return_value=5),
+            patch("agent.context_compressor.call_llm") as call_llm,
+        ):
+            result = c.compress(msgs, local_fallback_only=True)
+
+        call_llm.assert_not_called()
+        assert result is not msgs
+        assert len(result) < len(msgs)
+        combined = "\n".join(str(m.get("content", "")) for m in result)
+        assert "Summary generation was unavailable" in combined
+        assert "local fallback compression requested" in combined
+        assert c._last_compress_aborted is False
+        assert c._last_summary_fallback_used is True
+        assert c._last_summary_dropped_count == 3
+
     def test_summary_failure_uses_deterministic_fallback_with_recovered_context(self):
         """Regression: failed LLM summaries should not emit a content-free marker.
 

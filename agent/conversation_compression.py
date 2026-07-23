@@ -465,6 +465,7 @@ def compress_context(
     task_id: str = "default",
     focus_topic: Optional[str] = None,
     force: bool = False,
+    local_fallback_only: bool = False,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
 
@@ -481,6 +482,9 @@ def compress_context(
             by the manual ``/compress`` slash command so users can retry
             immediately after an auto-compress abort.  Auto-compress
             callers use the default ``False``.
+        local_fallback_only: If True, skip the LLM summarizer and use the
+            deterministic local fallback summary.  Intended for explicit rescue
+            commands, not the normal auto-compression path.
 
     Returns:
         ``(compressed_messages, new_system_prompt)`` tuple.  When
@@ -718,8 +722,20 @@ def compress_context(
             pass
 
     try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
+        compressed = agent.context_compressor.compress(
+            messages,
+            current_tokens=approx_tokens,
+            focus_topic=focus_topic,
+            force=force,
+            local_fallback_only=local_fallback_only,
+        )
     except TypeError:
+        if local_fallback_only:
+            # The rescue command promises no LLM summary call. Do not silently
+            # fall back to a plugin compressor path that cannot receive the
+            # local-only flag.
+            _release_lock()
+            raise
         # Plugin context engine with strict signature that doesn't accept
         # focus_topic / force — fall back to calling without them.
         try:
