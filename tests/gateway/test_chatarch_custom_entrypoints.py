@@ -126,3 +126,23 @@ async def test_ssh_reaches_cold_path_ssh_handler():
     runner._handle_ssh_command.assert_awaited_once_with(event)
     runner._handle_thread_command.assert_not_awaited()
     runner._handle_template_command.assert_not_awaited()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("text", "handler_attr", "expected"),
+    [
+        ("/t 你好", "_handle_thread_command", "thread handled"),
+        ("/tpl list", "_handle_template_command", "template handled"),
+        ("/ssh list", "_handle_ssh_command", "ssh handled"),
+    ],
+)
+async def test_local_commands_reach_running_agent_fast_path_handlers(text, handler_attr, expected):
+    """Active sessions must use the same ChatArch custom handler mapping."""
+    runner = _runner()
+    event = _event(text)
+    runner._running_agents[build_session_key(event.source)] = object()
+
+    result = await runner._handle_message(event)
+
+    assert result == expected
+    getattr(runner, handler_attr).assert_awaited_once_with(event)
