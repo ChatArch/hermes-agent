@@ -1,5 +1,6 @@
 """Tests for gateway /compress user-facing messaging."""
 
+import asyncio
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -181,6 +182,54 @@ async def test_compress_command_appends_warning_when_compression_aborts():
     # User must be told nothing was dropped — the whole point of the
     # new behavior is no silent data loss.
     assert "No messages were dropped" in result
+    agent_instance.shutdown_memory_provider.assert_called_once()
+    agent_instance.close.assert_called_once()
+
+
+def test_compress_local_command_uses_static_fallback_path():
+    """The rescue command must request local fallback without changing /compress."""
+    history = _make_history()
+    compressed = [
+        history[0],
+        {"role": "assistant", "content": "[local fallback summary]"},
+        history[-1],
+    ]
+    runner = _make_runner(history)
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.context_compressor._last_compress_aborted = False
+    agent_instance.context_compressor._last_summary_error = None
+    agent_instance.context_compressor._last_aux_model_failure_model = None
+    agent_instance.session_id = "sess-2"
+    agent_instance._last_compaction_in_place = False
+    agent_instance._compress_context.return_value = (compressed, "")
+
+    def _estimate(messages, **_kwargs):
+        if messages == history:
+            return 100
+        if messages == compressed:
+            return 40
+        raise AssertionError(f"unexpected transcript: {messages!r}")
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
+    ):
+        result = asyncio.run(
+            runner._handle_compress_command(_make_event("/compress-local"), local_fallback_only=True)
+        )
+
+    assert "Compressed: 4 → 3 messages" in result
+    assert "Local rescue compression" in result
+    agent_instance._compress_context.assert_called_once()
+    assert agent_instance._compress_context.call_args.kwargs["local_fallback_only"] is True
+    runner.session_store.rewrite_transcript.assert_called_once_with("sess-2", compressed)
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
 

@@ -49,7 +49,16 @@ def test_compress_args_hint_documents_preview():
     assert "--preview" in (cmd.args_hint or "")
 
 
+def test_compress_local_rescue_command_registered():
+    cmd = resolve_command("compact-local")
+    assert cmd is not None
+    assert cmd.name == "compress-local"
+    assert "rescue-compress" in cmd.aliases
+    assert cmd.gateway_only is True
+
+
 # ── extract_compress_flags ────────────────────────────────────────────
+
 
 
 def test_no_flags_passthrough():

@@ -96,6 +96,53 @@ def _compression_lock_holder(agent: Any) -> str:
     )
 
 
+def _supported_compression_kwargs(
+    compress_fn: Any,
+    *,
+    current_tokens: Optional[int],
+    focus_topic: Optional[str],
+    force: bool,
+    memory_context: str,
+    local_fallback_only: bool = False,
+) -> dict:
+    """Return only compression kwargs accepted by an engine callable.
+
+    Context-engine plugins can outlive additions to the optional host contract.
+    Inspecting the callable before invoking it keeps those older signatures
+    compatible without catching an internal ``TypeError`` and executing a
+    stateful compressor twice.
+    """
+    candidates = {
+        "current_tokens": current_tokens,
+        "focus_topic": focus_topic,
+        "force": force,
+    }
+    if local_fallback_only:
+        candidates["local_fallback_only"] = True
+    if memory_context:
+        candidates["memory_context"] = memory_context
+    try:
+        parameters = inspect.signature(compress_fn).parameters
+    except (TypeError, ValueError):
+        # ``current_tokens`` has been part of the ContextEngine ABC since its
+        # introduction. Keep the oldest documented call shape when a C-backed
+        # or otherwise opaque callable has no inspectable signature.
+        return {"current_tokens": current_tokens}
+
+    accepts_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    if accepts_kwargs:
+        supported = dict(candidates)
+        if "local_fallback_only" not in parameters:
+            # A **kwargs plugin may silently ignore this flag and still call its
+            # own summarizer. Require an explicit parameter for the no-LLM rescue path.
+            supported.pop("local_fallback_only", None)
+        return supported
+    return {name: value for name, value in candidates.items() if name in parameters}
+
+
 class _CompressionLockLeaseRefresher:
     def __init__(
         self,
@@ -465,6 +512,7 @@ def compress_context(
     task_id: str = "default",
     focus_topic: Optional[str] = None,
     force: bool = False,
+    local_fallback_only: bool = False,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
 
@@ -481,6 +529,9 @@ def compress_context(
             by the manual ``/compress`` slash command so users can retry
             immediately after an auto-compress abort.  Auto-compress
             callers use the default ``False``.
+        local_fallback_only: If True, skip the LLM summarizer and use the
+            deterministic local fallback summary.  Intended for explicit rescue
+            commands, not the normal auto-compression path.
 
     Returns:
         ``(compressed_messages, new_system_prompt)`` tuple.  When
@@ -717,13 +768,32 @@ def compress_context(
         except Exception:
             pass
 
+    compress_fn = agent.context_compressor.compress
+    compress_kwargs = _supported_compression_kwargs(
+        compress_fn,
+        current_tokens=approx_tokens,
+        focus_topic=focus_topic,
+        force=force,
+        memory_context="",
+        local_fallback_only=local_fallback_only,
+    )
+    if local_fallback_only and "local_fallback_only" not in compress_kwargs:
+        # The rescue command promises no LLM summary call. Do not silently
+        # fall back to a plugin compressor path that cannot receive the
+        # local-only flag explicitly.
+        _release_lock()
+        raise TypeError("context compressor does not support local_fallback_only")
+
     try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
+        compressed = compress_fn(messages, **compress_kwargs)
     except TypeError:
+        if local_fallback_only:
+            _release_lock()
+            raise
         # Plugin context engine with strict signature that doesn't accept
         # focus_topic / force — fall back to calling without them.
         try:
-            compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
+            compressed = compress_fn(messages, current_tokens=approx_tokens)
         except BaseException:
             _release_lock()
             raise

@@ -99,6 +99,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("fork",), args_hint="[name]"),
     CommandDef("compress", "Compress conversation context (add 'here [N]' to keep recent N turns; --preview shows what would happen)", "Session",
                aliases=("compact",), args_hint="[here [N] | focus topic | --preview|--dry-run]"),
+    CommandDef("compress-local", "Rescue-compress context with deterministic local fallback (no LLM summary)", "Session",
+               gateway_only=True, aliases=("compact-local", "rescue-compress"),
+               args_hint="[here [N] | focus topic | --preview|--dry-run]"),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
@@ -1180,9 +1183,12 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - interrupt: explicit one-shot mid-run control; reached via /hermes interrupt on Slack.
 #   - update: low-frequency maintenance surface; reached via /hermes update on Slack.
 #   - version: low-frequency info surface; reached via /hermes version on Slack.
+#   - compress-local: emergency rescue surface; reached via /hermes compress-local
+#     so it does not displace established native commands at Slack's cap.
 #   - billing/moa: official low-frequency informational or orchestration surfaces.
 _SLACK_VIA_HERMES_ONLY = frozenset({
-    "credits", "billing", "moa", "debug", "interrupt", "platform", "update", "version"
+    "credits", "billing", "moa", "debug", "interrupt", "platform", "update", "version",
+    "compress-local", "compact-local", "rescue-compress",
 })
 
 

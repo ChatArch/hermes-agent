@@ -94,6 +94,31 @@ def _count_children(db: SessionDB, parent_sid: str) -> int:
     return len(rows)
 
 
+def test_local_fallback_only_requires_explicit_compressor_support() -> None:
+    """The rescue flag must not be hidden inside **kwargs-only plugin signatures."""
+    from agent.conversation_compression import _supported_compression_kwargs
+
+    def _kwargs_only_compress(messages, **kwargs):
+        return messages
+
+    def _explicit_local_compress(messages, local_fallback_only=False, **kwargs):
+        return messages
+
+    common = {
+        "current_tokens": 120_000,
+        "focus_topic": None,
+        "force": True,
+        "memory_context": "",
+        "local_fallback_only": True,
+    }
+
+    kwargs_only = _supported_compression_kwargs(_kwargs_only_compress, **common)
+    explicit = _supported_compression_kwargs(_explicit_local_compress, **common)
+
+    assert "local_fallback_only" not in kwargs_only
+    assert explicit["local_fallback_only"] is True
+
+
 def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
     """Two AIAgents that share a session_id MUST NOT both rotate it.
 
