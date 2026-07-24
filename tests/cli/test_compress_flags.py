@@ -50,11 +50,16 @@ def test_compress_args_hint_documents_preview():
 
 
 def test_compress_local_rescue_command_registered():
-    cmd = resolve_command("compact-local")
+    cmd = resolve_command("compress-local")
     assert cmd is not None
     assert cmd.name == "compress-local"
-    assert "rescue-compress" in cmd.aliases
+    assert cmd.aliases == ()
     assert cmd.gateway_only is True
+
+
+def test_compress_local_has_no_extra_aliases():
+    assert resolve_command("compact-local") is None
+    assert resolve_command("rescue-compress") is None
 
 
 # ── extract_compress_flags ────────────────────────────────────────────
