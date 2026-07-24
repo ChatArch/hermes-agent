@@ -4644,7 +4644,12 @@ def _running_under_gateway_supervisor() -> bool:
       - wrapped services can opt in with ``--external-supervisor`` when their
         launcher strips the native systemd/launchd marker.
     """
-    return is_gateway_supervisor_process()
+    environ = dict(os.environ)
+    if not is_macos():
+        # launchd's XPC marker only identifies supervision on macOS. Linux CI
+        # and tests may set it, but it must not make CLI conflict guards fire.
+        environ.pop("XPC_SERVICE_NAME", None)
+    return is_gateway_supervisor_process(environ)
 
 
 def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
