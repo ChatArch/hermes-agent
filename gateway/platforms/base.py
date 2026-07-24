@@ -1887,6 +1887,8 @@ class SendResult:
     """Result of sending a message."""
     success: bool
     message_id: Optional[str] = None
+    # CHATARCH_LOCAL_SEAM: Feishu/Lark thread metadata must survive platform
+    # sends. Future merges touching SendResult need thread-reply tests.
     thread_id: Optional[str] = None
     error: Optional[str] = None
     raw_response: Any = None
@@ -2096,6 +2098,10 @@ class EphemeralReply(str):
 @dataclass(slots=True)
 class CardReply:
     """Structured slash-command reply rendered as a gateway card when possible.
+
+    CHATARCH_LOCAL_SEAM: this is the shared card response contract for Feishu
+    command cards. Future merges must preserve structured delivery before text
+    fallback; run Feishu card capability tests if this class changes.
 
     ``fallback_text`` preserves the existing text behavior for platforms without
     card support or when card delivery fails.
@@ -4224,6 +4230,9 @@ class BasePlatformAdapter(ABC):
             logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
         return fallback_result
 
+    # CHATARCH_LOCAL_SEAM: card-capable platforms should deliver structured
+    # command cards here and only fall back to text on unsupported platforms or
+    # failed card sends. Do not bypass this in Feishu/Lark merge conflicts.
     async def send_card_reply(
         self,
         chat_id: str,

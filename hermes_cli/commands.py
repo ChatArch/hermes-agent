@@ -57,6 +57,12 @@ class CommandDef:
     gateway_config_gate: str | None = None  # config dotpath; when truthy, overrides cli_only for gateway
 
 
+from chatarch_custom.gateway.local_features import (  # noqa: E402
+    active_session_bypass_commands as _chatarch_active_session_bypass_commands,
+    command_defs as _chatarch_command_defs,
+)
+
+
 # ---------------------------------------------------------------------------
 # Central registry -- single source of truth
 # ---------------------------------------------------------------------------
@@ -69,16 +75,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("reset",), args_hint="[name]"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
                gateway_only=True, args_hint="[off|help|session-id]"),
-    CommandDef("thread", "Start or reset a Feishu thread session", "Session",
-               aliases=("t",), gateway_only=True, args_hint="<prompt>"),
-    CommandDef("ssh", "Manage SSH backend targets and section bindings", "Session",
-               gateway_only=True,
-               args_hint="[list|status|test <alias>|use <alias>|off]",
-               subcommands=("list", "status", "test", "use", "off", "local", "help")),
-    CommandDef("template", "Use, create, update, or list thread templates", "Tools & Skills",
-               aliases=("tpl",), gateway_only=True,
-               args_hint="<name|list|create|update|use> [instruction...]",
-               subcommands=("list", "create", "update", "use")),
+    # ChatArch-local gateway commands live in chatarch_custom so future
+    # upstream merges have one obvious owned seam instead of scattered entries.
+    *_chatarch_command_defs(CommandDef),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
@@ -389,10 +388,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "profile",
         "queue",
         "restart",
-        "ssh",
-        "t",
-        "template",
-        "tpl",
+        *_chatarch_active_session_bypass_commands(),
         "status",
         "steer",
         "stop",

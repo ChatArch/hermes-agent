@@ -167,6 +167,9 @@ def _list_targets() -> str:
     return tool_result(ok=True, targets=[_target_summary(target) for target in load_ssh_targets()])
 
 
+# CHATARCH_LOCAL_SEAM: model-side SSH switching depends on the gateway grant
+# callback below. If this code conflicts with upstream, preserve the path that
+# sends a Feishu/Lark SSH authorization card before falling back to `/ssh yolo`.
 def _request_use(ctx: dict[str, str], args: dict[str, Any], task_id: str | None) -> str:
     session_key = ctx["session_key"]
     if not session_key:

@@ -58,6 +58,7 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from chatarch_custom.gateway.local_features import local_gateway_handler_name as _chatarch_local_handler_name
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -9355,14 +9356,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "topic":
                 return await self._handle_topic_command(event)
 
-            if _cmd_def_inner and _cmd_def_inner.name == "thread":
-                return await self._handle_thread_command(event)
-
-            if _cmd_def_inner and _cmd_def_inner.name == "ssh":
-                return await self._handle_ssh_command(event)
-
-            if _cmd_def_inner and _cmd_def_inner.name == "template":
-                return await self._handle_template_command(event)
+            # CHATARCH_LOCAL_SEAM: ChatArch-owned gateway commands are declared
+            # in chatarch_custom.gateway.local_features. Keep this core bridge
+            # thin so future upstream merges only reconcile this seam.
+            _chatarch_handler = _chatarch_local_handler_name(
+                _cmd_def_inner.name if _cmd_def_inner else None
+            )
+            if _chatarch_handler:
+                return await getattr(self, _chatarch_handler)(event)
 
             if _cmd_def_inner and _cmd_def_inner.name == "restart":
                 return await self._handle_restart_command(event)
@@ -9891,14 +9892,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "topic":
             return await self._handle_topic_command(event)
 
-        if canonical == "thread":
-            return await self._handle_thread_command(event)
-
-        if canonical == "ssh":
-            return await self._handle_ssh_command(event)
-
-        if canonical == "template":
-            return await self._handle_template_command(event)
+        # CHATARCH_LOCAL_SEAM: dispatch local fork commands through the owned
+        # registry instead of scattering `/t`, `/ssh`, and `/template` if-blocks
+        # through this upstream-heavy gateway method.
+        _chatarch_handler = _chatarch_local_handler_name(canonical)
+        if _chatarch_handler:
+            return await getattr(self, _chatarch_handler)(event)
         
         if canonical == "help":
             return await self._handle_help_command(event)
@@ -12914,6 +12913,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return agent_result
 
+    # CHATARCH_LOCAL_SEAM: implementation still lives in GatewayRunner because
+    # it coordinates Feishu thread creation, template storage, and agent
+    # dispatch state. The command metadata/dispatch registration lives in
+    # chatarch_custom.gateway.local_features; move smaller helpers there first.
     async def _handle_template_command(self, event: MessageEvent) -> Any:
         """Handle Feishu `/template` thread launcher."""
         source = event.source
@@ -12959,6 +12962,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reset_existing_thread=False,
         )
 
+    # CHATARCH_LOCAL_SEAM: keep the heavy SSH binding implementation here for
+    # now because it touches section keys, Feishu thread creation, terminal
+    # backend overrides, and agent cache eviction. The public command metadata
+    # and handler mapping are owned by chatarch_custom.gateway.local_features.
     async def _handle_ssh_command(self, event: MessageEvent) -> str:
         """Handle gateway `/ssh` section backend commands."""
 
@@ -13164,6 +13171,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return "Usage: /ssh [list|status|test <alias>|use <alias>|off|help]"
 
+    # CHATARCH_LOCAL_SEAM: full handler remains in GatewayRunner until the
+    # Feishu thread/session rewrite flow has a stable extension interface. The
+    # command metadata, `/t` alias, and dispatch mapping are centralized in
+    # chatarch_custom.gateway.local_features.
     async def _handle_thread_command(self, event: MessageEvent):
         """Handle Feishu /thread <prompt>.
 
@@ -19625,6 +19636,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _e:
                     logger.error("Failed to send approval request: %s", _e)
 
+            # CHATARCH_LOCAL_SEAM: this bridge connects model-side
+            # ssh_mode.request_use to Feishu/Lark authorization cards. If a
+            # future merge conflicts here, verify the full no-yolo -> card ->
+            # allow/deny flow, not only the `/ssh yolo` text fallback.
             def _ssh_grant_notify_sync(grant_data: dict) -> None:
                 """Send model-initiated SSH authorization prompts to the user."""
                 _status_adapter.pause_typing_for_chat(_status_chat_id)
