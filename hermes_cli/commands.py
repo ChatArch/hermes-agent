@@ -1183,9 +1183,12 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - interrupt: explicit one-shot mid-run control; reached via /hermes interrupt on Slack.
 #   - update: low-frequency maintenance surface; reached via /hermes update on Slack.
 #   - version: low-frequency info surface; reached via /hermes version on Slack.
+#   - compress-local: emergency rescue surface; reached via /hermes compress-local
+#     so it does not displace established native commands at Slack's cap.
 #   - billing/moa: official low-frequency informational or orchestration surfaces.
 _SLACK_VIA_HERMES_ONLY = frozenset({
-    "credits", "billing", "moa", "debug", "interrupt", "platform", "update", "version"
+    "credits", "billing", "moa", "debug", "interrupt", "platform", "update", "version",
+    "compress-local", "compact-local", "rescue-compress",
 })
 
 

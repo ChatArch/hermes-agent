@@ -95,6 +95,7 @@ gateway:
     aggressive_unsupported: "--aggressive не поддерживается; используйте '/compress here [N]', чтобы сохранить только недавние обмены, или /undo, чтобы удалить ходы."
     focus_line:            "Фокус: \"{topic}\""
     summary_failed:        "⚠️ Не удалось сгенерировать сводку ({error}). {count} историч. сообщений было удалено и заменено заполнителем; предыдущий контекст больше нельзя восстановить. Проверьте конфигурацию модели auxiliary.compression."
+    local_fallback_used:  "🚑 Local rescue compression used the deterministic fallback summary; no LLM summary call was made. The original transcript was preserved by the normal compression archive/rotation path."
     aborted:               "⚠️ Сжатие прервано ({error}). Сообщения не были удалены — разговор не изменился. Запустите /compress для повторной попытки, /reset для новой сессии или проверьте конфигурацию модели auxiliary.compression."
     aux_failed:            "ℹ️ Настроенная модель сжатия `{model}` дала сбой ({error}). Восстановлено с помощью основной модели — контекст не повреждён — но рекомендуется проверить `auxiliary.compression.model` в config.yaml."
     failed:                "Сжатие не удалось: {error}"

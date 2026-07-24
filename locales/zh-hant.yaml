@@ -95,6 +95,7 @@ gateway:
     aggressive_unsupported: "不支援 --aggressive；請使用 '/compress here [N]' 只保留最近的對話，或使用 /undo 刪除回合。"
     focus_line:            "聚焦：\"{topic}\""
     summary_failed:        "⚠️ 摘要產生失敗（{error}）。{count} 則歷史訊息已被移除並以佔位符取代；先前的上下文已無法復原。建議檢查 auxiliary.compression 模型設定。"
+    local_fallback_used:  "🚑 已使用本地救援壓縮：採用確定性的本地兜底摘要，未呼叫 LLM 產生摘要。原始 transcript 已透過正常壓縮歸檔/輪轉路徑保留。"
     aborted:               "⚠️ 壓縮已中止 ({error})。未刪除任何訊息 — 對話保持不變。執行 /compress 重試，執行 /reset 開始新工作階段，或檢查你的 auxiliary.compression 模型設定。"
     aux_failed:            "ℹ️ 設定的壓縮模型 `{model}` 失敗（{error}）。已使用主要模型復原 — 上下文完整 — 但您可能想檢查 config.yaml 中的 `auxiliary.compression.model`。"
     failed:                "壓縮失敗：{error}"

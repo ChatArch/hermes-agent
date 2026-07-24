@@ -95,6 +95,7 @@ gateway:
     aggressive_unsupported: "--aggressive n'est pas pris en charge ; utilisez '/compress here [N]' pour ne conserver que les échanges récents, ou /undo pour supprimer des tours."
     focus_line:            "Focus : \"{topic}\""
     summary_failed:        "⚠️ Échec de la génération du résumé ({error}). {count} message(s) historique(s) ont été supprimés et remplacés par un espace réservé ; le contexte antérieur n'est plus récupérable. Vérifiez la configuration du modèle auxiliary.compression."
+    local_fallback_used:  "🚑 Local rescue compression used the deterministic fallback summary; no LLM summary call was made. The original transcript was preserved by the normal compression archive/rotation path."
     aborted:               "⚠️ Compression interrompue ({error}). Aucun message n'a été supprimé — la conversation est inchangée. Lancez /compress pour réessayer, /reset pour une nouvelle session, ou vérifiez la configuration de votre modèle auxiliary.compression."
     aux_failed:            "ℹ️ Le modèle de compression configuré `{model}` a échoué ({error}). Récupéré avec votre modèle principal — le contexte est intact — mais vous pouvez vérifier `auxiliary.compression.model` dans config.yaml."
     failed:                "Échec de la compression : {error}"
