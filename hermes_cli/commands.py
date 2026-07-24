@@ -100,7 +100,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("compress", "Compress conversation context (add 'here [N]' to keep recent N turns; --preview shows what would happen)", "Session",
                aliases=("compact",), args_hint="[here [N] | focus topic | --preview|--dry-run]"),
     CommandDef("compress-local", "Rescue-compress context with deterministic local fallback (no LLM summary)", "Session",
-               gateway_only=True, aliases=("compact-local", "rescue-compress"),
+               gateway_only=True,
                args_hint="[here [N] | focus topic | --preview|--dry-run]"),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
@@ -1192,7 +1192,7 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     so it does not displace established native commands at Slack's cap.
 _SLACK_VIA_HERMES_ONLY = frozenset({
     "topup", "credits", "billing", "moa", "debug", "interrupt", "platform",
-    "update", "version", "compress-local", "compact-local", "rescue-compress",
+    "update", "version", "compress-local",
 })
 
 
