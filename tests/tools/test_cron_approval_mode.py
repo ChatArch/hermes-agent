@@ -13,6 +13,9 @@ from tools.approval import (
 
 @pytest.fixture(autouse=True)
 def _clear_approval_state():
+    from gateway.session_context import reset_session_vars
+
+    reset_session_vars()
     approval_module._permanent_approved.clear()
     approval_module.clear_session("default")
     approval_module.clear_session("test-session")
@@ -20,6 +23,7 @@ def _clear_approval_state():
     approval_module._permanent_approved.clear()
     approval_module.clear_session("default")
     approval_module.clear_session("test-session")
+    reset_session_vars()
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +363,19 @@ class TestCronModeInteractions:
         result = check_dangerous_command("rm -rf /tmp/stuff", "local")
         assert result["approved"]
 
+    def test_stale_process_cron_flag_does_not_poison_live_gateway_session(self, monkeypatch):
+        """A scheduler-set process env flag must not make later live turns cron."""
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+
+        from gateway.session_context import set_session_vars, clear_session_vars
+        tokens = set_session_vars(platform="feishu", chat_id="123", session_key="live")
+        try:
+            assert not approval_module._is_cron_session()
+            assert approval_module._is_gateway_approval_context()
+        finally:
+            clear_session_vars(tokens)
+
 
 class TestCronWithGatewayOrigin:
     """Cron jobs originating from a gateway platform must NOT be treated as gateway.
@@ -380,7 +397,7 @@ class TestCronWithGatewayOrigin:
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
 
         from gateway.session_context import set_session_vars, clear_session_vars
-        tokens = set_session_vars(platform="telegram", chat_id="123")
+        tokens = set_session_vars(platform="telegram", chat_id="123", cron_session=True)
         try:
             from unittest.mock import patch as mock_patch
             with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
@@ -402,7 +419,7 @@ class TestCronWithGatewayOrigin:
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
 
         from gateway.session_context import set_session_vars, clear_session_vars
-        tokens = set_session_vars(platform="discord", chat_id="456")
+        tokens = set_session_vars(platform="discord", chat_id="456", cron_session=True)
         try:
             from unittest.mock import patch as mock_patch
             with mock_patch("tools.approval._get_cron_approval_mode", return_value="approve"):
@@ -422,7 +439,7 @@ class TestCronWithGatewayOrigin:
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
 
         from gateway.session_context import set_session_vars, clear_session_vars
-        tokens = set_session_vars(platform="telegram", chat_id="789")
+        tokens = set_session_vars(platform="telegram", chat_id="789", cron_session=True)
         try:
             from unittest.mock import patch as mock_patch
             with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):

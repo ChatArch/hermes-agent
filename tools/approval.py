@@ -224,6 +224,23 @@ def _get_session_platform() -> str:
         return os.getenv("HERMES_SESSION_PLATFORM", "") or ""
 
 
+def _is_cron_session() -> bool:
+    """Return True for scheduler-owned turns without trusting stale process env.
+
+    Gateway and cron both run in long-lived processes. The scheduler used to
+    set HERMES_CRON_SESSION in os.environ, which then leaked into later live
+    gateway turns. Prefer the ContextVar bridge when present; only fall back to
+    os.environ for CLI/tests/legacy callers that never bound a session context.
+    """
+    try:
+        from gateway.session_context import get_session_env
+
+        value = get_session_env("HERMES_CRON_SESSION", "")
+    except Exception:
+        value = os.getenv("HERMES_CRON_SESSION", "")
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _is_gateway_approval_context() -> bool:
     """True when this call is inside a gateway/API session.
 
@@ -232,13 +249,12 @@ def _is_gateway_approval_context() -> bool:
     contextvars so approval mode does not depend on process-global flags.
 
     Cron jobs are NEVER gateway-approval contexts even when they originate
-    from a gateway platform (cron binds HERMES_SESSION_PLATFORM via
-    contextvars for delivery routing). Cron approvals are governed by
-    ``approvals.cron_mode`` config, not interactive resolve — letting cron
-    fall through to the gateway branch would submit a pending approval
-    with no listener and block the job indefinitely.
+    from a gateway platform. Cron approvals are governed by
+    ``approvals.cron_mode`` config, not interactive resolve — letting cron fall
+    through to the gateway branch would submit a pending approval with no
+    listener and block the job indefinitely.
     """
-    if env_var_enabled("HERMES_CRON_SESSION"):
+    if _is_cron_session():
         return False
     if env_var_enabled("HERMES_GATEWAY_SESSION"):
         return True
@@ -2714,7 +2730,7 @@ def _run_approval_gate(
 
     if not is_cli and not is_gateway:
         # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        if _is_cron_session():
             if _get_cron_approval_mode() == "deny":
                 return {
                     "approved": False,
@@ -3242,7 +3258,7 @@ def check_all_command_guards(command: str, env_type: str,
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:
         # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        if _is_cron_session():
             if _get_cron_approval_mode() == "deny":
                 # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
@@ -3638,7 +3654,7 @@ def check_execute_code_guard(code: str, env_type: str,
                              has_host_access: bool = False) -> dict:
     """Approve an execute_code script before its child process is spawned.
 
-    execute_code runs arbitrary local Python — the script can call
+    execute_code runs arbitrary Python in the selected backend — the script can call
     ``subprocess``, ``os.system``, ``ctypes``, or other process/file APIs
     directly, none of which pass through ``terminal()`` /
     ``DANGEROUS_PATTERNS``. In gateway/ask contexts we fail closed by approving
@@ -3678,12 +3694,12 @@ def check_execute_code_guard(code: str, env_type: str,
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
     # Cron: no user is present to approve arbitrary code.
-    if env_var_enabled("HERMES_CRON_SESSION"):
+    if _is_cron_session():
         if _get_cron_approval_mode() == "deny":
             return {
                 "approved": False,
                 "message": (
-                    "BLOCKED: execute_code runs arbitrary local Python "
+                    f"BLOCKED: execute_code runs arbitrary Python in the {env_type} backend "
                     "(including subprocess calls that bypass shell-string "
                     "approval checks). Cron jobs run without a user present "
                     "to approve it. Use normal tools instead, or set "
