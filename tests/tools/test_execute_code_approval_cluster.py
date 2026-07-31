@@ -26,6 +26,16 @@ from tools import approval as A
 from tools.thread_context import propagate_context_to_thread
 
 
+@pytest.fixture(autouse=True)
+def _clean_approval_state():
+    """Keep host approval config/state from leaking into this decision matrix."""
+    A._permanent_approved.clear()
+    A.clear_session("cluster-test-session")
+    yield
+    A._permanent_approved.clear()
+    A.clear_session("cluster-test-session")
+
+
 # ---------------------------------------------------------------------------
 # 1. Context + callback propagation helper
 # ---------------------------------------------------------------------------
