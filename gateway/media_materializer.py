@@ -150,6 +150,7 @@ def materialize_response_media(
     response: str,
     *,
     task_id: str,
+    fallback_task_ids: tuple[str, ...] = (),
     ssh_alias: str | None = None,
     env: Any = _ENV_UNSET,
     cache_dir: str | Path | None = None,
@@ -171,7 +172,18 @@ def materialize_response_media(
         try:
             from tools.terminal_tool import get_active_env
 
-            env = get_active_env(task_id)
+            seen_task_ids: set[str] = set()
+            for candidate_task_id in (task_id, *fallback_task_ids):
+                candidate_task_id = str(candidate_task_id or "").strip()
+                if not candidate_task_id or candidate_task_id in seen_task_ids:
+                    continue
+                seen_task_ids.add(candidate_task_id)
+                candidate_env = get_active_env(candidate_task_id)
+                if candidate_env is not None and getattr(
+                    candidate_env, "supports_file_materialization", False
+                ):
+                    env = candidate_env
+                    break
         except Exception:
             env = None
 

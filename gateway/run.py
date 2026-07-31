@@ -14401,6 +14401,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _media_materialization = await self._materialize_media_for_delivery(
                         response,
                         session_id=session_entry.session_id,
+                        fallback_session_id=_run_start_session_id,
                         session_key=session_key,
                     )
                     response = _media_materialization.response
@@ -16105,6 +16106,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         response: str,
         *,
         session_id: str,
+        fallback_session_id: Optional[str] = None,
         session_key: str,
     ):
         """Resolve file/SSH MEDIA refs before platform adapters inspect them."""
@@ -16115,6 +16117,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             materialize_response_media,
             response,
             task_id=session_id,
+            fallback_task_ids=tuple(
+                candidate
+                for candidate in (fallback_session_id, session_key)
+                if candidate
+            ),
             ssh_alias=binding.alias if binding is not None else None,
         )
 

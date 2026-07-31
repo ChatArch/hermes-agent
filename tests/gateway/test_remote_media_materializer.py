@@ -378,6 +378,46 @@ def test_gateway_materializes_with_current_session_binding(monkeypatch, tmp_path
     assert result.response == f"Screenshot\nMEDIA:{result.materialized_paths[0]}"
 
 
+def test_gateway_materializer_falls_back_to_turn_start_session_after_rotation(
+    monkeypatch, tmp_path,
+):
+    import gateway.run as gateway_run
+    from tools import terminal_tool
+
+    env = _FakeRemoteEnvironment()
+    looked_up = []
+
+    def _get_active_env(task_id):
+        looked_up.append(task_id)
+        return env if task_id == "session-before-compression" else None
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(
+        gateway_run,
+        "get_ssh_binding",
+        lambda session_key: type("Binding", (), {"alias": "build.example"})(),
+    )
+    monkeypatch.setattr(terminal_tool, "get_active_env", _get_active_env)
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    result = asyncio.run(
+        runner._materialize_media_for_delivery(
+            "MEDIA:ssh://build.example/srv/captures/page.png",
+            session_id="session-after-compression",
+            fallback_session_id="session-before-compression",
+            session_key="agent:main:feishu:dm:chat:thread",
+        )
+    )
+
+    assert looked_up[:2] == [
+        "session-after-compression",
+        "session-before-compression",
+    ]
+    assert len(env.calls) == 1
+    assert result.failures == ()
+    assert len(result.materialized_paths) == 1
+
+
 def test_materialized_remote_image_keeps_feishu_inline_reply_contract(monkeypatch, tmp_path):
     import gateway.run as gateway_run
     from gateway.config import Platform
