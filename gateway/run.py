@@ -14391,8 +14391,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 response = ""
 
-            # Auto voice reply: send TTS audio before the text response
+            # Resolve explicit file:// / ssh:// MEDIA references while this
+            # turn still owns its session backend context. Platform adapters
+            # remain host-local and only receive gateway-readable paths.
             _already_sent = bool(agent_result.get("already_sent"))
+            _media_materialization = None
+            if response and "MEDIA:" in response:
+                try:
+                    _media_materialization = await self._materialize_media_for_delivery(
+                        response,
+                        session_id=session_entry.session_id,
+                        session_key=session_key,
+                    )
+                    response = _media_materialization.response
+                    if _media_materialization.failures:
+                        logger.warning(
+                            "Remote MEDIA materialization failed for %d attachment(s) in session %s",
+                            len(_media_materialization.failures),
+                            session_key,
+                        )
+                    if (
+                        _media_materialization.failures
+                        and (not _already_sent or agent_result.get("failed"))
+                    ):
+                        _failure_notice = "⚠️ One or more remote attachments could not be retrieved."
+                        response = (
+                            f"{response}\n\n{_failure_notice}"
+                            if response
+                            else _failure_notice
+                        )
+                except Exception as _media_exc:
+                    logger.warning(
+                        "Remote MEDIA response materialization failed: %s",
+                        _media_exc,
+                        exc_info=True,
+                    )
+
+            # Auto voice reply: send TTS audio before the text response
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
 
@@ -14416,6 +14451,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             event,
                             _media_adapter,
                             streamed_message_id=agent_result.get("stream_message_id"),
+                        )
+                if _media_materialization and _media_materialization.failures:
+                    try:
+                        _failure_adapter = self._adapter_for_source(source)
+                        if _failure_adapter:
+                            _failure_anchor = self._reply_anchor_for_event(event)
+                            await _failure_adapter.send(
+                                source.chat_id,
+                                "⚠️ One or more remote attachments could not be retrieved.",
+                                reply_to=_failure_anchor,
+                                metadata=self._thread_metadata_for_source(
+                                    source,
+                                    _failure_anchor,
+                                ),
+                            )
+                    except Exception as _failure_exc:
+                        logger.warning(
+                            "Remote attachment failure notice delivery failed: %s",
+                            _failure_exc,
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
@@ -16045,6 +16099,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     os.unlink(p)
                 except OSError:
                     pass
+
+    async def _materialize_media_for_delivery(
+        self,
+        response: str,
+        *,
+        session_id: str,
+        session_key: str,
+    ):
+        """Resolve file/SSH MEDIA refs before platform adapters inspect them."""
+        from gateway.media_materializer import materialize_response_media
+
+        binding = get_ssh_binding(session_key or "")
+        return await asyncio.to_thread(
+            materialize_response_media,
+            response,
+            task_id=session_id,
+            ssh_alias=binding.alias if binding is not None else None,
+        )
 
     async def _deliver_media_from_response(
         self,

@@ -1186,6 +1186,7 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     Supported override keys include:
         - env_type: str -- backend override such as "ssh"
         - ssh_host/user/port/key: SSH connection config for env_type="ssh"
+        - ssh_alias: registry alias used for typed SSH resource references
         - modal_image/docker_image: backend image overrides
         - cwd: str -- Working directory inside the sandbox/backend
     """

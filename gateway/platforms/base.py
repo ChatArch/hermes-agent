@@ -1509,6 +1509,18 @@ _MEDIA_EXT_ALTERNATION = "|".join(
     sorted((e.lstrip(".") for e in MEDIA_DELIVERY_EXTS), key=len, reverse=True)
 )
 
+# Typed gateway/backend resource references. Unlike filesystem paths, URI refs
+# carry their owning execution plane explicitly and may be extensionless. They
+# are materialized before platform dispatch; this shared matcher also strips
+# them from streamed display text so the transport directive never leaks into
+# the user-visible reply.
+MEDIA_RESOURCE_URI_RE = re.compile(
+    r'''[`"']?MEDIA:\s*[`"']?'''
+    r'''(?P<uri>(?:file|ssh)://[^\s\n`"',;)\]}]+)'''
+    r'''(?=[\s`"',;:)\]}]|$)[`"']?''',
+    re.IGNORECASE,
+)
+
 # Anchored ``MEDIA:<path>`` cleanup pattern. Unlike the old loose
 # ``MEDIA:\\s*\\S+``, this only strips a tag whose path ends in a known
 # deliverable extension (optionally quoted/backticked). A ``MEDIA:`` tag with
@@ -1581,6 +1593,7 @@ def _strip_media_tag_directives(text: str) -> str:
             return match.group(0)
         return "" if validate_media_delivery_path(path) else match.group(0)
 
+    cleaned = MEDIA_RESOURCE_URI_RE.sub("", cleaned)
     cleaned = MEDIA_TAG_CLEANUP_RE.sub("", cleaned)
     return MEDIA_EXTENSIONLESS_TAG_RE.sub(_strip_extensionless, cleaned)
 

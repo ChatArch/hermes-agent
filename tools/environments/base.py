@@ -401,6 +401,11 @@ class BaseEnvironment(ABC):
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 
+    # Subclasses that can copy a backend file onto the gateway host override
+    # materialize_file() and opt in here. This is infrastructure-only; it does
+    # not add a model-facing tool.
+    supports_file_materialization: bool = False
+
     def get_temp_dir(self) -> str:
         """Return the backend temp directory used for session artifacts.
 
@@ -409,6 +414,24 @@ class BaseEnvironment(ABC):
         may be missing and ``TMPDIR`` is the portable writable location.
         """
         return "/tmp"
+
+    def materialize_file(
+        self,
+        source_path: str,
+        destination_path: str | Path,
+        *,
+        max_bytes: int,
+        timeout: int,
+        require_recent_seconds: float | None = None,
+    ) -> dict:
+        """Copy one backend file to the gateway host.
+
+        Remote backends opt in explicitly. The default fails closed so delivery
+        code never assumes that a path is shared across filesystems.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support host file materialization"
+        )
 
     def __init__(self, cwd: str, timeout: int, env: dict = None):
         self.cwd = cwd
