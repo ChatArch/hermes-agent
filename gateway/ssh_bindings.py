@@ -292,6 +292,7 @@ def binding_to_task_overrides(binding: SshBinding, target: SshTarget) -> dict[st
 
     overrides: dict[str, Any] = {
         "env_type": "ssh",
+        "ssh_alias": binding.alias,
         "ssh_host": target.host or "",
         "ssh_user": target.user or "",
         "ssh_port": target.port or 22,

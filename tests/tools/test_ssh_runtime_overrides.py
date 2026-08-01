@@ -366,6 +366,7 @@ def test_prompt_builder_uses_task_override_backend(monkeypatch):
         "session-prompt",
         {
             "env_type": "ssh",
+            "ssh_alias": "rex.oray",
             "ssh_host": "example.internal",
             "ssh_user": "rex",
             "ssh_key": "/redacted/key",
@@ -381,4 +382,6 @@ def test_prompt_builder_uses_task_override_backend(monkeypatch):
 
     assert "Terminal backend: ssh" in hints
     assert "all operate inside this ssh environment" in hints
+    assert "Current SSH target alias: `rex.oray`" in hints
+    assert "MEDIA:ssh://rex.oray/absolute/remote/path.ext" in hints
     assert "Host: macOS" not in hints

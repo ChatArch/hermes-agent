@@ -57,6 +57,13 @@ class TestCleanForDisplay:
             result = GatewayStreamConsumer._clean_for_display(text)
             assert "MEDIA:" not in result, f"Failed for wrapper: {wrapper}"
 
+    def test_typed_resource_uri_is_stripped(self):
+        text = "Result\nMEDIA:ssh://build.example/srv/output/Caddyfile"
+
+        result = GatewayStreamConsumer._clean_for_display(text)
+
+        assert result == "Result"
+
     def test_audio_as_voice_stripped(self):
         """[[audio_as_voice]] directive is removed."""
         text = "[[audio_as_voice]]\nMEDIA:/tmp/voice.ogg"

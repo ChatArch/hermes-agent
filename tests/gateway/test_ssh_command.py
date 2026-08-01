@@ -231,6 +231,7 @@ async def test_ssh_use_binds_current_thread(monkeypatch, tmp_path):
     assert binding.cwd == "/srv/app"
     overrides = resolve_binding_task_overrides(section_key, targets=target_list)
     assert overrides["env_type"] == "ssh"
+    assert overrides["ssh_alias"] == "rex.oray"
     assert overrides["ssh_host"] == "rexwzh.oray"
     assert overrides["ssh_user"] == "rexwzh"
     assert overrides["ssh_port"] == 2222

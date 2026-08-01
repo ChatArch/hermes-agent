@@ -1,13 +1,18 @@
 """SSH remote execution environment with ControlMaster connection persistence."""
 
 import hashlib
+import json
 import logging
 import os
+import posixpath
 import shlex
 import shutil
 import subprocess
 import tempfile
+import time
+from math import ceil
 from pathlib import Path
+from time import monotonic as _monotonic
 
 from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment, _popen_bash
@@ -20,6 +25,32 @@ from tools.environments.file_sync import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+_MATERIALIZE_DENIED_SYSTEM_ROOTS = (
+    "/etc", "/proc", "/sys", "/dev", "/root", "/boot", "/run",
+    "/var/log", "/var/lib", "/var/run",
+)
+_MATERIALIZE_DENIED_HOME_DIRS = (
+    ".ssh", ".aws", ".gnupg", ".kube", ".docker",
+    ".config", ".azure", ".gcloud", "Library/Keychains",
+)
+_MATERIALIZE_HERMES_SECRET_FILES = (
+    ".env", "auth.json", "auth.lock", "credentials", "config.yaml",
+    ".anthropic_oauth.json", "google_token.json",
+    "google_oauth_pending.json", "auth/google_oauth.json",
+    "webhook_subscriptions.json", "cache/bws_cache.json",
+    "cache/bws_cache.enc.json",
+)
+_MATERIALIZE_HERMES_SECRET_DIRS = ("pairing", "mcp-tokens")
+_MATERIALIZE_TRUSTED_CACHE_DIRS = (
+    "images", "audio", "videos", "documents", "screenshots",
+)
+
+
+def _posix_path_is_within(path: str, root: str) -> bool:
+    clean_root = root.rstrip("/") or "/"
+    return path == clean_root or path.startswith(clean_root + "/")
 
 
 def _ensure_ssh_available() -> None:
@@ -57,6 +88,8 @@ class SSHEnvironment(BaseEnvironment):
     CWD persists via in-band stdout markers.
     Uses SSH ControlMaster for connection reuse.
     """
+
+    supports_file_materialization = True
 
     def __init__(self, host: str, user: str, cwd: str = "~",
                  timeout: int = 60, port: int = 22, key_path: str = "",
@@ -224,6 +257,248 @@ class SSHEnvironment(BaseEnvironment):
         if self.user == "root":
             return "/root"
         return f"/home/{self.user}"
+
+    def _normalize_materialize_source(self, source_path: str) -> str:
+        """Return an absolute POSIX path in the remote filesystem."""
+        raw = str(source_path or "").strip()
+        if not raw or any(ord(char) < 32 or ord(char) == 127 for char in raw):
+            raise ValueError("Remote materialization path is empty or contains control characters")
+        if raw == "~":
+            raw = self._remote_home
+        elif raw.startswith("~/"):
+            raw = f"{self._remote_home.rstrip('/')}/{raw[2:]}"
+        if not posixpath.isabs(raw):
+            raise ValueError("Remote materialization requires an absolute path or ~/ path")
+        normalized = posixpath.normpath(raw)
+        # POSIX permits implementation-defined semantics for exactly two
+        # leading slashes. SSH targets are addressed from one filesystem root,
+        # so collapse them before prefix-based security checks.
+        if normalized.startswith("//"):
+            normalized = "/" + normalized.lstrip("/")
+        return normalized
+
+    def _materialize_source_is_denied(self, source_path: str) -> bool:
+        remote_home = posixpath.normpath(self._remote_home)
+        for root in _MATERIALIZE_DENIED_SYSTEM_ROOTS:
+            # A root SSH user may export ordinary files from their own home;
+            # the more-specific credential paths below remain denied.
+            if root == remote_home:
+                continue
+            if _posix_path_is_within(source_path, root):
+                return True
+        for relative in _MATERIALIZE_DENIED_HOME_DIRS:
+            if _posix_path_is_within(
+                source_path,
+                posixpath.join(remote_home, relative),
+            ):
+                return True
+        hermes_home = posixpath.join(remote_home, ".hermes")
+        for relative in _MATERIALIZE_HERMES_SECRET_FILES:
+            if _posix_path_is_within(
+                source_path,
+                posixpath.join(hermes_home, relative),
+            ):
+                return True
+        for relative in _MATERIALIZE_HERMES_SECRET_DIRS:
+            if _posix_path_is_within(
+                source_path,
+                posixpath.join(hermes_home, relative),
+            ):
+                return True
+        return False
+
+    def _materialize_source_is_trusted_cache(self, source_path: str) -> bool:
+        cache_root = posixpath.join(self._remote_home, ".hermes", "cache")
+        return any(
+            _posix_path_is_within(source_path, posixpath.join(cache_root, name))
+            for name in _MATERIALIZE_TRUSTED_CACHE_DIRS
+        )
+
+    def _inspect_materialize_source(self, source_path: str, timeout: int) -> dict:
+        """Resolve symlinks and stat a remote file without transferring bytes."""
+        script = (
+            "import json, os, stat, sys\n"
+            "path = os.path.realpath(sys.argv[1])\n"
+            "try:\n"
+            "    info = os.stat(path)\n"
+            "except OSError as exc:\n"
+            "    print(json.dumps({'error': str(exc)}))\n"
+            "    raise SystemExit(2)\n"
+            "if not stat.S_ISREG(info.st_mode):\n"
+            "    print(json.dumps({'error': 'not a regular file'}))\n"
+            "    raise SystemExit(3)\n"
+            "print(json.dumps({'source_path': path, 'size': info.st_size, "
+            "'mtime': info.st_mtime, 'device': info.st_dev, 'inode': info.st_ino}))\n"
+        )
+        cmd = self._build_ssh_command()
+        cmd.append(
+            f"python3 -c {shlex.quote(script)} {shlex.quote(source_path)}"
+        )
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                stdin=subprocess.DEVNULL,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Remote file metadata check timed out") from exc
+
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        payload = None
+        if lines:
+            try:
+                payload = json.loads(lines[-1])
+            except json.JSONDecodeError:
+                payload = None
+        if result.returncode != 0 or not isinstance(payload, dict):
+            detail = ""
+            if isinstance(payload, dict):
+                detail = str(payload.get("error") or "")
+            if not detail:
+                detail = result.stderr.strip() or "remote metadata check failed"
+            raise RuntimeError(detail)
+        if payload.get("error"):
+            raise RuntimeError(str(payload["error"]))
+        try:
+            return {
+                "source_path": str(payload["source_path"]),
+                "size": int(payload["size"]),
+                "mtime": float(payload["mtime"]),
+                "device": int(payload["device"]),
+                "inode": int(payload["inode"]),
+            }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError("Remote file metadata response was invalid") from exc
+
+    def materialize_file(
+        self,
+        source_path: str,
+        destination_path: str | Path,
+        *,
+        max_bytes: int,
+        timeout: int,
+        require_recent_seconds: float | None = None,
+    ) -> dict:
+        """Copy one safe, bounded remote file onto the gateway host."""
+        if max_bytes <= 0:
+            raise ValueError("Remote file materialization requires a positive size limit")
+        if timeout <= 0:
+            raise ValueError("Remote file materialization requires a positive timeout")
+        deadline = _monotonic() + timeout
+
+        def _remaining_timeout() -> int:
+            remaining = deadline - _monotonic()
+            if remaining <= 0:
+                raise RuntimeError("Remote file materialization timed out")
+            return max(1, ceil(remaining))
+
+        requested = self._normalize_materialize_source(source_path)
+        if self._materialize_source_is_denied(requested):
+            raise PermissionError("Remote materialization path is protected")
+
+        metadata = self._inspect_materialize_source(requested, _remaining_timeout())
+        canonical = self._normalize_materialize_source(metadata["source_path"])
+        if self._materialize_source_is_denied(canonical):
+            raise PermissionError("Resolved remote materialization path is protected")
+
+        size = int(metadata["size"])
+        if size > max_bytes:
+            raise ValueError(
+                f"Remote file is too large to materialize ({size} bytes > {max_bytes} bytes)"
+            )
+        if (
+            require_recent_seconds is not None
+            and require_recent_seconds > 0
+            and not self._materialize_source_is_trusted_cache(canonical)
+            and (time.time() - float(metadata["mtime"])) > require_recent_seconds
+        ):
+            raise PermissionError("Remote file is not recent enough for strict media delivery")
+
+        transfer_timeout = _remaining_timeout()
+
+        destination = Path(destination_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        transfer_script = (
+            "import os, stat, sys\n"
+            "path = sys.argv[1]\n"
+            "limit, expected_dev, expected_ino, expected_size = map(int, sys.argv[2:])\n"
+            "flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)\n"
+            "try:\n"
+            "    fd = os.open(path, flags)\n"
+            "except OSError as exc:\n"
+            "    print(str(exc), file=sys.stderr)\n"
+            "    raise SystemExit(2)\n"
+            "with os.fdopen(fd, 'rb') as source:\n"
+            "    info = os.fstat(source.fileno())\n"
+            "    if (not stat.S_ISREG(info.st_mode) or info.st_dev != expected_dev "
+            "or info.st_ino != expected_ino or info.st_size != expected_size):\n"
+            "        print('remote file changed after metadata check', file=sys.stderr)\n"
+            "        raise SystemExit(3)\n"
+            "    remaining = limit + 1\n"
+            "    while remaining > 0:\n"
+            "        chunk = source.read(min(65536, remaining))\n"
+            "        if not chunk:\n"
+            "            break\n"
+            "        sys.stdout.buffer.write(chunk)\n"
+            "        remaining -= len(chunk)\n"
+        )
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix=f".{destination.name}.",
+                suffix=".part",
+                dir=destination.parent,
+                delete=False,
+            ) as staged:
+                temp_path = Path(staged.name)
+                cmd = self._build_ssh_command()
+                cmd.append(
+                    "python3 -c "
+                    f"{shlex.quote(transfer_script)} "
+                    f"{shlex.quote(canonical)} {max_bytes} "
+                    f"{int(metadata['device'])} {int(metadata['inode'])} {size}"
+                )
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        stdout=staged,
+                        stderr=subprocess.PIPE,
+                        timeout=transfer_timeout,
+                        stdin=subprocess.DEVNULL,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    raise RuntimeError("Remote file transfer timed out") from exc
+
+            if result.returncode != 0:
+                stderr = result.stderr.decode(errors="replace").strip()
+                raise RuntimeError(stderr or "remote file transfer failed")
+
+            actual_size = temp_path.stat().st_size
+            if actual_size > max_bytes:
+                raise ValueError(
+                    f"Remote file grew beyond the transfer limit ({actual_size} bytes > {max_bytes} bytes)"
+                )
+            if actual_size != size:
+                raise RuntimeError(
+                    f"Remote file changed during transfer (expected {size} bytes, received {actual_size})"
+                )
+            os.replace(temp_path, destination)
+            temp_path = None
+            return {
+                "source_path": canonical,
+                "path": str(destination),
+                "size": actual_size,
+                "mtime": float(metadata["mtime"]),
+            }
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
 
     # ------------------------------------------------------------------
     # File sync (via FileSyncManager)

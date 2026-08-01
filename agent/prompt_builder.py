@@ -7,6 +7,7 @@ assemble pieces, then combines them with memory and ephemeral prompts.
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import contextvars
@@ -1148,6 +1149,28 @@ def _current_task_backend(default: str) -> str:
     return default
 
 
+def _current_task_ssh_alias() -> str:
+    """Return the safe registry alias for the current task's SSH binding."""
+    try:
+        from gateway.session_context import get_session_env
+
+        task_id = get_session_env("HERMES_SESSION_ID", "") or os.getenv("HERMES_SESSION_ID", "")
+    except Exception:
+        task_id = os.getenv("HERMES_SESSION_ID", "")
+    if not task_id:
+        return ""
+    try:
+        from tools.terminal_tool import resolve_task_overrides
+
+        raw_alias = str(resolve_task_overrides(task_id).get("ssh_alias") or "").strip()
+    except Exception:
+        return ""
+    # Only URI-safe registry aliases are rendered into the system prompt.
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", raw_alias):
+        return ""
+    return raw_alias[:128]
+
+
 def build_environment_hints() -> str:
     """Return environment-specific guidance for the system prompt.
 
@@ -1230,6 +1253,18 @@ def build_environment_hints() -> str:
                 f"them, probe directly with a terminal call like "
                 f"`uname -a && whoami && pwd`."
             )
+
+        if backend == "ssh":
+            ssh_alias = _current_task_ssh_alias()
+            if ssh_alias:
+                hints.append(
+                    f"Current SSH target alias: `{ssh_alias}`. To deliver a file "
+                    f"created on this target through the messaging gateway, use "
+                    f"`MEDIA:ssh://{ssh_alias}/absolute/remote/path.ext` in the "
+                    f"final response (percent-encode spaces). Do not label a "
+                    f"remote path as `file://`; `file://` is reserved for files "
+                    f"on the Hermes gateway machine."
+                )
 
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)

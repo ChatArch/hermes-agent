@@ -667,6 +667,21 @@ class TestMediaExtensionAllowlistParity:
         assert "/tmp/report.md" not in stripped
         assert "Here is your report:" in stripped
 
+    @pytest.mark.parametrize(
+        "resource",
+        [
+            "ssh://build.example/srv/output/chart.png",
+            "ssh://build.example/srv/output/Caddyfile",
+            "file:///tmp/report%20one.pdf",
+        ],
+    )
+    def test_resource_uri_tag_is_stripped_from_stream_display(self, resource):
+        text = f"Here is the result.\nMEDIA:{resource}"
+
+        stripped = BasePlatformAdapter.strip_media_directives_for_display(text)
+
+        assert stripped == "Here is the result."
+
 
 class TestExtensionlessMediaDelivery:
     """Regression: MEDIA: tags for extension-less files (Caddyfile, Makefile)."""
