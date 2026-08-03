@@ -873,7 +873,7 @@ class BaseEnvironment(ABC):
         # Chain mv on the export succeeding so a failed/partial dump never
         # replaces a good snapshot; drop the temp on failure so it isn't
         # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
-        if self._snapshot_ready and self._persist_session_state:
+        if self._snapshot_ready and getattr(self, "_persist_session_state", True):
         # NOTE: the temp path is allocated with mktemp into a shell variable
         # first — the redirection inside _export_dump_excluding_session_vars is
         # attached to a brace group so the variable expands in the same shell
@@ -1279,7 +1279,7 @@ class BaseEnvironment(ABC):
             return
 
         cwd_path = output[first + len(marker) : last].strip()
-        if cwd_path and self._persist_session_state:
+        if cwd_path and getattr(self, "_persist_session_state", True):
             self.cwd = cwd_path
 
         # Strip the marker line AND the \n we injected before it.

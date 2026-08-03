@@ -779,11 +779,15 @@ def _resolve_provider_vision_default(provider: str) -> Optional[str]:
 # it must skip straight to the aggregator chain instead of returning a client
 # that will 404 on every vision request.
 #
+# deepseek: the current DeepSeek chat API family is text-only; use a separate
+# auxiliary vision provider instead of sending image parts to the main route.
+#
 # kimi-coding / kimi-coding-cn: the Kimi Coding Plan routes through
 # api.kimi.com/coding (Anthropic Messages wire) which Kimi's own docs
 # describe as having no image_in capability. Vision lives on the separate
 # Kimi Platform (api.moonshot.ai, OpenAI-wire, pay-as-you-go).  See #17076.
 _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
+    "deepseek",
     "kimi-coding",
     "kimi-coding-cn",
 })

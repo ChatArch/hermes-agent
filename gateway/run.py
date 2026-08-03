@@ -14765,6 +14765,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # always see session state.
             if _cmd_def_inner and _cmd_def_inner.name == "status":
                 return await self._handle_status_command(event)
+            if self._draining:
+                return (
+                    f"⏳ Gateway is {self._status_action_gerund()} "
+                    "and is not accepting new work right now."
+                )
             if _cmd_def_inner and _cmd_def_inner.name == "context":
                 return await self._handle_context_command(event)
 

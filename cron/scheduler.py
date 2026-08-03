@@ -3076,7 +3076,6 @@ def run_job(
         # inline/synchronous path, so results return within the job's own turn.
         # See declare_stateless_channel(). Upstream: #53027, #63142.
         async_delivery=False,
-        cron_session=True,
         cwd=_job_workdir or "",
     )
     _cron_delivery_vars = (

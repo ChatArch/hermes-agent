@@ -2154,7 +2154,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 # against the shell's cwd, which can differ from the workspace
                 # (git-worktree cwd bug) — landing the edit elsewhere.
                 patch_for_ops = _rewrite_v4a_patch_paths_for_host(
-                    patch, _path_to_resolved, file_ops
+                    patch, _path_to_shell, file_ops
                 )
                 result = file_ops.patch_v4a(patch_for_ops)
             else:

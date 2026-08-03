@@ -460,7 +460,10 @@ def is_gateway_known_command(name: str | None) -> bool:
 # semantically a subset of "all resolvable commands" — which is the real
 # bypass set (see should_bypass_active_session below).
 ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
-    cmd.name for cmd in COMMAND_REGISTRY if cmd.busy_policy != "reject"
+    name
+    for cmd in COMMAND_REGISTRY
+    if cmd.busy_policy != "reject"
+    for name in (cmd.name, *cmd.aliases)
 )
 
 
