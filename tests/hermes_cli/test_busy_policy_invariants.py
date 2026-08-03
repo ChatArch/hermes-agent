@@ -46,7 +46,10 @@ _HISTORICAL_BYPASS_NAMES = frozenset(
 
 def test_bypass_set_is_derived_from_registry():
     expected = frozenset(
-        cmd.name for cmd in COMMAND_REGISTRY if cmd.busy_policy != "reject"
+        name
+        for cmd in COMMAND_REGISTRY
+        if cmd.busy_policy != "reject"
+        for name in (cmd.name, *cmd.aliases)
     )
     assert ACTIVE_SESSION_BYPASS_COMMANDS == expected
 
