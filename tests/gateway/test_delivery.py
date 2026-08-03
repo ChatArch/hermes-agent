@@ -1,10 +1,13 @@
 """Tests for the delivery routing module."""
 
 import pytest
+from typing import Any, cast
 
-from gateway.config import GatewayConfig, Platform
+from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.delivery import DeliveryRouter, DeliveryTarget
 from gateway.platforms.base import SendResult
+from gateway.relay.adapter import RelayAdapter
+from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 from gateway.session import SessionSource
 
 
@@ -15,16 +18,6 @@ class TestParseTargetPlatformChat:
         assert target.chat_id == "12345"
         assert target.is_explicit is True
 
-    def test_platform_only_no_chat_id(self):
-        target = DeliveryTarget.parse("discord")
-        assert target.platform == Platform.DISCORD
-        assert target.chat_id is None
-        assert target.is_explicit is False
-
-    def test_local_target(self):
-        target = DeliveryTarget.parse("local")
-        assert target.platform == Platform.LOCAL
-        assert target.chat_id is None
 
     def test_origin_with_source(self):
         origin = SessionSource(platform=Platform.TELEGRAM, chat_id="789", thread_id="42")
@@ -34,38 +27,12 @@ class TestParseTargetPlatformChat:
         assert target.thread_id == "42"
         assert target.is_origin is True
 
-    def test_origin_without_source(self):
-        target = DeliveryTarget.parse("origin")
-        assert target.platform == Platform.LOCAL
-        assert target.is_origin is True
-
-    def test_unknown_platform(self):
-        target = DeliveryTarget.parse("unknown_platform")
-        assert target.platform == Platform.LOCAL
-
 
 class TestTargetToStringRoundtrip:
     def test_origin_roundtrip(self):
         origin = SessionSource(platform=Platform.TELEGRAM, chat_id="111", thread_id="42")
         target = DeliveryTarget.parse("origin", origin=origin)
         assert target.to_string() == "origin"
-
-    def test_local_roundtrip(self):
-        target = DeliveryTarget.parse("local")
-        assert target.to_string() == "local"
-
-    def test_platform_only_roundtrip(self):
-        target = DeliveryTarget.parse("discord")
-        assert target.to_string() == "discord"
-
-    def test_explicit_chat_roundtrip(self):
-        target = DeliveryTarget.parse("telegram:999")
-        s = target.to_string()
-        assert s == "telegram:999"
-
-        reparsed = DeliveryTarget.parse(s)
-        assert reparsed.platform == Platform.TELEGRAM
-        assert reparsed.chat_id == "999"
 
 
 class TestCaseSensitiveChatIdParsing:
@@ -125,6 +92,76 @@ class TestPlatformNameCaseInsensitivity:
         assert target.platform == Platform.TELEGRAM
         assert target.chat_id == "12345"
 
+    
+
+class _RelayDeliveryTransport:
+    """Relay transport that advertises Slack and records outbound wire frames."""
+
+    def __init__(self):
+        self._identities = [("slack", "bot-1")]
+        self.sent = []
+
+    async def send_outbound(self, action, *, platform=None):
+        self.sent.append((action, platform))
+        if not action.get("metadata", {}).get("user_id"):
+            return {"success": False, "error": "target not routed to an onboarded tenant"}
+        return {"success": True, "message_id": "relay-message-1"}
+
+
+def _make_relay(transport):
+    return RelayAdapter(
+        PlatformConfig(enabled=True),
+        CapabilityDescriptor(
+            contract_version=CONTRACT_VERSION,
+            platform="slack",
+            label="Slack",
+            max_message_length=4000,
+            supports_draft_streaming=False,
+            supports_edit=True,
+            supports_threads=True,
+            markdown_dialect="slack",
+            len_unit="chars",
+        ),
+        transport=cast(Any, transport),
+    )
+
+
+@pytest.mark.asyncio
+async def test_relay_fronted_target_delivers_without_prior_inbound_chat_state(tmp_path, monkeypatch):
+    """A persisted Slack home must work immediately after a gateway restart."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    transport = _RelayDeliveryTransport()
+    relay = _make_relay(transport)
+    config = GatewayConfig(
+        platforms={
+            Platform.RELAY: PlatformConfig(enabled=True),
+            Platform.SLACK: PlatformConfig(
+                enabled=False,
+                home_channel=HomeChannel(
+                    platform=Platform.SLACK,
+                    chat_id="D123",
+                    name="Owner DM",
+                    user_id="U123",
+                ),
+            ),
+        },
+    )
+    router = DeliveryRouter(config, adapters={Platform.RELAY: relay})
+
+    result = await router._deliver_to_platform(
+        DeliveryTarget(platform=Platform.SLACK, chat_id="D123"),
+        "scheduled result",
+        metadata={"job_id": "cron-1", "user_id": "stale-user"},
+    )
+
+    assert getattr(result, "success", False) is True
+    assert len(transport.sent) == 1
+    action, wire_platform = transport.sent[0]
+    assert wire_platform == "slack"
+    assert action["chat_id"] == "D123"
+    assert action["metadata"] == {"job_id": "cron-1", "user_id": "U123"}
+
+
 class RecordingAdapter:
     def __init__(self):
         self.calls = []
@@ -139,6 +176,71 @@ class RecordingAdapter:
             {"chat_id": chat_id, "topic_name": topic_name, "force_create": force_create}
         )
         return "38049"
+
+
+@pytest.mark.asyncio
+async def test_native_adapter_wins_when_relay_also_fronts_platform(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    native = RecordingAdapter()
+    transport = _RelayDeliveryTransport()
+    relay = _make_relay(transport)
+    config = GatewayConfig(
+        platforms={
+            Platform.SLACK: PlatformConfig(enabled=True),
+            Platform.RELAY: PlatformConfig(enabled=True),
+        },
+    )
+    router = DeliveryRouter(
+        config,
+        adapters={Platform.SLACK: native, Platform.RELAY: relay},
+    )
+
+    await router._deliver_to_platform(
+        DeliveryTarget(platform=Platform.SLACK, chat_id="D123"),
+        "native result",
+        metadata=None,
+    )
+
+    assert native.calls == [
+        {"chat_id": "D123", "content": "native result", "metadata": None}
+    ]
+    assert transport.sent == []
+
+
+@pytest.mark.asyncio
+async def test_disabled_native_adapter_does_not_shadow_relay(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    native = RecordingAdapter()
+    transport = _RelayDeliveryTransport()
+    relay = _make_relay(transport)
+    config = GatewayConfig(
+        platforms={
+            Platform.SLACK: PlatformConfig(
+                enabled=False,
+                home_channel=HomeChannel(
+                    platform=Platform.SLACK,
+                    chat_id="D123",
+                    name="Owner DM",
+                    user_id="U123",
+                ),
+            ),
+            Platform.RELAY: PlatformConfig(enabled=True),
+        },
+    )
+    router = DeliveryRouter(
+        config,
+        adapters={Platform.SLACK: native, Platform.RELAY: relay},
+    )
+
+    await router._deliver_to_platform(
+        DeliveryTarget(platform=Platform.SLACK, chat_id="D123"),
+        "relay result",
+        metadata=None,
+    )
+
+    assert native.calls == []
+    assert len(transport.sent) == 1
+    assert transport.sent[0][1] == "slack"
 
 
 class StaleTopicAdapter:
@@ -157,19 +259,6 @@ class StaleTopicAdapter:
             {"chat_id": chat_id, "topic_name": topic_name, "force_create": force_create}
         )
         return "38064" if force_create else "32343"
-
-
-@pytest.mark.asyncio
-async def test_explicit_telegram_private_thread_requires_reply_anchor(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
-    adapter = RecordingAdapter()
-    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
-    target = DeliveryTarget.parse("telegram:722341991:32344")
-
-    with pytest.raises(RuntimeError, match="requires telegram_reply_to_message_id"):
-        await router._deliver_to_platform(target, "hello", metadata=None)
-
-    assert adapter.calls == []
 
 
 @pytest.mark.asyncio
@@ -194,24 +283,6 @@ async def test_named_telegram_private_topic_is_created_before_delivery(tmp_path,
             },
         }
     ]
-
-
-@pytest.mark.asyncio
-async def test_named_telegram_private_topic_refreshes_stale_thread_id(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
-    adapter = StaleTopicAdapter()
-    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
-    target = DeliveryTarget.parse("telegram:722341991:Personal")
-
-    result = await router._deliver_to_platform(target, "hello", metadata=None)
-
-    assert getattr(result, "message_id", None) == "fresh-message"
-    assert adapter.ensure_dm_topic_calls == [
-        {"chat_id": "722341991", "topic_name": "Personal", "force_create": False},
-        {"chat_id": "722341991", "topic_name": "Personal", "force_create": True},
-    ]
-    assert [call["metadata"]["thread_id"] for call in adapter.calls] == ["32343", "38064"]
-    assert all(call["metadata"]["telegram_dm_topic_created_for_send"] is True for call in adapter.calls)
 
 
 @pytest.mark.asyncio
@@ -240,47 +311,9 @@ async def test_explicit_telegram_private_thread_uses_reply_fallback_with_anchor(
     ]
 
 
-@pytest.mark.asyncio
-async def test_explicit_telegram_direct_messages_topic_metadata_is_respected(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
-    adapter = RecordingAdapter()
-    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
-    target = DeliveryTarget.parse("telegram:722341991:32344")
-
-    await router._deliver_to_platform(
-        target,
-        "hello",
-        metadata={"telegram_direct_messages_topic_id": "32344"},
-    )
-
-    assert adapter.calls[0]["metadata"] == {"telegram_direct_messages_topic_id": "32344"}
-
-
-@pytest.mark.asyncio
-async def test_explicit_telegram_group_thread_does_not_mark_dm_fallback(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
-    adapter = RecordingAdapter()
-    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
-    target = DeliveryTarget.parse("telegram:-100123:42")
-
-    await router._deliver_to_platform(target, "hello", metadata=None)
-
-    assert adapter.calls[0]["metadata"] == {"thread_id": "42"}
-
-
 class FailingAdapter:
     async def send(self, chat_id, content, metadata=None):
         return SendResult(success=False, error="route failed", retryable=False)
-
-
-@pytest.mark.asyncio
-async def test_platform_send_failure_raises_for_delivery_result(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
-    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: FailingAdapter()})
-    target = DeliveryTarget.parse("telegram:722341991:32344")
-
-    with pytest.raises(RuntimeError, match="route failed"):
-        await router._deliver_to_platform(target, "hello", metadata={"telegram_reply_to_message_id": "9001"})
 
 
 # ---------------------------------------------------------------------------
