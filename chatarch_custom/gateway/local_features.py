@@ -26,6 +26,7 @@ class LocalGatewayCommand:
     args_hint: str = ""
     subcommands: tuple[str, ...] = ()
     handler_name: str = ""
+    busy_policy: str = "dispatch"
 
     def to_command_def(self, factory: CommandDefFactory) -> CommandDefT:
         """Build the host project's CommandDef without importing it here."""
@@ -37,6 +38,7 @@ class LocalGatewayCommand:
             gateway_only=True,
             args_hint=self.args_hint,
             subcommands=self.subcommands,
+            busy_policy=self.busy_policy,
         )
 
 

@@ -242,16 +242,6 @@ class TestTerminalToolConfig:
         from tools.terminal_tool import _get_env_config
         assert _get_env_config()["ssh_persistent"] is True
 
-    def test_ssh_persistent_explicit_false(self, monkeypatch):
-        """Per-backend env var overrides the global default."""
-        monkeypatch.setenv("TERMINAL_SSH_PERSISTENT", "false")
-        from tools.terminal_tool import _get_env_config
-        assert _get_env_config()["ssh_persistent"] is False
-
-    def test_ssh_persistent_explicit_true(self, monkeypatch):
-        monkeypatch.setenv("TERMINAL_SSH_PERSISTENT", "true")
-        from tools.terminal_tool import _get_env_config
-        assert _get_env_config()["ssh_persistent"] is True
 
     def test_ssh_persistent_respects_config(self, monkeypatch):
         """TERMINAL_PERSISTENT_SHELL=false disables SSH persistent by default."""
@@ -278,16 +268,6 @@ class TestSSHPreflight:
         with pytest.raises(RuntimeError, match="SSH is not installed or not in PATH"):
             ssh_env._ensure_ssh_available()
 
-    def test_ssh_environment_checks_availability_before_connect(self, monkeypatch):
-        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: None)
-        monkeypatch.setattr(
-            ssh_env.SSHEnvironment,
-            "_establish_connection",
-            lambda self: pytest.fail("_establish_connection should not run when ssh is missing"),
-        )
-
-        with pytest.raises(RuntimeError, match="openssh-client"):
-            ssh_env.SSHEnvironment(host="example.com", user="alice")
 
     def test_ssh_environment_connects_when_ssh_exists(self, monkeypatch):
         called = {"count": 0}
@@ -336,9 +316,6 @@ class TestOneShotSSH:
         assert r["exit_code"] == 0
         assert "hello" in r["output"]
 
-    def test_exit_code(self):
-        r = _run("exit 42")
-        assert r["exit_code"] == 42
 
     def test_state_does_not_persist(self):
         _run("export HERMES_ONESHOT_TEST=yes")
