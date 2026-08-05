@@ -116,6 +116,94 @@ def _destination_for(ref: ArtifactRef, cache_dir: Path | None) -> Path:
     return target_dir / f"remote_{uuid.uuid4().hex[:12]}{suffix}"
 
 
+def _candidate_task_ids(task_id: str, fallback_task_ids: tuple[str, ...]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for candidate in (task_id, *fallback_task_ids):
+        candidate = str(candidate or "").strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        candidates.append(candidate)
+    return tuple(candidates)
+
+
+def _active_materialization_env(task_ids: tuple[str, ...]) -> Any | None:
+    try:
+        from tools.terminal_tool import get_active_env
+    except Exception:
+        return None
+
+    for candidate_task_id in task_ids:
+        try:
+            candidate_env = get_active_env(candidate_task_id)
+        except Exception:
+            continue
+        if candidate_env is not None and getattr(
+            candidate_env, "supports_file_materialization", False
+        ):
+            return candidate_env
+    return None
+
+
+def _task_overrides_match_ssh_alias(task_id: str, ssh_alias: str | None) -> bool:
+    """Return True when *task_id* is explicitly bound to the current SSH alias."""
+    if not ssh_alias:
+        return False
+    try:
+        from tools.terminal_tool import resolve_task_overrides
+
+        overrides = resolve_task_overrides(task_id)
+    except Exception:
+        return False
+    if str(overrides.get("env_type") or "").strip().lower() != "ssh":
+        return False
+    override_alias = str(overrides.get("ssh_alias") or "").strip()
+    return override_alias.lower() == str(ssh_alias).strip().lower()
+
+
+def _bound_materialization_env(
+    task_ids: tuple[str, ...],
+    *,
+    ssh_alias: str | None,
+) -> Any | None:
+    """Create/reuse a file-materializing env for the current SSH binding.
+
+    ``get_active_env()`` is intentionally non-creating.  In a gateway turn the
+    model may emit an explicit ``MEDIA:ssh://...`` reference without having used
+    a terminal/file tool in that turn, or after the previous idle environment was
+    cleaned up.  The section binding has already been registered as task env
+    overrides before the agent ran; use the file-tool factory to recreate the
+    same bounded SSH env instead of failing closed just because no active env is
+    currently cached.
+    """
+    if not ssh_alias:
+        return None
+
+    last_error: Exception | None = None
+    for candidate_task_id in task_ids:
+        if not _task_overrides_match_ssh_alias(candidate_task_id, ssh_alias):
+            continue
+        try:
+            from tools.file_tools import _get_file_ops
+
+            file_ops = _get_file_ops(candidate_task_id)
+            candidate_env = getattr(file_ops, "env", None)
+        except Exception as exc:
+            last_error = exc
+            continue
+        if candidate_env is not None and getattr(
+            candidate_env, "supports_file_materialization", False
+        ):
+            return candidate_env
+
+    if last_error is not None:
+        raise RuntimeError(
+            "failed to create current SSH materialization environment"
+        ) from last_error
+    return None
+
+
 def _media_spans(response: str):
     from gateway.platforms.base import (
         BasePlatformAdapter,
@@ -168,24 +256,10 @@ def materialize_response_media(
         validate_media_delivery_path,
     )
 
+    task_ids = _candidate_task_ids(task_id, fallback_task_ids)
+    may_create_bound_env = env is _ENV_UNSET
     if env is _ENV_UNSET:
-        try:
-            from tools.terminal_tool import get_active_env
-
-            seen_task_ids: set[str] = set()
-            for candidate_task_id in (task_id, *fallback_task_ids):
-                candidate_task_id = str(candidate_task_id or "").strip()
-                if not candidate_task_id or candidate_task_id in seen_task_ids:
-                    continue
-                seen_task_ids.add(candidate_task_id)
-                candidate_env = get_active_env(candidate_task_id)
-                if candidate_env is not None and getattr(
-                    candidate_env, "supports_file_materialization", False
-                ):
-                    env = candidate_env
-                    break
-        except Exception:
-            env = None
+        env = _active_materialization_env(task_ids)
 
     effective_max = max_bytes
     if effective_max is None:
@@ -226,6 +300,12 @@ def materialize_response_media(
                 if local_path:
                     # Existing local MEDIA behavior remains byte-for-byte stable.
                     continue
+                if (
+                    may_create_bound_env
+                    and (env is None or not getattr(env, "supports_file_materialization", False))
+                    and ssh_alias
+                ):
+                    env = _bound_materialization_env(task_ids, ssh_alias=ssh_alias)
                 if env is None or not getattr(env, "supports_file_materialization", False):
                     continue
                 ref = ArtifactRef(scheme="ssh", authority=ssh_alias, path=ref.path)
@@ -237,6 +317,11 @@ def materialize_response_media(
                 replacements.append((start, end, f"MEDIA:{prior}"))
                 continue
 
+            if (
+                may_create_bound_env
+                and (env is None or not getattr(env, "supports_file_materialization", False))
+            ):
+                env = _bound_materialization_env(task_ids, ssh_alias=ssh_alias)
             if env is None or not getattr(env, "supports_file_materialization", False):
                 raise RuntimeError("current SSH environment cannot materialize files")
 
@@ -300,7 +385,11 @@ def materialize_response_media(
                 )
             )
             replacements.append((start, end, ""))
-            logger.warning("Remote MEDIA materialization failed: %s", type(exc).__name__)
+            logger.warning(
+                "Remote MEDIA materialization failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
 
     if not replacements:
         return MediaMaterializationResult(response=response)

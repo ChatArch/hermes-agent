@@ -348,6 +348,83 @@ def test_no_active_materializing_environment_keeps_response_unchanged(tmp_path):
     assert result.failures == ()
 
 
+def test_materializer_recreates_bound_ssh_env_when_active_env_was_cleaned(
+    monkeypatch, tmp_path,
+):
+    from gateway.media_materializer import materialize_response_media
+    from tools import file_tools, terminal_tool
+
+    env = _FakeRemoteEnvironment()
+    looked_up = []
+    created_for = []
+
+    class _FileOps:
+        def __init__(self, materializing_env):
+            self.env = materializing_env
+
+    def _resolve_task_overrides(task_id):
+        looked_up.append(task_id)
+        if task_id == "session-1":
+            return {"env_type": "ssh", "ssh_alias": "build.example"}
+        return {}
+
+    def _get_file_ops(task_id):
+        created_for.append(task_id)
+        return _FileOps(env)
+
+    monkeypatch.setattr(terminal_tool, "get_active_env", lambda task_id: None)
+    monkeypatch.setattr(terminal_tool, "resolve_task_overrides", _resolve_task_overrides)
+    monkeypatch.setattr(file_tools, "_get_file_ops", _get_file_ops)
+
+    result = materialize_response_media(
+        "Screenshot\nMEDIA:ssh://build.example/srv/captures/page.png",
+        task_id="session-1",
+        fallback_task_ids=("agent:main:feishu:dm:chat:thread",),
+        ssh_alias="build.example",
+        cache_dir=tmp_path,
+        max_bytes=1024,
+    )
+
+    assert looked_up[0] == "session-1"
+    assert created_for == ["session-1"]
+    assert len(env.calls) == 1
+    assert env.calls[0]["source_path"] == "/srv/captures/page.png"
+    assert result.failures == ()
+    assert len(result.materialized_paths) == 1
+    assert result.response == f"Screenshot\nMEDIA:{result.materialized_paths[0]}"
+
+
+def test_materializer_does_not_create_env_for_unbound_ssh_alias(monkeypatch, tmp_path):
+    from gateway.media_materializer import materialize_response_media
+    from tools import file_tools, terminal_tool
+
+    created_for = []
+
+    monkeypatch.setattr(terminal_tool, "get_active_env", lambda task_id: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "resolve_task_overrides",
+        lambda task_id: {"env_type": "ssh", "ssh_alias": "other.example"},
+    )
+    monkeypatch.setattr(
+        file_tools,
+        "_get_file_ops",
+        lambda task_id: created_for.append(task_id),
+    )
+
+    result = materialize_response_media(
+        "MEDIA:ssh://build.example/srv/captures/page.png",
+        task_id="session-1",
+        ssh_alias="build.example",
+        cache_dir=tmp_path,
+    )
+
+    assert created_for == []
+    assert result.response == ""
+    assert len(result.failures) == 1
+    assert "current SSH environment cannot materialize files" in result.failures[0].error
+
+
 def test_gateway_materializes_with_current_session_binding(monkeypatch, tmp_path):
     import gateway.run as gateway_run
     from tools import terminal_tool

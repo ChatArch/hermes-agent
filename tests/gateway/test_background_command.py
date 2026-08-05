@@ -5,12 +5,13 @@ background session) across gateway messenger platforms.
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent
 from gateway.session import SessionSource
 
 
@@ -165,6 +166,58 @@ class TestRunBackgroundTask:
         assert agent_kwargs["checkpoint_max_file_size_mb"] == 3
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_background_task_materializes_ssh_media_before_extracting(self, tmp_path):
+        """Background-task results share the same MEDIA:ss contract as foreground replies."""
+        runner = _make_runner()
+        image = tmp_path / "background.png"
+        image.write_bytes(b"fake image bytes")
+
+        mock_adapter = AsyncMock()
+        mock_adapter.extract_media = MagicMock(side_effect=BasePlatformAdapter.extract_media)
+        mock_adapter.extract_images = MagicMock(side_effect=lambda text: ([], text))
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_image_file = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        mock_adapter.send_video = AsyncMock()
+        mock_adapter.send_document = AsyncMock()
+        runner.adapters[Platform.FEISHU] = mock_adapter
+        runner._materialize_media_for_delivery = AsyncMock(
+            return_value=SimpleNamespace(response=f"MEDIA:{image}", failures=())
+        )
+
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            user_id="ou_user",
+            chat_id="oc_chat",
+            user_name="testuser",
+            thread_id="omt_thread",
+        )
+
+        mock_result = {
+            "final_response": "MEDIA:ssh://zhihong.oray/home/zhihong/background.png",
+            "messages": [],
+        }
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("gateway.run._load_gateway_config", return_value={}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("send qr", source, "bg_media")
+
+        runner._materialize_media_for_delivery.assert_awaited_once()
+        materialize_kwargs = runner._materialize_media_for_delivery.await_args.kwargs
+        assert materialize_kwargs["session_id"] == "bg_media"
+        assert materialize_kwargs["session_key"] == "agent:main:feishu:dm:oc_chat:omt_thread"
+        mock_adapter.send_image_file.assert_awaited_once()
+        assert mock_adapter.send_image_file.await_args.kwargs["image_path"] == str(image)
+        assert mock_adapter.send.await_count == 0
 
 
 # ---------------------------------------------------------------------------
