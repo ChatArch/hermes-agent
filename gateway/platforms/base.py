@@ -1819,6 +1819,27 @@ def _merge_spans(spans: list) -> list:
     return merged
 
 
+def _mask_json_resource_uri_media(content: str) -> str:
+    """Mask typed MEDIA resource URIs embedded inside JSON string values.
+
+    ``MEDIA:ssh://...`` and ``MEDIA:file://...`` are internal outbound
+    transport controls when they appear as real response directives.  When the
+    same text appears inside a serialized JSON value, it is stored/example
+    content and must stay visible rather than being stripped or delivered.
+    Offset-preserving masking lets the normal span-delete code share one
+    locator while preserving the original display text.
+    """
+    if '"' not in content or "MEDIA:" not in content:
+        return content
+    chars = list(content)
+    for match in re.finditer(r'(?<=[:,{\[])\s*"((?:[^"\\\n]|\\.)*)"', content):
+        if re.search(r"MEDIA:\s*(?:file|ssh)://", match.group(1), re.IGNORECASE):
+            for index in range(match.start(1), match.end(1)):
+                if chars[index] != "\n":
+                    chars[index] = " "
+    return "".join(chars)
+
+
 def _normalize_media_tag_path(raw: str) -> str:
     path = str(raw or "").strip()
     if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
@@ -1872,8 +1893,10 @@ def _strip_media_tag_directives(text: str) -> str:
     # in this module, so resolve it lazily at call time.
     masked = BasePlatformAdapter._mask_protected_spans(cleaned)
     masked = BasePlatformAdapter._mask_json_string_media(masked)
+    masked = _mask_json_resource_uri_media(masked)
 
-    spans: list = [m.span() for m in MEDIA_TAG_CLEANUP_RE.finditer(masked)]
+    spans: list = [m.span() for m in MEDIA_RESOURCE_URI_RE.finditer(masked)]
+    spans.extend(m.span() for m in MEDIA_TAG_CLEANUP_RE.finditer(masked))
     for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(masked):
         path = _normalize_media_tag_path(match.group("path"))
         if not path or not _path_lacks_deliverable_extension(path):
@@ -1887,7 +1910,6 @@ def _strip_media_tag_directives(text: str) -> str:
         for start, end in reversed(_merge_spans(spans)):
             del chars[start:end]
         cleaned = "".join(chars)
-    cleaned = MEDIA_RESOURCE_URI_RE.sub("", cleaned)
     return cleaned
 
 
@@ -4560,6 +4582,7 @@ class BasePlatformAdapter(ABC):
         # stay valid; chaining them masks the union of both protected regions.
         scan_content = BasePlatformAdapter._mask_protected_spans(content)
         scan_content = BasePlatformAdapter._mask_json_string_media(scan_content)
+        scan_content = _mask_json_resource_uri_media(scan_content)
         # Dedupe on the expanded path (first occurrence wins) so the same file
         # referenced twice in one response — e.g. a MEDIA tag inline AND in a
         # summary footer — is uploaded once, not twice (#29131).
@@ -4599,7 +4622,15 @@ class BasePlatformAdapter(ABC):
                 media.append((safe, has_voice_tag and _safe_ext in _AUDIO_EXTS))
                 seen_paths.add(safe)
 
-        # Remove the delivered MEDIA tags from the user-visible text. Mask a
+        # Remove delivered MEDIA tags and unresolved typed resource URI
+        # directives from the user-visible text.  Resource URIs are an internal
+        # transport-control contract: when an earlier materialization boundary
+        # fails to rewrite them to gateway-local ``MEDIA:/...`` paths, this
+        # extractor must fail closed instead of leaking ``MEDIA:ssh://...`` or
+        # ``MEDIA:file://...`` to the user.  Protected examples stay visible
+        # through the same offset-preserving mask used for delivery discovery.
+        #
+        # Mask a
         # length-equal copy of ``cleaned`` (same union of protected regions) to
         # *locate* the real tag spans, then delete exactly those spans from the
         # *unmasked* ``cleaned``. Masking is only a locator — protected spans
@@ -4607,10 +4638,12 @@ class BasePlatformAdapter(ABC):
         # in the delivered text, not be blanked to whitespace. Masking
         # ``cleaned`` (not ``content``) keeps offsets valid after the
         # [[audio_as_voice]] / [[as_document]] directives are removed.
-        if media:
+        if media or MEDIA_RESOURCE_URI_RE.search(cleaned):
             masked_cleaned = BasePlatformAdapter._mask_protected_spans(cleaned)
             masked_cleaned = BasePlatformAdapter._mask_json_string_media(masked_cleaned)
-            spans = [m.span() for m in media_pattern.finditer(masked_cleaned)]
+            masked_cleaned = _mask_json_resource_uri_media(masked_cleaned)
+            spans = [m.span() for m in MEDIA_RESOURCE_URI_RE.finditer(masked_cleaned)]
+            spans.extend(m.span() for m in media_pattern.finditer(masked_cleaned))
             for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(masked_cleaned):
                 path = _normalize_media_tag_path(match.group("path"))
                 if not path or not _path_lacks_deliverable_extension(path):

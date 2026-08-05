@@ -18178,6 +18178,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             event,
                             _media_adapter,
                             streamed_message_id=agent_result.get("stream_message_id"),
+                            session_id=session_entry.session_id,
+                            fallback_session_id=_run_start_session_id,
+                            session_key=session_key,
                         )
                 if _media_materialization and _media_materialization.failures:
                     try:
@@ -19888,6 +19891,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter,
         *,
         streamed_message_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        fallback_session_id: Optional[str] = None,
+        session_key: Optional[str] = None,
     ) -> None:
         """Extract explicit MEDIA: tags from a response and deliver them.
 
@@ -19915,7 +19921,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # send_multiple_images (Telegram sendPhoto recompresses to ~1280px).
             force_document_attachments = "[[as_document]]" in response
 
-            from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
+            from gateway.platforms.base import (
+                BasePlatformAdapter,
+                MEDIA_RESOURCE_URI_RE,
+                should_send_media_as_audio,
+            )
+
+            if (
+                response
+                and session_id
+                and session_key
+                and MEDIA_RESOURCE_URI_RE.search(response)
+            ):
+                try:
+                    _materialized = await self._materialize_media_for_delivery(
+                        response,
+                        session_id=session_id,
+                        fallback_session_id=fallback_session_id,
+                        session_key=session_key,
+                    )
+                    response = _materialized.response
+                    if _materialized.failures:
+                        logger.warning(
+                            "[%s] Post-stream remote MEDIA materialization failed for %d attachment(s)",
+                            adapter.name,
+                            len(_materialized.failures),
+                        )
+                except Exception as _media_exc:
+                    logger.warning(
+                        "[%s] Post-stream remote MEDIA materialization errored: %s",
+                        adapter.name,
+                        _media_exc,
+                        exc_info=True,
+                    )
 
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
