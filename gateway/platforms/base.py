@@ -6147,7 +6147,6 @@ class BasePlatformAdapter(ABC):
                 # thread_id create payload.
                 if (
                     self.platform == Platform.FEISHU
-                    and text_content
                     and len(media_files) == 1
                     and not images
                     and not local_files
@@ -6160,7 +6159,7 @@ class BasePlatformAdapter(ABC):
                             inline_result = await self.send_image_file(
                                 chat_id=event.source.chat_id,
                                 image_path=_inline_media_path,
-                                caption=text_content,
+                                caption=text_content or None,
                                 reply_to=_reply_anchor,
                                 metadata=_final_thread_metadata,
                             )

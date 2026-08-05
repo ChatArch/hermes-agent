@@ -77,6 +77,57 @@ async def test_feishu_media_response_uses_inline_caption_path_with_reply_anchor(
 
 
 @pytest.mark.asyncio
+async def test_feishu_media_only_response_uses_direct_image_path_with_reply_anchor(tmp_path):
+    """A bare MEDIA image is still a real attachment, not generic batch text.
+
+    The production incident included final content that was just a typed
+    ``MEDIA:ssh://...`` resource marker.  After materialization/extraction that
+    becomes ``MEDIA:/gateway/cache/image.png`` with an empty caption.  Feishu
+    still needs the direct image-file path so the reply anchor/topic metadata are
+    preserved; falling through to the generic batch path was the untested gap.
+    """
+    image = tmp_path / "qr.png"
+    image.write_bytes(b"fake image bytes")
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._reply_anchor_for_event = MagicMock(return_value="om_user")
+    runner._thread_metadata_for_source = MagicMock(
+        return_value={"thread_id": "omt_thread", "reply_to_message_id": "om_user"}
+    )
+
+    adapter = _media_adapter_for_image(image, caption="")
+
+    event = MessageEvent(
+        text="user",
+        source=SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_chat",
+            user_id="ou_user",
+            thread_id="omt_thread",
+        ),
+        message_id="om_user",
+    )
+
+    await runner._deliver_media_from_response(
+        f"MEDIA:{image}",
+        event,
+        adapter,
+        streamed_message_id="om_streamed_text",
+    )
+
+    runner._thread_metadata_for_source.assert_called_once_with(event.source, "om_user")
+    adapter.send_image_file.assert_awaited_once()
+    kwargs = adapter.send_image_file.await_args.kwargs
+    assert kwargs["chat_id"] == "oc_chat"
+    assert kwargs["image_path"] == str(image)
+    assert kwargs["caption"] is None
+    assert kwargs["reply_to"] == "om_user"
+    assert kwargs["metadata"] == {"thread_id": "omt_thread", "reply_to_message_id": "om_user"}
+    adapter.delete_message.assert_awaited_once_with("oc_chat", "om_streamed_text")
+    adapter.send_multiple_images.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_feishu_inline_image_does_not_delete_streamed_text_on_failed_send(tmp_path):
     image = tmp_path / "chart.png"
     image.write_bytes(b"fake image bytes")
@@ -299,6 +350,49 @@ async def test_feishu_normal_final_response_uses_single_inline_post(tmp_path):
             "chat_id": "oc_chat",
             "image_path": str(image),
             "caption": "Normal final summary",
+            "reply_to": "om_thread_root",
+            "metadata": {
+                "thread_id": "omt_thread",
+                "reply_to_message_id": "om_thread_root",
+                "notify": True,
+            },
+        }
+    ]
+    assert adapter.sent_text == []
+    assert adapter.image_batches == []
+
+
+@pytest.mark.asyncio
+async def test_feishu_normal_final_media_only_response_uses_direct_image_path(tmp_path):
+    """Non-streaming final delivery must handle a bare MEDIA image too."""
+    image = tmp_path / "normal-final-media-only.png"
+    image.write_bytes(b"fake image bytes")
+    adapter = _FeishuBackgroundInlineAdapter()
+
+    async def handler(event):
+        return f"MEDIA:{image}"
+
+    adapter.set_message_handler(handler)
+    event = MessageEvent(
+        text="please send only the image",
+        source=SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_chat",
+            user_id="ou_user",
+            thread_id="omt_thread",
+            chat_type="group",
+        ),
+        message_id="om_user_msg",
+        reply_to_message_id="om_thread_root",
+    )
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert adapter.inline_images == [
+        {
+            "chat_id": "oc_chat",
+            "image_path": str(image),
+            "caption": None,
             "reply_to": "om_thread_root",
             "metadata": {
                 "thread_id": "omt_thread",

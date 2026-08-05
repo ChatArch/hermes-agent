@@ -20009,13 +20009,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if (
                         str(platform_value).lower() == "feishu"
                         and len(image_paths) == 1
-                        and cleaned_caption
                         and hasattr(adapter, "send_image_file")
                     ):
                         img_result = await adapter.send_image_file(
                             chat_id=event.source.chat_id,
                             image_path=image_paths[0],
-                            caption=cleaned_caption,
+                            caption=cleaned_caption or None,
                             reply_to=_reply_anchor,
                             metadata=_thread_meta,
                         )
@@ -20229,6 +20228,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Extract media files from the response
             if response:
+                # Background task results are delivered outside the foreground
+                # _run_agent_inner return path, so they must resolve typed
+                # file:// / ssh:// MEDIA resources here before extract_media().
+                # Otherwise a background result whose whole body is
+                # ``MEDIA:ssh://...`` is stripped as an unresolved control (or,
+                # on older parsers, leaks as raw text) instead of becoming a
+                # gateway-local attachment.
+                if "MEDIA:" in response:
+                    try:
+                        _bg_materialized = await self._materialize_media_for_delivery(
+                            response,
+                            session_id=task_id,
+                            session_key=build_session_key(source),
+                        )
+                        response = _bg_materialized.response
+                        if _bg_materialized.failures:
+                            logger.warning(
+                                "Background task %s remote MEDIA materialization failed for %d attachment(s)",
+                                task_id,
+                                len(_bg_materialized.failures),
+                            )
+                            _failure_notice = "⚠️ One or more remote attachments could not be retrieved."
+                            response = (
+                                f"{response}\n\n{_failure_notice}"
+                                if response
+                                else _failure_notice
+                            )
+                    except Exception as _media_exc:
+                        logger.warning(
+                            "Background task %s remote MEDIA materialization errored: %s",
+                            task_id,
+                            _media_exc,
+                            exc_info=True,
+                        )
                 media_files, response = adapter.extract_media(response)
                 from gateway.platforms.base import BasePlatformAdapter
                 media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
