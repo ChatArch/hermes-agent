@@ -2267,11 +2267,13 @@ from gateway.ssh_targets import (
 from gateway.ssh_bindings import (
     add_ssh_yolo_alias,
     clear_ssh_binding,
+    get_destination_policy,
     get_ssh_binding,
     get_ssh_yolo_grant,
     remove_ssh_yolo_alias,
     resolve_binding_task_overrides,
     resolve_binding_target,
+    set_destination_enabled,
     set_ssh_binding,
     set_ssh_yolo_grant,
 )
@@ -18827,6 +18829,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "/ssh use <alias> --new-thread|-t|--thread [--cwd <remote-path>] — explicitly create a Feishu Thread and bind it\n"
                 "/ssh yolo status|on|off [alias|all] — manage model auto-switch grants for this section\n"
                 "/ssh local — return this section to local backend\n"
+                "/ssh local on|off — allow or block model-initiated return to local\n"
                 "/ssh off — alias for /ssh local"
             )
 
@@ -18837,10 +18840,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if action == "status":
             grant = get_ssh_yolo_grant(section_key)
+            policy = get_destination_policy(section_key)
             yolo_aliases = "all" if grant.allows_all else (", ".join(grant.aliases) if grant.aliases else "none")
             yolo_lines = [
                 f"- yolo: {'on' if grant.enabled else 'off'}",
                 f"- yolo list: {yolo_aliases}",
+                f"- local destination: {'on' if policy.local_enabled else 'off'}",
             ]
             resolved = resolve_binding_target(section_key, targets=load_ssh_targets())
             if resolved is None:
@@ -18934,6 +18939,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return f"SSH test: `{alias}` is configured. No binding was changed."
 
         if action in {"off", "local"}:
+            if action == "local" and len(parts) > 1:
+                subaction = parts[1].strip().lower()
+                if subaction in {"on", "off"}:
+                    update = set_destination_enabled(section_key, "local", subaction == "on")
+                    if not update.ok:
+                        return update.message or "Local destination was not changed."
+                    if subaction == "on":
+                        return "Local destination enabled for this section. Model-initiated return to local is allowed."
+                    return "Local destination disabled for this section; model cannot return to local until you run `/ssh local on` or explicitly run `/ssh local`."
+                return "Usage: /ssh local [on|off]"
+            # A user-issued `/ssh local` is an explicit override: it returns the
+            # section to local and re-enables local as a model destination.
+            set_destination_enabled(section_key, "local", True)
             clear_ssh_binding(section_key)
             try:
                 from tools.terminal_tool import clear_task_env_overrides

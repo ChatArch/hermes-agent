@@ -1,7 +1,12 @@
 import json
 
 from gateway.session_context import clear_session_vars, set_session_vars
-from gateway.ssh_bindings import get_ssh_binding, set_ssh_binding, set_ssh_yolo_grant
+from gateway.ssh_bindings import (
+    get_ssh_binding,
+    set_destination_enabled,
+    set_ssh_binding,
+    set_ssh_yolo_grant,
+)
 from gateway.ssh_targets import SshTarget
 
 
@@ -311,6 +316,32 @@ def test_ssh_mode_request_local_only_clears_agent_bindings(monkeypatch, tmp_path
     assert protected["protected"] is True
     assert cleared["changed"] is True
     assert get_ssh_binding(session_key) is None
+
+
+def test_ssh_mode_request_local_respects_local_destination_off(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    session_key = "agent:main:feishu:group:oc_chat:omt_thread"
+    tokens = set_session_vars(
+        platform="feishu",
+        chat_id="oc_chat",
+        thread_id="omt_thread",
+        session_key=session_key,
+        session_id="session-1",
+    )
+    try:
+        set_ssh_binding(session_key, alias="cubebot", source="agent-yolo")
+        disabled = set_destination_enabled(session_key, "local", False)
+        result = _call({"action": "request_local", "reason": "done"})
+    finally:
+        clear_session_vars(tokens)
+
+    assert disabled.ok is True
+    assert result["ok"] is False
+    assert result["changed"] is False
+    assert result["denied"] is True
+    assert result["destination"] == "local"
+    assert "local destination is off" in result["message"]
+    assert get_ssh_binding(session_key).alias == "cubebot"
 
 
 def test_ssh_mode_request_use_rejects_feishu_mainthread(monkeypatch, tmp_path):

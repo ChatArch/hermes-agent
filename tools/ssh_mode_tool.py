@@ -15,6 +15,7 @@ from gateway.session_context import get_session_env
 from gateway.ssh_bindings import (
     add_ssh_yolo_alias,
     clear_ssh_binding,
+    get_destination_policy,
     get_ssh_binding,
     get_ssh_yolo_grant,
     resolve_binding_task_overrides,
@@ -159,6 +160,7 @@ def _status(ctx: dict[str, str]) -> str:
             "source": binding.source,
             "reason": binding.reason,
         } if binding else None,
+        destinations={"local": get_destination_policy(session_key).local_enabled},
         yolo=_yolo_summary(session_key),
     )
 
@@ -278,6 +280,16 @@ def _request_local(ctx: dict[str, str], args: dict[str, Any], task_id: str | Non
             source=binding.source,
             message="Current SSH binding was created by the user; use /ssh local to clear it (/ssh off is a compatibility alias).",
         )
+    if not get_destination_policy(session_key).local_enabled:
+        return tool_result(
+            ok=False,
+            changed=False,
+            denied=True,
+            destination="local",
+            alias=binding.alias,
+            source=binding.source,
+            message="The local destination is off for this section; model-initiated return to local is not allowed.",
+        )
     clear_ssh_binding(session_key)
     try:
         from tools.terminal_tool import clear_task_env_overrides
@@ -321,7 +333,8 @@ SSH_MODE_SCHEMA = {
         "should run /ssh yolo on <alias> or manually run /ssh use <alias> "
         "(in a Feishu parent chat, /ssh use <alias> creates a Thread by default). "
         "request_local is the model-facing equivalent of /ssh local, but may clear "
-        "only model-created SSH bindings, never user-created sticky /ssh use bindings."
+        "only model-created SSH bindings, never user-created sticky /ssh use bindings, "
+        "and is denied when this section's local destination is off."
     ),
     "parameters": {
         "type": "object",

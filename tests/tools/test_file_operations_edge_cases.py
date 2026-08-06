@@ -5,6 +5,7 @@ Covers:
 - ``_check_lint()`` robustness against file paths containing curly braces
 """
 
+import subprocess
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -50,6 +51,64 @@ class TestIsLikelyBinary:
         # Remaining 1000 chars: all NUL → ignored by [:1000] slice
         sample = "\x00" * 200 + "a" * 800 + "\x00" * 1000
         assert ops._is_likely_binary("file.xyz", content_sample=sample) is False
+
+    def test_replacement_char_from_utf8_boundary_sample_is_not_binary(self, ops):
+        """A lossy ``head -c`` sample ending mid-codepoint is still text."""
+        sample = "a" * 998 + "\ufffd"
+
+        assert ops._is_likely_binary(
+            "blog/2026-08-06-chatblog-post.mdx",
+            content_sample=sample,
+            raw_utf8_status="text",
+        ) is False
+
+    def test_replacement_char_from_invalid_raw_utf8_remains_binary(self, ops):
+        """True invalid bytes decoded to U+FFFD must stay protected."""
+        sample = "valid prefix \ufffd invalid byte"
+
+        assert ops._is_likely_binary(
+            "notes.txt",
+            content_sample=sample,
+            raw_utf8_status="invalid",
+        ) is True
+
+
+class TestRawUtf8SampleStatus:
+    """Verify the raw-byte probe that disambiguates lossy terminal samples."""
+
+    @pytest.fixture()
+    def ops(self, tmp_path):
+        class SubprocessEnv:
+            cwd = str(tmp_path)
+
+            def execute(self, command, cwd=None, **kwargs):
+                proc = subprocess.run(
+                    command,
+                    shell=True,
+                    cwd=cwd or self.cwd,
+                    input=kwargs.get("stdin_data"),
+                    text=True,
+                    capture_output=True,
+                    timeout=kwargs.get("timeout"),
+                )
+                return {"output": proc.stdout, "returncode": proc.returncode}
+
+        return ShellFileOperations(SubprocessEnv())
+
+    def test_utf8_sample_ending_mid_codepoint_is_text(self, ops, tmp_path):
+        path = tmp_path / "article.mdx"
+        path.write_bytes(b"a" * 998 + "把\n正常 MDX 文本\n".encode("utf-8"))
+
+        assert ops._raw_utf8_sample_status(str(path), 1000, path.stat().st_size) == "text"
+
+    def test_invalid_utf8_and_nul_are_not_text(self, ops, tmp_path):
+        invalid = tmp_path / "invalid.txt"
+        invalid.write_bytes(b"valid prefix \xff invalid byte\n")
+        nul = tmp_path / "nul.txt"
+        nul.write_bytes(b"text prefix\x00text suffix\n")
+
+        assert ops._raw_utf8_sample_status(str(invalid), 1000, invalid.stat().st_size) == "invalid"
+        assert ops._raw_utf8_sample_status(str(nul), 1000, nul.stat().st_size) == "binary"
 
 
 # =========================================================================
@@ -222,6 +281,58 @@ class TestPaginationBounds:
         assert "1|line1" in result.content
         sed_commands = [cmd for cmd in commands if cmd.startswith("sed -n")]
         assert sed_commands == ["sed -n '1,1p' 'notes.txt'"]
+
+    def test_read_file_allows_utf8_text_when_head_sample_ends_mid_codepoint(self):
+        """A valid UTF-8 text file must survive a lossy boundary sample."""
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+        text = "a" * 998 + "把\n# ChatBlog UTF-8 boundary\n正常 MDX 文本\n"
+        sample = "a" * 998 + "\ufffd"
+
+        def fake_exec(command, *args, **kwargs):
+            if command.startswith("wc -c"):
+                return MagicMock(exit_code=0, stdout=str(len(text.encode("utf-8"))))
+            if command.startswith("head -c"):
+                return MagicMock(exit_code=0, stdout=sample)
+            if command.startswith("sed -n"):
+                return MagicMock(exit_code=0, stdout=text)
+            if command.startswith("wc -l"):
+                return MagicMock(exit_code=0, stdout=str(text.count("\n")))
+            return MagicMock(exit_code=0, stdout="")
+
+        with patch.object(ops, "_raw_utf8_sample_status", return_value="text"), \
+             patch.object(ops, "_exec", side_effect=fake_exec):
+            result = ops.read_file("article.mdx")
+
+        assert result.is_binary is False
+        assert result.error is None
+        assert "# ChatBlog UTF-8 boundary" in result.content
+
+    def test_read_file_raw_allows_utf8_text_when_head_sample_ends_mid_codepoint(self):
+        """Patch/raw read path must not reject valid MDX for the same reason."""
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+        text = "a" * 998 + "把\n# ChatBlog UTF-8 boundary\n正常 MDX 文本\n"
+        sample = "a" * 998 + "\ufffd"
+
+        def fake_exec(command, *args, **kwargs):
+            if command.startswith("wc -c"):
+                return MagicMock(exit_code=0, stdout=str(len(text.encode("utf-8"))))
+            if command.startswith("head -c"):
+                return MagicMock(exit_code=0, stdout=sample)
+            if command.startswith("cat "):
+                return MagicMock(exit_code=0, stdout=text)
+            return MagicMock(exit_code=0, stdout="")
+
+        with patch.object(ops, "_raw_utf8_sample_status", return_value="text"), \
+             patch.object(ops, "_exec", side_effect=fake_exec):
+            result = ops.read_file_raw("article.mdx")
+
+        assert result.is_binary is False
+        assert result.error is None
+        assert "# ChatBlog UTF-8 boundary" in result.content
 
     def test_search_clamps_offset_and_limit_before_building_head_pipeline(self):
         env = MagicMock()
