@@ -51,6 +51,34 @@ class SshYoloGrant:
         return bool(self.enabled and clean and (self.allows_all or clean in self.aliases))
 
 
+@dataclass(frozen=True)
+class SshDestinationPolicy:
+    """Session-scoped execution-destination availability policy."""
+
+    session_key: str
+    local_enabled: bool = True
+    created_at: float | None = None
+    updated_at: float | None = None
+
+    def destination_enabled(self, destination: str) -> bool:
+        clean = str(destination or "").strip().lower()
+        if clean == "local":
+            return self.local_enabled
+        return True
+
+
+@dataclass(frozen=True)
+class DestinationPolicyUpdate:
+    """Result for a destination-policy mutation."""
+
+    ok: bool
+    policy: SshDestinationPolicy
+    destination: str
+    enabled: bool
+    reason: str | None = None
+    message: str | None = None
+
+
 def default_ssh_bindings_path() -> Path:
     """Return the Hermes-owned SSH section binding store path."""
 
@@ -62,17 +90,20 @@ def _read_store(path: str | Path | None = None) -> dict[str, Any]:
     try:
         data = json.loads(store_path.read_text(encoding="utf-8") or "{}")
     except FileNotFoundError:
-        return {"bindings": {}, "yolo_grants": {}}
+        return {"bindings": {}, "yolo_grants": {}, "destination_policy": {}}
     except Exception:
-        return {"bindings": {}, "yolo_grants": {}}
+        return {"bindings": {}, "yolo_grants": {}, "destination_policy": {}}
     if not isinstance(data, dict):
-        return {"bindings": {}, "yolo_grants": {}}
+        return {"bindings": {}, "yolo_grants": {}, "destination_policy": {}}
     bindings = data.get("bindings")
     if not isinstance(bindings, dict):
         data["bindings"] = {}
     grants = data.get("yolo_grants")
     if not isinstance(grants, dict):
         data["yolo_grants"] = {}
+    policy = data.get("destination_policy")
+    if not isinstance(policy, dict):
+        data["destination_policy"] = {}
     return data
 
 
@@ -131,6 +162,115 @@ def _coerce_yolo_grant(session_key: str, raw: Any) -> SshYoloGrant:
         aliases=tuple(aliases),
         created_at=raw.get("created_at") if isinstance(raw.get("created_at"), (int, float)) else None,
         updated_at=raw.get("updated_at") if isinstance(raw.get("updated_at"), (int, float)) else None,
+    )
+
+
+def _coerce_destination_policy(session_key: str, raw: Any) -> SshDestinationPolicy:
+    if not session_key or not isinstance(raw, dict):
+        return SshDestinationPolicy(session_key=session_key)
+    return SshDestinationPolicy(
+        session_key=session_key,
+        local_enabled=bool(raw.get("local_enabled", True)),
+        created_at=raw.get("created_at") if isinstance(raw.get("created_at"), (int, float)) else None,
+        updated_at=raw.get("updated_at") if isinstance(raw.get("updated_at"), (int, float)) else None,
+    )
+
+
+def get_destination_policy(
+    session_key: str,
+    *,
+    path: str | Path | None = None,
+) -> SshDestinationPolicy:
+    """Return execution-destination policy for *session_key*.
+
+    The policy defaults to ``local`` being on so existing sessions keep their
+    historical behavior unless the user explicitly disables local.
+    """
+
+    data = _read_store(path)
+    policies = data.get("destination_policy")
+    raw = policies.get(session_key) if isinstance(policies, dict) else None
+    return _coerce_destination_policy(session_key, raw)
+
+
+def _has_available_nonlocal_destination(session_key: str, data: dict[str, Any]) -> bool:
+    bindings = data.get("bindings")
+    if isinstance(bindings, dict) and session_key in bindings:
+        return _coerce_binding(session_key, bindings.get(session_key)) is not None
+    grants = data.get("yolo_grants")
+    raw_grant = grants.get(session_key) if isinstance(grants, dict) else None
+    grant = _coerce_yolo_grant(session_key, raw_grant)
+    return bool(grant.enabled and grant.aliases)
+
+
+def set_destination_enabled(
+    session_key: str,
+    destination: str,
+    enabled: bool,
+    *,
+    path: str | Path | None = None,
+) -> DestinationPolicyUpdate:
+    """Enable/disable an execution destination for model-initiated switching.
+
+    Currently only ``local`` is persisted separately. SSH destinations are
+    available through an active binding or a YOLO grant. Disabling ``local`` is
+    rejected when it would leave the model with no enabled execution
+    destination.
+    """
+
+    clean = str(destination or "").strip().lower()
+    if clean != "local":
+        policy = get_destination_policy(session_key, path=path)
+        return DestinationPolicyUpdate(
+            ok=False,
+            policy=policy,
+            destination=clean,
+            enabled=bool(enabled),
+            reason="unknown_destination",
+            message=f"Unknown execution destination: {destination}",
+        )
+    if not session_key:
+        policy = SshDestinationPolicy(session_key=session_key)
+        return DestinationPolicyUpdate(
+            ok=False,
+            policy=policy,
+            destination=clean,
+            enabled=bool(enabled),
+            reason="session_key_required",
+            message="session_key is required",
+        )
+
+    data = _read_store(path)
+    policies = data.get("destination_policy")
+    existing_raw = policies.get(session_key) if isinstance(policies, dict) else None
+    existing_policy = _coerce_destination_policy(session_key, existing_raw)
+    if not enabled and not _has_available_nonlocal_destination(session_key, data):
+        return DestinationPolicyUpdate(
+            ok=False,
+            policy=existing_policy,
+            destination="local",
+            enabled=False,
+            reason="at_least_one_destination_required",
+            message="At least one execution destination must remain on.",
+        )
+
+    policies = data.setdefault("destination_policy", {})
+    now = time.time()
+    raw_existing = policies.get(session_key) if isinstance(policies.get(session_key), dict) else {}
+    created_at = raw_existing.get("created_at") if isinstance(raw_existing.get("created_at"), (int, float)) else now
+    record = {
+        "local_enabled": bool(enabled),
+        "created_at": created_at,
+        "updated_at": now,
+    }
+    policies[session_key] = record
+    _write_store(data, path)
+    policy = _coerce_destination_policy(session_key, record)
+    return DestinationPolicyUpdate(
+        ok=True,
+        policy=policy,
+        destination="local",
+        enabled=bool(enabled),
     )
 
 

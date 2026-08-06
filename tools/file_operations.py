@@ -887,7 +887,13 @@ class ShellFileOperations(FileOperations):
             self._command_cache[cmd] = result.stdout.strip() == 'yes'
         return self._command_cache[cmd]
     
-    def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:
+    def _is_likely_binary(
+        self,
+        path: str,
+        content_sample: str = None,
+        *,
+        raw_utf8_status: str | None = None,
+    ) -> bool:
         """
         Check if a file is likely binary.
         
@@ -904,17 +910,63 @@ class ShellFileOperations(FileOperations):
             # turned into U+FFFD. That char is "printable" (ord 65533), so the
             # non-printable ratio below never catches it — and returning the
             # lossy text would let a read→edit→write round-trip silently
-            # overwrite the original bytes with mojibake. Treat a file whose
-            # sample carries the replacement char as binary (read-only) so the
-            # agent can't corrupt it. Legitimate UTF-8 text effectively never
-            # contains U+FFFD.
-            if "\ufffd" in content_sample[:1000]:
+            # overwrite the original bytes with mojibake.
+            #
+            # A fixed-size byte sample can also end in the middle of a valid
+            # UTF-8 character, especially for Chinese/emoji Markdown over SSH;
+            # that *also* arrives as U+FFFD even though the file is text. When
+            # the caller has a raw-byte probe proving the sample is valid UTF-8
+            # apart from a partial trailing sequence, do not classify it as
+            # binary merely because the lossy terminal text contains U+FFFD.
+            if "\ufffd" in content_sample[:1000] and raw_utf8_status != "text":
                 return True
             non_printable = sum(1 for c in content_sample[:1000]
                                if ord(c) < 32 and c not in '\n\r\t')
             return non_printable / min(len(content_sample), 1000) > 0.30
         
         return False
+
+    def _raw_utf8_sample_status(self, path: str, sample_bytes: int = 4096) -> Optional[str]:
+        """Classify the raw leading bytes as ``text``/``binary`` when available.
+
+        Terminal environments return decoded stdout, so a byte-oriented
+        ``head -c`` sample can contain U+FFFD for two very different reasons:
+        genuinely invalid bytes, or a valid UTF-8 multibyte character cut at
+        the sample boundary. This raw probe preserves the non-UTF-8 protection
+        while allowing the boundary case.
+        """
+
+        snippet = (
+            "import pathlib, sys\n"
+            "path = pathlib.Path(sys.argv[1])\n"
+            f"data = path.open('rb').read({int(sample_bytes)})\n"
+            "if b'\\x00' in data:\n"
+            "    print('binary'); sys.exit(0)\n"
+            "try:\n"
+            "    data.decode('utf-8')\n"
+            "except UnicodeDecodeError as exc:\n"
+            "    if exc.reason == 'unexpected end of data' and exc.end == len(data):\n"
+            "        try:\n"
+            "            data[:exc.start].decode('utf-8')\n"
+            "        except UnicodeDecodeError:\n"
+            "            print('binary')\n"
+            "        else:\n"
+            "            print('text')\n"
+            "    else:\n"
+            "        print('binary')\n"
+            "else:\n"
+            "    print('text')\n"
+        )
+        for python_cmd in ("python3", "python"):
+            result = self._exec(
+                f"{python_cmd} -c {self._escape_shell_arg(snippet)} {self._escape_shell_arg(path)}"
+            )
+            if result.exit_code != 0:
+                continue
+            status = _strip_terminal_fence_leaks(result.stdout).strip().splitlines()
+            if status and status[-1] in {"text", "binary"}:
+                return status[-1]
+        return None
     
     def _is_image(self, path: str) -> bool:
         """Check if file is an image we can return as base64."""
@@ -1183,8 +1235,11 @@ class ShellFileOperations(FileOperations):
         sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"
         sample_result = self._exec(sample_cmd)
         sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
+        raw_utf8_status = None
+        if "\ufffd" in sample_output[:1000]:
+            raw_utf8_status = self._raw_utf8_sample_status(path)
         
-        if self._is_likely_binary(path, sample_output):
+        if self._is_likely_binary(path, sample_output, raw_utf8_status=raw_utf8_status):
             return ReadResult(
                 is_binary=True,
                 file_size=file_size,
@@ -1300,7 +1355,10 @@ class ShellFileOperations(FileOperations):
             return ReadResult(is_image=True, is_binary=True, file_size=file_size)
         sample_result = self._exec(f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null")
         sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
-        if self._is_likely_binary(path, sample_output):
+        raw_utf8_status = None
+        if "\ufffd" in sample_output[:1000]:
+            raw_utf8_status = self._raw_utf8_sample_status(path)
+        if self._is_likely_binary(path, sample_output, raw_utf8_status=raw_utf8_status):
             return ReadResult(
                 is_binary=True, file_size=file_size,
                 error="Binary file — cannot display as text."

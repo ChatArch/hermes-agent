@@ -386,6 +386,48 @@ class TestShellFileOpsHelpers:
         assert result.error is None
         assert result.content == "alpha\n"
 
+    def test_read_file_does_not_treat_utf8_sample_boundary_replacement_as_binary(self, mock_env):
+        """A lossy terminal sample may end with U+FFFD if head cuts a UTF-8 char."""
+        content = "标题：SSH 模式\n正文：这是正常的中文 Markdown。\n"
+
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": f"{len(content.encode('utf-8'))}\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": "标题：SSH 模式\n正文：这是正常的中�", "returncode": 0}
+            if command.startswith("python3 -c"):
+                return {"output": "text\n", "returncode": 0}
+            if command.startswith("sed -n"):
+                return {"output": content, "returncode": 0}
+            if command.startswith("wc -l"):
+                return {"output": "2\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/test/中文.md")
+
+        assert result.error is None
+        assert result.is_binary is False
+        assert "1|标题：SSH 模式" in result.content
+
+    def test_read_file_still_blocks_raw_invalid_utf8_when_sample_has_replacement(self, mock_env):
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": "5\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": "abc�", "returncode": 0}
+            if command.startswith("python3 -c"):
+                return {"output": "binary\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/test/bad.txt")
+
+        assert result.is_binary is True
+        assert result.error is not None
+
 
 class TestSearchPathValidation:
     """Test that search() returns an error for non-existent paths."""

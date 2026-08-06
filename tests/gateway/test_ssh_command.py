@@ -60,8 +60,8 @@ def test_ssh_command_registered_for_gateway():
     assert cmd is not None
     assert cmd.name == "ssh"
     assert cmd.gateway_only is True
-    assert cmd.args_hint == "[list|status|test <alias>|use <alias>|off]"
-    assert set(cmd.subcommands) >= {"list", "status", "test", "use", "off", "local", "help"}
+    assert cmd.args_hint == "[list|status|test <alias>|use <alias>|local [on|off]|off]"
+    assert set(cmd.subcommands) >= {"list", "status", "test", "use", "off", "local", "on", "help"}
     assert "ssh" in ACTIVE_SESSION_BYPASS_COMMANDS
 
 
@@ -286,10 +286,11 @@ async def test_ssh_help_prefers_local_and_keeps_off_as_alias():
 @pytest.mark.asyncio
 async def test_ssh_local_clears_current_thread_binding(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from gateway.ssh_bindings import set_ssh_binding, get_ssh_binding
+    from gateway.ssh_bindings import get_destination_policy, set_destination_enabled, set_ssh_binding, get_ssh_binding
 
     section_key = build_session_key(_source(thread_id="omt_thread"))
     set_ssh_binding(section_key, alias="demo.remote", cwd="/srv/app")
+    set_destination_enabled(section_key, "local", False)
     runner = _runner()
     event = _event("/ssh local", thread_id="omt_thread")
 
@@ -298,6 +299,57 @@ async def test_ssh_local_clears_current_thread_binding(monkeypatch, tmp_path):
     assert "Current backend: local" in result
     assert "SSH binding cleared" in result
     assert get_ssh_binding(section_key) is None
+    assert get_destination_policy(section_key).local_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_ssh_local_off_blocks_model_return_but_keeps_binding(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.ssh_bindings import get_destination_policy, get_ssh_binding, set_ssh_binding
+
+    section_key = build_session_key(_source(thread_id="omt_thread"))
+    set_ssh_binding(section_key, alias="demo.remote", cwd="/srv/app")
+    runner = _runner()
+    event = _event("/ssh local off", thread_id="omt_thread")
+
+    result = await runner._handle_ssh_command(event)
+
+    assert "Local destination disabled" in result
+    assert "model cannot return to local" in result
+    assert get_destination_policy(section_key).local_enabled is False
+    assert get_ssh_binding(section_key).alias == "demo.remote"
+
+
+@pytest.mark.asyncio
+async def test_ssh_local_off_refuses_last_destination(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.ssh_bindings import get_destination_policy
+
+    section_key = build_session_key(_source(thread_id="omt_thread"))
+    runner = _runner()
+    event = _event("/ssh local off", thread_id="omt_thread")
+
+    result = await runner._handle_ssh_command(event)
+
+    assert "At least one execution destination must remain on" in result
+    assert get_destination_policy(section_key).local_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_ssh_local_on_reenables_model_return(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.ssh_bindings import get_destination_policy, set_destination_enabled, set_ssh_binding
+
+    section_key = build_session_key(_source(thread_id="omt_thread"))
+    set_ssh_binding(section_key, alias="demo.remote", cwd="/srv/app")
+    set_destination_enabled(section_key, "local", False)
+    runner = _runner()
+    event = _event("/ssh local on", thread_id="omt_thread")
+
+    result = await runner._handle_ssh_command(event)
+
+    assert "Local destination enabled" in result
+    assert get_destination_policy(section_key).local_enabled is True
 
 
 @pytest.mark.asyncio
