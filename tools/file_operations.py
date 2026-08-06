@@ -926,45 +926,67 @@ class ShellFileOperations(FileOperations):
         
         return False
 
-    def _raw_utf8_sample_status(self, path: str, sample_bytes: int = 4096) -> Optional[str]:
-        """Classify the raw leading bytes as ``text``/``binary`` when available.
+    def _raw_utf8_sample_status(
+        self,
+        path: str,
+        sample_bytes: int = 1000,
+        file_size: Optional[int] = None,
+    ) -> Optional[str]:
+        """Classify the raw byte sample before terminal decoding loses detail.
 
         Terminal environments return decoded stdout, so a byte-oriented
         ``head -c`` sample can contain U+FFFD for two very different reasons:
         genuinely invalid bytes, or a valid UTF-8 multibyte character cut at
-        the sample boundary. This raw probe preserves the non-UTF-8 protection
-        while allowing the boundary case.
+        the sample boundary. This raw probe inspects the same leading byte
+        window as the decoded sample so binary detection can distinguish a
+        true invalid byte from a sample that merely ended mid-codepoint.
+
+        Returns ``text``, ``invalid``, ``binary``, or ``None`` when probing is
+        unavailable. ``None`` is intentionally fail-closed by callers when the
+        decoded sample contains U+FFFD.
         """
 
         snippet = (
             "import pathlib, sys\n"
             "path = pathlib.Path(sys.argv[1])\n"
-            f"data = path.open('rb').read({int(sample_bytes)})\n"
+            "sample_bytes = int(sys.argv[2])\n"
+            "file_size = int(sys.argv[3])\n"
+            "if file_size < 0:\n"
+            "    file_size = path.stat().st_size\n"
+            "data = path.open('rb').read(sample_bytes)\n"
             "if b'\\x00' in data:\n"
             "    print('binary'); sys.exit(0)\n"
             "try:\n"
             "    data.decode('utf-8')\n"
             "except UnicodeDecodeError as exc:\n"
-            "    if exc.reason == 'unexpected end of data' and exc.end == len(data):\n"
+            "    if (\n"
+            "        exc.reason == 'unexpected end of data'\n"
+            "        and exc.end == len(data)\n"
+            "        and file_size > len(data)\n"
+            "    ):\n"
             "        try:\n"
             "            data[:exc.start].decode('utf-8')\n"
             "        except UnicodeDecodeError:\n"
-            "            print('binary')\n"
+            "            print('invalid')\n"
             "        else:\n"
             "            print('text')\n"
             "    else:\n"
-            "        print('binary')\n"
+            "        print('invalid')\n"
             "else:\n"
             "    print('text')\n"
         )
+        size_arg = str(file_size if file_size is not None else -1)
         for python_cmd in ("python3", "python"):
             result = self._exec(
-                f"{python_cmd} -c {self._escape_shell_arg(snippet)} {self._escape_shell_arg(path)}"
+                f"{python_cmd} -c {self._escape_shell_arg(snippet)} "
+                f"{self._escape_shell_arg(path)} "
+                f"{self._escape_shell_arg(str(int(sample_bytes)))} "
+                f"{self._escape_shell_arg(size_arg)} 2>/dev/null"
             )
             if result.exit_code != 0:
                 continue
             status = _strip_terminal_fence_leaks(result.stdout).strip().splitlines()
-            if status and status[-1] in {"text", "binary"}:
+            if status and status[-1] in {"text", "invalid", "binary"}:
                 return status[-1]
         return None
     
@@ -1237,7 +1259,7 @@ class ShellFileOperations(FileOperations):
         sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
         raw_utf8_status = None
         if "\ufffd" in sample_output[:1000]:
-            raw_utf8_status = self._raw_utf8_sample_status(path)
+            raw_utf8_status = self._raw_utf8_sample_status(path, sample_bytes=1000, file_size=file_size)
         
         if self._is_likely_binary(path, sample_output, raw_utf8_status=raw_utf8_status):
             return ReadResult(
@@ -1357,7 +1379,7 @@ class ShellFileOperations(FileOperations):
         sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
         raw_utf8_status = None
         if "\ufffd" in sample_output[:1000]:
-            raw_utf8_status = self._raw_utf8_sample_status(path)
+            raw_utf8_status = self._raw_utf8_sample_status(path, sample_bytes=1000, file_size=file_size)
         if self._is_likely_binary(path, sample_output, raw_utf8_status=raw_utf8_status):
             return ReadResult(
                 is_binary=True, file_size=file_size,
