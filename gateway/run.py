@@ -18825,8 +18825,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "/ssh status — show this section's current backend and auto-switch policy\n"
             "/ssh test <backend> — validate local or an SSH backend without switching\n"
             "/ssh use <backend> [--cwd <remote-path>] — explicitly switch current backend; backend can be local\n"
-            "/ssh on <backend> — allow model-initiated switching to that backend\n"
-            "/ssh off <backend> — require approval before model-initiated switching to that backend"
+            "/ssh on <backend|all> — allow model-initiated switching to that backend, or every backend\n"
+            "/ssh off <backend|all> — require approval before model-initiated switching to that backend, or every backend"
         )
 
         if action in {"help", ""}:
@@ -18930,7 +18930,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if action in {"on", "off"}:
             backend = _backend_arg()
             if not backend:
-                return f"Usage: /ssh {action} <backend>"
+                return f"Usage: /ssh {action} <backend|all>"
+            if backend.lower() == "all":
+                enabled = action == "on"
+                backends = _known_backend_names()
+                failed: list[str] = []
+                for name in backends:
+                    update = set_backend_auto_enabled(section_key, name, enabled)
+                    if not update.ok:
+                        failed.append(name)
+                if failed:
+                    return f"Failed to update backend auto-switch policy for: {', '.join(f'`{name}`' for name in failed)}"
+                state = "enabled" if enabled else "disabled"
+                effect = "allowed" if enabled else "will require approval"
+                suffix = "" if enabled else " current backend remains unchanged."
+                return (
+                    f"All backend auto-switch policies {state} for this section: "
+                    + ", ".join(f"`{name}`" for name in backends)
+                    + f". Model-initiated use {effect}."
+                    + suffix
+                )
             if not is_local_backend(backend) and _target_for_backend(backend) is None:
                 return f"Unknown backend: `{backend}`. Use /ssh list to see backends."
             update = set_backend_auto_enabled(section_key, backend, action == "on")

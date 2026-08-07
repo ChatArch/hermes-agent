@@ -55,7 +55,7 @@ LOCAL_GATEWAY_COMMANDS: tuple[LocalGatewayCommand, ...] = (
         "ssh",
         "Manage execution backends and section bindings",
         "Session",
-        args_hint="[list|status|test <backend>|use <backend>|on <backend>|off <backend>]",
+        args_hint="[list|status|test <backend>|use <backend>|on <backend|all>|off <backend|all>]",
         subcommands=("list", "status", "test", "use", "on", "off", "help"),
         handler_name="_handle_ssh_command",
     ),
