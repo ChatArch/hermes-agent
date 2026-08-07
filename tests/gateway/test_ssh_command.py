@@ -60,7 +60,7 @@ def test_ssh_command_registered_for_gateway():
     assert cmd is not None
     assert cmd.name == "ssh"
     assert cmd.gateway_only is True
-    assert cmd.args_hint == "[list|status|test <backend>|use <backend>|on <backend>|off <backend>]"
+    assert cmd.args_hint == "[list|status|test <backend>|use <backend>|on <backend|all>|off <backend|all>]"
     assert set(cmd.subcommands) >= {"list", "status", "test", "use", "on", "off", "help"}
     assert "ssh" in ACTIVE_SESSION_BYPASS_COMMANDS
 
@@ -282,8 +282,8 @@ async def test_ssh_help_shows_flat_backend_interface():
     result = await runner._handle_ssh_command(event)
 
     assert "/ssh use <backend>" in result
-    assert "/ssh on <backend>" in result
-    assert "/ssh off <backend>" in result
+    assert "/ssh on <backend|all>" in result
+    assert "/ssh off <backend|all>" in result
     assert "/ssh local" not in result
     assert "/ssh yolo" not in result
 
@@ -367,6 +367,74 @@ async def test_ssh_on_reenables_model_switch_to_backend(monkeypatch, tmp_path):
 
     assert "Backend `local` auto-switch enabled" in result
     assert get_backend_auto_policy(section_key, "local").enabled is True
+
+
+@pytest.mark.asyncio
+async def test_ssh_on_all_enables_model_switch_to_every_backend(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+    from gateway.ssh_bindings import get_backend_auto_policy, set_backend_auto_enabled
+    from gateway.ssh_targets import SshTarget
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        gateway_run,
+        "load_ssh_targets",
+        lambda: [
+            SshTarget(alias="demo.remote", host="example.invalid", user="hermes"),
+            SshTarget(alias="build.remote", host="build.invalid", user="builder"),
+        ],
+        raising=False,
+    )
+    section_key = build_session_key(_source(thread_id="omt_thread"))
+    set_backend_auto_enabled(section_key, "local", False)
+    set_backend_auto_enabled(section_key, "demo.remote", False)
+    set_backend_auto_enabled(section_key, "build.remote", False)
+    runner = _runner()
+
+    result = await runner._handle_ssh_command(_event("/ssh on all", thread_id="omt_thread"))
+
+    assert "All backend auto-switch policies enabled" in result
+    assert "`local`" in result
+    assert "`demo.remote`" in result
+    assert "`build.remote`" in result
+    assert get_backend_auto_policy(section_key, "local").enabled is True
+    assert get_backend_auto_policy(section_key, "demo.remote").enabled is True
+    assert get_backend_auto_policy(section_key, "build.remote").enabled is True
+
+
+@pytest.mark.asyncio
+async def test_ssh_off_all_disables_every_backend_without_clearing_current_binding(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+    from gateway.ssh_bindings import get_backend_auto_policy, get_ssh_binding, set_backend_auto_enabled, set_ssh_binding
+    from gateway.ssh_targets import SshTarget
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        gateway_run,
+        "load_ssh_targets",
+        lambda: [
+            SshTarget(alias="demo.remote", host="example.invalid", user="hermes"),
+            SshTarget(alias="build.remote", host="build.invalid", user="builder"),
+        ],
+        raising=False,
+    )
+    section_key = build_session_key(_source(thread_id="omt_thread"))
+    set_ssh_binding(section_key, alias="demo.remote", cwd="/srv/app")
+    set_backend_auto_enabled(section_key, "demo.remote", True)
+    set_backend_auto_enabled(section_key, "build.remote", True)
+    runner = _runner()
+
+    result = await runner._handle_ssh_command(_event("/ssh off all", thread_id="omt_thread"))
+
+    assert "All backend auto-switch policies disabled" in result
+    assert "`local`" in result
+    assert "`demo.remote`" in result
+    assert "`build.remote`" in result
+    assert "current backend remains unchanged" in result
+    assert get_backend_auto_policy(section_key, "local").enabled is False
+    assert get_backend_auto_policy(section_key, "demo.remote").enabled is False
+    assert get_backend_auto_policy(section_key, "build.remote").enabled is False
+    assert get_ssh_binding(section_key).alias == "demo.remote"
 
 
 @pytest.mark.asyncio
@@ -494,5 +562,5 @@ async def test_legacy_ssh_approval_alias_is_not_user_visible():
     result = await runner._handle_ssh_command(event)
 
     assert "Usage:" in result
-    assert "/ssh on <backend>" in result
+    assert "/ssh on <backend|all>" in result
     assert "/ssh yolo" not in result
