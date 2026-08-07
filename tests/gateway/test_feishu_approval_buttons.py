@@ -156,14 +156,14 @@ class TestFeishuExecApproval:
 
 
 # ===========================================================================
-# send_ssh_grant_approval — SSH mode authorization card
+# send_ssh_grant_approval — backend switch authorization card
 # ===========================================================================
 
-class TestFeishuSshGrantApproval:
-    """Test model-initiated SSH grant approval cards."""
+class TestFeishuBackendGrantApproval:
+    """Test backend grant interactive approval cards."""
 
     @pytest.mark.asyncio
-    async def test_sends_interactive_ssh_grant_card(self):
+    async def test_sends_interactive_backend_grant_card(self):
         adapter = _make_adapter()
 
         mock_response = SimpleNamespace(
@@ -192,9 +192,9 @@ class TestFeishuSshGrantApproval:
 
         card = json.loads(kwargs["payload"])
         assert card["header"]["template"] == "orange"
-        assert "SSH Authorization Required" in card["header"]["title"]["content"]
+        assert "Backend Authorization Required" in card["header"]["title"]["content"]
         content = card["elements"][0]["content"]
-        assert "cubebot" in content
+        assert "**Backend:** `cubebot`" in content
         assert "need to inspect logs" in content
         assert "/home/cubebot/Playground" in content
 

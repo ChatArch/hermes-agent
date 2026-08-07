@@ -1,10 +1,9 @@
-"""Section-scoped SSH backend bindings for gateway `/ssh`.
+"""Section-scoped backend bindings for gateway `/ssh`.
 
-Bindings are keyed by durable gateway ``session_key`` values (Feishu
-Thread/Section lanes), not by short-lived transcript ``session_id`` values.
-The binding store intentionally contains only target aliases and optional cwd;
-connection details are resolved from the Hermes-managed SSH target registry at
-runtime so key paths stay in one auditable place.
+SSH Mode treats ``local`` and configured SSH targets as peer backends for
+model-initiated switching. The current execution backend remains usable even
+when its auto-switch policy is off; ``off`` means the model must request
+approval before switching to that backend again.
 """
 
 from __future__ import annotations
@@ -17,6 +16,8 @@ import time
 
 from hermes_constants import get_hermes_home
 from gateway.ssh_targets import find_ssh_target, load_ssh_targets, SshTarget
+
+LOCAL_BACKEND = "local"
 
 
 @dataclass(frozen=True)
@@ -33,50 +34,43 @@ class SshBinding:
 
 
 @dataclass(frozen=True)
-class SshYoloGrant:
-    """Session-scoped grant allowing model-initiated SSH switching."""
+class BackendAutoPolicy:
+    """Session-scoped model auto-switch policy for one backend."""
 
     session_key: str
-    enabled: bool = False
-    aliases: tuple[str, ...] = ()
+    backend: str
+    enabled: bool
     created_at: float | None = None
     updated_at: float | None = None
 
     @property
-    def allows_all(self) -> bool:
-        return "all" in self.aliases
+    def local_enabled(self) -> bool:
+        """Compatibility alias for PR #44's local-only policy object."""
 
-    def allows(self, alias: str) -> bool:
-        clean = str(alias or "").strip()
-        return bool(self.enabled and clean and (self.allows_all or clean in self.aliases))
+        return self.enabled
 
 
 @dataclass(frozen=True)
-class SshDestinationPolicy:
-    """Session-scoped execution-destination availability policy."""
-
-    session_key: str
-    local_enabled: bool = True
-    created_at: float | None = None
-    updated_at: float | None = None
-
-    def destination_enabled(self, destination: str) -> bool:
-        clean = str(destination or "").strip().lower()
-        if clean == "local":
-            return self.local_enabled
-        return True
-
-
-@dataclass(frozen=True)
-class DestinationPolicyUpdate:
-    """Result for a destination-policy mutation."""
+class BackendPolicyUpdate:
+    """Result for a backend auto-switch policy mutation."""
 
     ok: bool
-    policy: SshDestinationPolicy
-    destination: str
+    policy: BackendAutoPolicy
+    backend: str
     enabled: bool
     reason: str | None = None
     message: str | None = None
+
+
+def normalize_backend_name(backend: str) -> str:
+    """Return the canonical backend name used by SSH Mode policy."""
+
+    clean = str(backend or "").strip()
+    return LOCAL_BACKEND if clean.lower() == LOCAL_BACKEND else clean
+
+
+def is_local_backend(backend: str) -> bool:
+    return normalize_backend_name(backend).lower() == LOCAL_BACKEND
 
 
 def default_ssh_bindings_path() -> Path:
@@ -85,25 +79,48 @@ def default_ssh_bindings_path() -> Path:
     return get_hermes_home() / "ssh" / "bindings.json"
 
 
+def _empty_store() -> dict[str, Any]:
+    return {"bindings": {}, "backend_policy": {}}
+
+
 def _read_store(path: str | Path | None = None) -> dict[str, Any]:
     store_path = Path(path).expanduser() if path is not None else default_ssh_bindings_path()
     try:
         data = json.loads(store_path.read_text(encoding="utf-8") or "{}")
     except FileNotFoundError:
-        return {"bindings": {}, "yolo_grants": {}, "destination_policy": {}}
+        return _empty_store()
     except Exception:
-        return {"bindings": {}, "yolo_grants": {}, "destination_policy": {}}
+        return _empty_store()
     if not isinstance(data, dict):
-        return {"bindings": {}, "yolo_grants": {}, "destination_policy": {}}
+        return _empty_store()
     bindings = data.get("bindings")
     if not isinstance(bindings, dict):
         data["bindings"] = {}
-    grants = data.get("yolo_grants")
-    if not isinstance(grants, dict):
-        data["yolo_grants"] = {}
-    policy = data.get("destination_policy")
+    policy = data.get("backend_policy")
     if not isinstance(policy, dict):
-        data["destination_policy"] = {}
+        data["backend_policy"] = {}
+
+    # Narrow migration for the PR #44 local-only policy shape.  This keeps
+    # existing user state readable while the user-facing SSH Mode interface no
+    # longer exposes the old two-level commands.
+    legacy_local_policy = data.get("destination_policy")
+    if isinstance(legacy_local_policy, dict):
+        policies = data.setdefault("backend_policy", {})
+        for session_key, raw in legacy_local_policy.items():
+            if not isinstance(raw, dict):
+                continue
+            session_policy = policies.setdefault(str(session_key), {})
+            if not isinstance(session_policy, dict):
+                session_policy = {}
+                policies[str(session_key)] = session_policy
+            session_policy.setdefault(
+                LOCAL_BACKEND,
+                {
+                    "enabled": bool(raw.get("local_enabled", True)),
+                    "created_at": raw.get("created_at"),
+                    "updated_at": raw.get("updated_at"),
+                },
+            )
     return data
 
 
@@ -144,63 +161,121 @@ def _coerce_binding(session_key: str, raw: Any) -> SshBinding | None:
     )
 
 
-def _coerce_yolo_grant(session_key: str, raw: Any) -> SshYoloGrant:
-    if not session_key or not isinstance(raw, dict):
-        return SshYoloGrant(session_key=session_key)
-    aliases_raw = raw.get("aliases") or []
-    if isinstance(aliases_raw, str):
-        aliases_raw = [aliases_raw]
-    aliases: list[str] = []
-    if isinstance(aliases_raw, list):
-        for item in aliases_raw:
-            alias = str(item or "").strip()
-            if alias and alias not in aliases:
-                aliases.append(alias)
-    return SshYoloGrant(
+def _coerce_backend_policy(session_key: str, backend: str, raw: Any) -> BackendAutoPolicy:
+    clean = normalize_backend_name(backend)
+    default_enabled = is_local_backend(clean)
+    if not session_key or not clean or not isinstance(raw, dict):
+        return BackendAutoPolicy(session_key=session_key, backend=clean, enabled=default_enabled)
+    return BackendAutoPolicy(
         session_key=session_key,
-        enabled=bool(raw.get("enabled")),
-        aliases=tuple(aliases),
+        backend=clean,
+        enabled=bool(raw.get("enabled", default_enabled)),
         created_at=raw.get("created_at") if isinstance(raw.get("created_at"), (int, float)) else None,
         updated_at=raw.get("updated_at") if isinstance(raw.get("updated_at"), (int, float)) else None,
     )
 
 
-def _coerce_destination_policy(session_key: str, raw: Any) -> SshDestinationPolicy:
-    if not session_key or not isinstance(raw, dict):
-        return SshDestinationPolicy(session_key=session_key)
-    return SshDestinationPolicy(
-        session_key=session_key,
-        local_enabled=bool(raw.get("local_enabled", True)),
-        created_at=raw.get("created_at") if isinstance(raw.get("created_at"), (int, float)) else None,
-        updated_at=raw.get("updated_at") if isinstance(raw.get("updated_at"), (int, float)) else None,
-    )
-
-
-def get_destination_policy(
+def get_backend_auto_policy(
     session_key: str,
+    backend: str,
     *,
     path: str | Path | None = None,
-) -> SshDestinationPolicy:
-    """Return execution-destination policy for *session_key*.
+) -> BackendAutoPolicy:
+    """Return whether the model may auto-switch to *backend*.
 
-    The policy defaults to ``local`` being on so existing sessions keep their
-    historical behavior unless the user explicitly disables local.
+    ``local`` defaults to on for historical behavior. SSH targets default to off
+    and require either ``/ssh on <backend>`` or an approval request. The current
+    backend is still usable when its policy is off.
     """
 
+    clean = normalize_backend_name(backend)
     data = _read_store(path)
-    policies = data.get("destination_policy")
-    raw = policies.get(session_key) if isinstance(policies, dict) else None
-    return _coerce_destination_policy(session_key, raw)
+    policies = data.get("backend_policy")
+    raw = None
+    if isinstance(policies, dict):
+        session_policy = policies.get(session_key)
+        if isinstance(session_policy, dict):
+            raw = session_policy.get(clean)
+    return _coerce_backend_policy(session_key, clean, raw)
 
 
-def _has_available_nonlocal_destination(session_key: str, data: dict[str, Any]) -> bool:
-    bindings = data.get("bindings")
-    if isinstance(bindings, dict) and session_key in bindings:
-        return _coerce_binding(session_key, bindings.get(session_key)) is not None
-    grants = data.get("yolo_grants")
-    raw_grant = grants.get(session_key) if isinstance(grants, dict) else None
-    grant = _coerce_yolo_grant(session_key, raw_grant)
-    return bool(grant.enabled and grant.aliases)
+def list_backend_auto_policies(
+    session_key: str,
+    backends: list[str] | tuple[str, ...],
+    *,
+    path: str | Path | None = None,
+) -> dict[str, bool]:
+    """Return auto-switch state for the requested backends."""
+
+    return {
+        normalize_backend_name(item): get_backend_auto_policy(session_key, item, path=path).enabled
+        for item in backends
+    }
+
+
+def set_backend_auto_enabled(
+    session_key: str,
+    backend: str,
+    enabled: bool,
+    *,
+    path: str | Path | None = None,
+) -> BackendPolicyUpdate:
+    """Enable/disable model-initiated switching to *backend*.
+
+    This does not clear or move the current backend. An off backend is not
+    authorized for model entry; model-initiated ``use`` must request approval.
+    """
+
+    clean = normalize_backend_name(backend)
+    if not session_key:
+        policy = BackendAutoPolicy(session_key=session_key, backend=clean, enabled=is_local_backend(clean))
+        return BackendPolicyUpdate(
+            ok=False,
+            policy=policy,
+            backend=clean,
+            enabled=bool(enabled),
+            reason="session_key_required",
+            message="session_key is required",
+        )
+    if not clean:
+        policy = BackendAutoPolicy(session_key=session_key, backend=clean, enabled=False)
+        return BackendPolicyUpdate(
+            ok=False,
+            policy=policy,
+            backend=clean,
+            enabled=bool(enabled),
+            reason="backend_required",
+            message="backend is required",
+        )
+
+    data = _read_store(path)
+    policies = data.setdefault("backend_policy", {})
+    session_policy = policies.setdefault(session_key, {})
+    if not isinstance(session_policy, dict):
+        session_policy = {}
+        policies[session_key] = session_policy
+    now = time.time()
+    raw_existing = session_policy.get(clean) if isinstance(session_policy.get(clean), dict) else {}
+    created_at = raw_existing.get("created_at") if isinstance(raw_existing.get("created_at"), (int, float)) else now
+    record = {
+        "enabled": bool(enabled),
+        "created_at": created_at,
+        "updated_at": now,
+    }
+    session_policy[clean] = record
+    _write_store(data, path)
+    policy = _coerce_backend_policy(session_key, clean, record)
+    return BackendPolicyUpdate(ok=True, policy=policy, backend=clean, enabled=bool(enabled))
+
+
+# Compatibility for existing code/tests that still refer to the PR #44 local-only
+# names. New SSH Mode code should use get_backend_auto_policy / set_backend_auto_enabled.
+SshDestinationPolicy = BackendAutoPolicy
+DestinationPolicyUpdate = BackendPolicyUpdate
+
+
+def get_destination_policy(session_key: str, *, path: str | Path | None = None) -> BackendAutoPolicy:
+    return get_backend_auto_policy(session_key, LOCAL_BACKEND, path=path)
 
 
 def set_destination_enabled(
@@ -209,69 +284,8 @@ def set_destination_enabled(
     enabled: bool,
     *,
     path: str | Path | None = None,
-) -> DestinationPolicyUpdate:
-    """Enable/disable an execution destination for model-initiated switching.
-
-    Currently only ``local`` is persisted separately. SSH destinations are
-    available through an active binding or a YOLO grant. Disabling ``local`` is
-    rejected when it would leave the model with no enabled execution
-    destination.
-    """
-
-    clean = str(destination or "").strip().lower()
-    if clean != "local":
-        policy = get_destination_policy(session_key, path=path)
-        return DestinationPolicyUpdate(
-            ok=False,
-            policy=policy,
-            destination=clean,
-            enabled=bool(enabled),
-            reason="unknown_destination",
-            message=f"Unknown execution destination: {destination}",
-        )
-    if not session_key:
-        policy = SshDestinationPolicy(session_key=session_key)
-        return DestinationPolicyUpdate(
-            ok=False,
-            policy=policy,
-            destination=clean,
-            enabled=bool(enabled),
-            reason="session_key_required",
-            message="session_key is required",
-        )
-
-    data = _read_store(path)
-    policies = data.get("destination_policy")
-    existing_raw = policies.get(session_key) if isinstance(policies, dict) else None
-    existing_policy = _coerce_destination_policy(session_key, existing_raw)
-    if not enabled and not _has_available_nonlocal_destination(session_key, data):
-        return DestinationPolicyUpdate(
-            ok=False,
-            policy=existing_policy,
-            destination="local",
-            enabled=False,
-            reason="at_least_one_destination_required",
-            message="At least one execution destination must remain on.",
-        )
-
-    policies = data.setdefault("destination_policy", {})
-    now = time.time()
-    raw_existing = policies.get(session_key) if isinstance(policies.get(session_key), dict) else {}
-    created_at = raw_existing.get("created_at") if isinstance(raw_existing.get("created_at"), (int, float)) else now
-    record = {
-        "local_enabled": bool(enabled),
-        "created_at": created_at,
-        "updated_at": now,
-    }
-    policies[session_key] = record
-    _write_store(data, path)
-    policy = _coerce_destination_policy(session_key, record)
-    return DestinationPolicyUpdate(
-        ok=True,
-        policy=policy,
-        destination="local",
-        enabled=bool(enabled),
-    )
+) -> BackendPolicyUpdate:
+    return set_backend_auto_enabled(session_key, destination, enabled, path=path)
 
 
 def get_ssh_binding(session_key: str, *, path: str | Path | None = None) -> SshBinding | None:
@@ -296,9 +310,9 @@ def set_ssh_binding(
 
     if not session_key:
         raise ValueError("session_key is required")
-    alias = str(alias or "").strip()
-    if not alias:
-        raise ValueError("alias is required")
+    alias = normalize_backend_name(alias)
+    if not alias or is_local_backend(alias):
+        raise ValueError("ssh binding alias must be a non-local SSH target")
     data = _read_store(path)
     bindings = data.setdefault("bindings", {})
     now = time.time()
@@ -331,83 +345,6 @@ def clear_ssh_binding(session_key: str, *, path: str | Path | None = None) -> bo
         bindings.pop(session_key, None)
         _write_store(data, path)
     return existed
-
-
-def get_ssh_yolo_grant(session_key: str, *, path: str | Path | None = None) -> SshYoloGrant:
-    """Return the YOLO grant for *session_key*, or a disabled grant."""
-
-    data = _read_store(path)
-    grants = data.get("yolo_grants")
-    raw = grants.get(session_key) if isinstance(grants, dict) else None
-    return _coerce_yolo_grant(session_key, raw)
-
-
-def set_ssh_yolo_grant(
-    session_key: str,
-    *,
-    enabled: bool,
-    aliases: list[str] | tuple[str, ...] | None = None,
-    path: str | Path | None = None,
-) -> SshYoloGrant:
-    """Persist a session-scoped YOLO grant."""
-
-    if not session_key:
-        raise ValueError("session_key is required")
-    data = _read_store(path)
-    grants = data.setdefault("yolo_grants", {})
-    now = time.time()
-    existing = grants.get(session_key) if isinstance(grants.get(session_key), dict) else {}
-    created_at = existing.get("created_at") if isinstance(existing.get("created_at"), (int, float)) else now
-    clean_aliases: list[str] = []
-    for item in aliases or []:
-        alias = str(item or "").strip()
-        if alias and alias not in clean_aliases:
-            clean_aliases.append(alias)
-    record = {
-        "enabled": bool(enabled),
-        "aliases": clean_aliases,
-        "created_at": created_at,
-        "updated_at": now,
-    }
-    grants[session_key] = record
-    _write_store(data, path)
-    return _coerce_yolo_grant(session_key, record)
-
-
-def add_ssh_yolo_alias(
-    session_key: str,
-    alias: str,
-    *,
-    path: str | Path | None = None,
-) -> SshYoloGrant:
-    """Enable YOLO and add *alias* (or ``all``) to the grant list."""
-
-    grant = get_ssh_yolo_grant(session_key, path=path)
-    clean = str(alias or "").strip()
-    aliases = list(grant.aliases)
-    if clean:
-        if clean == "all":
-            aliases = ["all"]
-        elif "all" not in aliases and clean not in aliases:
-            aliases.append(clean)
-    return set_ssh_yolo_grant(session_key, enabled=True, aliases=aliases, path=path)
-
-
-def remove_ssh_yolo_alias(
-    session_key: str,
-    alias: str | None = None,
-    *,
-    path: str | Path | None = None,
-) -> SshYoloGrant:
-    """Disable YOLO entirely or remove one alias from the grant list."""
-
-    if not alias:
-        return set_ssh_yolo_grant(session_key, enabled=False, aliases=[], path=path)
-    grant = get_ssh_yolo_grant(session_key, path=path)
-    clean = str(alias or "").strip()
-    aliases = [item for item in grant.aliases if item != clean]
-    enabled = bool(aliases and grant.enabled)
-    return set_ssh_yolo_grant(session_key, enabled=enabled, aliases=aliases, path=path)
 
 
 def resolve_binding_target(

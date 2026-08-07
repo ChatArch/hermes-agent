@@ -1,4 +1,4 @@
-"""Tests for gateway /ssh V0 list/status/test behavior."""
+"""Tests for gateway /ssh backend list/status/test/use/on/off behavior."""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -60,8 +60,8 @@ def test_ssh_command_registered_for_gateway():
     assert cmd is not None
     assert cmd.name == "ssh"
     assert cmd.gateway_only is True
-    assert cmd.args_hint == "[list|status|test <alias>|use <alias>|local [on|off]|off]"
-    assert set(cmd.subcommands) >= {"list", "status", "test", "use", "off", "local", "on", "help"}
+    assert cmd.args_hint == "[list|status|test <backend>|use <backend>|on <backend>|off <backend>]"
+    assert set(cmd.subcommands) >= {"list", "status", "test", "use", "on", "off", "help"}
     assert "ssh" in ACTIVE_SESSION_BYPASS_COMMANDS
 
 
@@ -144,14 +144,15 @@ async def test_ssh_status_reports_current_section_without_binding():
     result = await runner._handle_ssh_command(event)
 
     assert "SSH status" in result
-    assert "section binding: none" in result
-    assert "current backend: local" in result
-    assert "/ssh list" in result
+    assert "current backend: `local`" in result
+    assert "backend type: local" in result
+    assert "auto-switch" in result
+    assert "`local`: on" in result
     assert build_session_key(_source(thread_id="omt_thread")) in result
 
 
 @pytest.mark.asyncio
-async def test_ssh_list_renders_targets_without_starting_agent(monkeypatch):
+async def test_ssh_list_renders_local_and_targets_without_starting_agent(monkeypatch):
     from gateway.ssh_targets import SshTarget
     import gateway.run as gateway_run
 
@@ -169,9 +170,11 @@ async def test_ssh_list_renders_targets_without_starting_agent(monkeypatch):
 
     result = await runner._handle_ssh_command(event)
 
-    assert "SSH targets" in result
+    assert "SSH backends" in result
+    assert "`local`" in result
     assert "rex.oray" in result
     assert "rexwzh" in result
+    assert "auto:off" in result
     assert "id_ed25519" not in result
     assert "[REDACTED_PATH]" in result
 
@@ -206,7 +209,7 @@ async def test_ssh_use_binds_current_thread(monkeypatch, tmp_path):
     result = await runner._handle_ssh_command(event)
 
     section_key = build_session_key(_source(thread_id="omt_thread"))
-    assert "SSH enabled" in result
+    assert "Backend switched" in result
     assert "rex.oray" in result
     assert "[REDACTED_PATH]" in result
 
@@ -265,113 +268,111 @@ async def test_ssh_use_in_parent_chat_defaults_to_new_thread(monkeypatch, tmp_pa
     from gateway.ssh_bindings import get_ssh_binding
     section_key = build_session_key(_source(thread_id="omt_default"))
     binding = get_ssh_binding(section_key)
-    assert "SSH enabled" in result
+    assert "Backend switched" in result
     assert binding is not None
     assert binding.alias == "demo.remote"
     runner.adapters[Platform.FEISHU].create_thread.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_ssh_help_prefers_local_and_keeps_off_as_alias():
+async def test_ssh_help_shows_flat_backend_interface():
     runner = _runner()
     event = _event("/ssh help", thread_id="omt_thread")
 
     result = await runner._handle_ssh_command(event)
 
-    assert "/ssh local — return this section to local backend" in result
-    assert "/ssh off — alias for /ssh local" in result
-    assert result.index("/ssh local") < result.index("/ssh off")
+    assert "/ssh use <backend>" in result
+    assert "/ssh on <backend>" in result
+    assert "/ssh off <backend>" in result
+    assert "/ssh local" not in result
+    assert "/ssh yolo" not in result
 
 
 @pytest.mark.asyncio
-async def test_ssh_local_clears_current_thread_binding(monkeypatch, tmp_path):
+async def test_ssh_use_local_clears_current_thread_binding_without_changing_policy(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from gateway.ssh_bindings import get_destination_policy, set_destination_enabled, set_ssh_binding, get_ssh_binding
+    from gateway.ssh_bindings import get_backend_auto_policy, set_backend_auto_enabled, set_ssh_binding, get_ssh_binding
 
     section_key = build_session_key(_source(thread_id="omt_thread"))
     set_ssh_binding(section_key, alias="demo.remote", cwd="/srv/app")
-    set_destination_enabled(section_key, "local", False)
+    set_backend_auto_enabled(section_key, "local", False)
     runner = _runner()
-    event = _event("/ssh local", thread_id="omt_thread")
+    event = _event("/ssh use local", thread_id="omt_thread")
 
     result = await runner._handle_ssh_command(event)
 
-    assert "Current backend: local" in result
-    assert "SSH binding cleared" in result
+    assert "Backend switched" in result
+    assert "`local`" in result
     assert get_ssh_binding(section_key) is None
-    assert get_destination_policy(section_key).local_enabled is True
+    assert get_backend_auto_policy(section_key, "local").enabled is False
 
 
 @pytest.mark.asyncio
-async def test_ssh_local_off_blocks_model_return_but_keeps_binding(monkeypatch, tmp_path):
+async def test_ssh_off_local_blocks_future_model_return_but_keeps_current_binding(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from gateway.ssh_bindings import get_destination_policy, get_ssh_binding, set_ssh_binding
+    from gateway.ssh_bindings import get_backend_auto_policy, get_ssh_binding, set_ssh_binding
 
     section_key = build_session_key(_source(thread_id="omt_thread"))
     set_ssh_binding(section_key, alias="demo.remote", cwd="/srv/app")
     runner = _runner()
-    event = _event("/ssh local off", thread_id="omt_thread")
+    event = _event("/ssh off local", thread_id="omt_thread")
 
     result = await runner._handle_ssh_command(event)
 
-    assert "Local destination disabled" in result
-    assert "model cannot return to local" in result
-    assert get_destination_policy(section_key).local_enabled is False
+    assert "Backend `local` auto-switch disabled" in result
+    assert "require approval" in result
+    assert get_backend_auto_policy(section_key, "local").enabled is False
     assert get_ssh_binding(section_key).alias == "demo.remote"
 
 
 @pytest.mark.asyncio
-async def test_ssh_local_off_refuses_last_destination(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from gateway.ssh_bindings import get_destination_policy
-
-    section_key = build_session_key(_source(thread_id="omt_thread"))
-    runner = _runner()
-    event = _event("/ssh local off", thread_id="omt_thread")
-
-    result = await runner._handle_ssh_command(event)
-
-    assert "At least one execution destination must remain on" in result
-    assert get_destination_policy(section_key).local_enabled is True
-
-
-@pytest.mark.asyncio
-async def test_ssh_local_on_reenables_model_return(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from gateway.ssh_bindings import get_destination_policy, set_destination_enabled, set_ssh_binding
-
-    section_key = build_session_key(_source(thread_id="omt_thread"))
-    set_ssh_binding(section_key, alias="demo.remote", cwd="/srv/app")
-    set_destination_enabled(section_key, "local", False)
-    runner = _runner()
-    event = _event("/ssh local on", thread_id="omt_thread")
-
-    result = await runner._handle_ssh_command(event)
-
-    assert "Local destination enabled" in result
-    assert get_destination_policy(section_key).local_enabled is True
-
-
-@pytest.mark.asyncio
-async def test_ssh_off_is_compatibility_alias_for_local(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from gateway.ssh_bindings import set_ssh_binding, get_ssh_binding
-
-    section_key = build_session_key(_source(thread_id="omt_thread"))
-    set_ssh_binding(section_key, alias="demo.remote", cwd="/srv/app")
-    runner = _runner()
-    event = _event("/ssh off", thread_id="omt_thread")
-
-    result = await runner._handle_ssh_command(event)
-
-    assert "Current backend: local" in result
-    assert get_ssh_binding(section_key) is None
-
-
-@pytest.mark.asyncio
-async def test_ssh_status_reports_current_thread_binding(monkeypatch, tmp_path):
+async def test_ssh_off_can_disable_all_future_auto_switches_while_current_backend_remains(monkeypatch, tmp_path):
     import gateway.run as gateway_run
-    from gateway.ssh_bindings import set_ssh_binding
+    from gateway.ssh_bindings import get_backend_auto_policy, get_ssh_binding, set_ssh_binding
+    from gateway.ssh_targets import SshTarget
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        gateway_run,
+        "load_ssh_targets",
+        lambda: [SshTarget(alias="demo.remote", host="example.invalid", user="hermes")],
+        raising=False,
+    )
+    section_key = build_session_key(_source(thread_id="omt_thread"))
+    set_ssh_binding(section_key, alias="demo.remote", cwd="/srv/app")
+    runner = _runner()
+
+    local_result = await runner._handle_ssh_command(_event("/ssh off local", thread_id="omt_thread"))
+    remote_result = await runner._handle_ssh_command(_event("/ssh off demo.remote", thread_id="omt_thread"))
+
+    assert "auto-switch disabled" in local_result
+    assert "auto-switch disabled" in remote_result
+    assert get_backend_auto_policy(section_key, "local").enabled is False
+    assert get_backend_auto_policy(section_key, "demo.remote").enabled is False
+    assert get_ssh_binding(section_key).alias == "demo.remote"
+
+
+@pytest.mark.asyncio
+async def test_ssh_on_reenables_model_switch_to_backend(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.ssh_bindings import get_backend_auto_policy, set_backend_auto_enabled, set_ssh_binding
+
+    section_key = build_session_key(_source(thread_id="omt_thread"))
+    set_ssh_binding(section_key, alias="demo.remote", cwd="/srv/app")
+    set_backend_auto_enabled(section_key, "local", False)
+    runner = _runner()
+    event = _event("/ssh on local", thread_id="omt_thread")
+
+    result = await runner._handle_ssh_command(event)
+
+    assert "Backend `local` auto-switch enabled" in result
+    assert get_backend_auto_policy(section_key, "local").enabled is True
+
+
+@pytest.mark.asyncio
+async def test_ssh_status_reports_current_thread_binding_and_auto_switch(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+    from gateway.ssh_bindings import set_backend_auto_enabled, set_ssh_binding
     from gateway.ssh_targets import SshTarget
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -383,13 +384,16 @@ async def test_ssh_status_reports_current_thread_binding(monkeypatch, tmp_path):
     )
     section_key = build_session_key(_source(thread_id="omt_thread"))
     set_ssh_binding(section_key, alias="rex.oray")
+    set_backend_auto_enabled(section_key, "local", False)
     runner = _runner()
     event = _event("/ssh status", thread_id="omt_thread")
 
     result = await runner._handle_ssh_command(event)
 
-    assert "current backend: ssh" in result
-    assert "rex.oray" in result
+    assert "current backend: `rex.oray`" in result
+    assert "backend type: ssh" in result
+    assert "`local`: off" in result
+    assert "`rex.oray`: off" in result
     assert "/secret/key" not in result
     assert "[REDACTED_PATH]" in result
 
@@ -440,7 +444,7 @@ async def test_ssh_use_incomplete_target_does_not_bind(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ssh_test_unknown_alias_does_not_change_binding(monkeypatch):
+async def test_ssh_test_unknown_backend_does_not_change_binding(monkeypatch):
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "load_ssh_targets", lambda: [], raising=False)
@@ -450,9 +454,8 @@ async def test_ssh_test_unknown_alias_does_not_change_binding(monkeypatch):
 
     result = await runner._handle_ssh_command(event)
 
-    assert "Unknown SSH target" in result
+    assert "Unknown backend" in result
     assert "missing-host" in result
-    assert "No binding was changed" in result
 
 
 @pytest.mark.asyncio
@@ -478,44 +481,18 @@ async def test_ssh_use_explicit_thread_alias_creates_thread_and_binds(monkeypatc
     from gateway.ssh_bindings import get_ssh_binding
     section_key = build_session_key(_source(thread_id="omt_new"))
     binding = get_ssh_binding(section_key)
-    assert "SSH enabled" in result
+    assert "Backend switched" in result
     assert binding is not None
     assert binding.alias == "rex.oray"
 
 
 @pytest.mark.asyncio
-async def test_ssh_yolo_is_thread_scoped_in_feishu_parent_chat():
+async def test_legacy_ssh_approval_alias_is_not_user_visible():
     runner = _runner()
-    event = _event("/ssh yolo on rex.oray", thread_id=None)
+    event = _event("/ssh yolo on rex.oray", thread_id="omt_thread")
 
     result = await runner._handle_ssh_command(event)
 
-    assert "Thread-scoped" in result
-    assert "/ssh use <alias>" in result
-
-
-@pytest.mark.asyncio
-async def test_ssh_yolo_on_status_and_off(monkeypatch, tmp_path):
-    import gateway.run as gateway_run
-    from gateway.ssh_bindings import get_ssh_yolo_grant
-    from gateway.ssh_targets import SshTarget
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(
-        gateway_run,
-        "load_ssh_targets",
-        lambda: [SshTarget(alias="rex.oray", host="rexwzh.oray", user="rexwzh")],
-        raising=False,
-    )
-    runner = _runner()
-
-    result = await runner._handle_ssh_command(_event("/ssh yolo on rex.oray", thread_id="omt_thread"))
-    status = await runner._handle_ssh_command(_event("/ssh yolo status", thread_id="omt_thread"))
-    off = await runner._handle_ssh_command(_event("/ssh yolo off rex.oray", thread_id="omt_thread"))
-
-    section_key = build_session_key(_source(thread_id="omt_thread"))
-    grant = get_ssh_yolo_grant(section_key)
-    assert "SSH YOLO enabled" in result
-    assert "rex.oray" in status
-    assert "yolo: off" in off
-    assert grant.enabled is False
+    assert "Usage:" in result
+    assert "/ssh on <backend>" in result
+    assert "/ssh yolo" not in result

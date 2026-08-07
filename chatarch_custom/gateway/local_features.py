@@ -53,10 +53,10 @@ LOCAL_GATEWAY_COMMANDS: tuple[LocalGatewayCommand, ...] = (
     ),
     LocalGatewayCommand(
         "ssh",
-        "Manage SSH backend targets and section bindings",
+        "Manage execution backends and section bindings",
         "Session",
-        args_hint="[list|status|test <alias>|use <alias>|local [on|off]|off]",
-        subcommands=("list", "status", "test", "use", "off", "local", "on", "help"),
+        args_hint="[list|status|test <backend>|use <backend>|on <backend>|off <backend>]",
+        subcommands=("list", "status", "test", "use", "on", "off", "help"),
         handler_name="_handle_ssh_command",
     ),
     LocalGatewayCommand(
@@ -95,9 +95,9 @@ CORE_SEAMS: dict[str, str] = {
     "gateway.run.GatewayRunner._handle_thread_command": "Feishu /thread and /t typed entrypoints",
     "gateway.run.GatewayRunner._handle_template_command": "Feishu /template and /tpl thread launcher",
     "gateway.run.GatewayRunner._handle_ssh_command": "Gateway /ssh section binding UX",
-    "gateway.run.GatewayRunner._handle_message_with_agent._ssh_grant_notify_sync": "gateway-to-tool ssh_mode.request_use authorization card bridge",
-    "tools.ssh_mode_tool._request_use": "model-side ssh_mode.request_use decision path",
-    "plugins.platforms.feishu.adapter.send_ssh_grant_approval": "Feishu SSH allow-current/all/deny card",
+    "gateway.run.GatewayRunner._handle_message_with_agent._ssh_grant_notify_sync": "gateway-to-tool ssh_mode use authorization card bridge",
+    "tools.ssh_mode_tool._use": "model-side ssh_mode use decision path",
+    "plugins.platforms.feishu.adapter.send_ssh_grant_approval": "Feishu backend allow-current/all/deny card",
     "gateway.platforms.base.CardReply": "Structured gateway card reply surface",
     "gateway.platforms.base.SendResult.thread_id": "Platform thread metadata preservation",
 }

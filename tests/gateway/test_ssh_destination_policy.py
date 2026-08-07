@@ -1,55 +1,53 @@
 from gateway.ssh_bindings import (
-    get_destination_policy,
+    get_backend_auto_policy,
     get_ssh_binding,
-    set_destination_enabled,
+    list_backend_auto_policies,
+    set_backend_auto_enabled,
     set_ssh_binding,
-    set_ssh_yolo_grant,
 )
 
 
 SESSION_KEY = "agent:main:feishu:group:oc_chat:omt_thread"
 
 
-def test_destination_policy_defaults_local_on(monkeypatch, tmp_path):
+def test_backend_policy_defaults_local_on_and_ssh_targets_off(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    policy = get_destination_policy(SESSION_KEY)
+    local = get_backend_auto_policy(SESSION_KEY, "local")
+    remote = get_backend_auto_policy(SESSION_KEY, "cubebot")
 
-    assert policy.local_enabled is True
-    assert policy.destination_enabled("local") is True
+    assert local.enabled is True
+    assert local.local_enabled is True
+    assert remote.enabled is False
+    assert list_backend_auto_policies(SESSION_KEY, ["local", "cubebot"]) == {
+        "local": True,
+        "cubebot": False,
+    }
 
 
-def test_destination_policy_can_disable_local_when_ssh_binding_exists(monkeypatch, tmp_path):
+def test_backend_policy_can_turn_every_auto_switch_backend_off_while_current_binding_remains(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     set_ssh_binding(SESSION_KEY, alias="cubebot", source="user")
 
-    result = set_destination_enabled(SESSION_KEY, "local", False)
-    policy = get_destination_policy(SESSION_KEY)
+    local_result = set_backend_auto_enabled(SESSION_KEY, "local", False)
+    remote_result = set_backend_auto_enabled(SESSION_KEY, "cubebot", False)
 
-    assert result.ok is True
-    assert policy.local_enabled is False
-    assert policy.destination_enabled("local") is False
+    assert local_result.ok is True
+    assert remote_result.ok is True
+    assert get_backend_auto_policy(SESSION_KEY, "local").enabled is False
+    assert get_backend_auto_policy(SESSION_KEY, "cubebot").enabled is False
     assert get_ssh_binding(SESSION_KEY).alias == "cubebot"
 
 
-def test_destination_policy_refuses_to_disable_last_on_destination(monkeypatch, tmp_path):
+def test_backend_policy_on_off_applies_to_local_and_ssh_backends_symmetrically(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    result = set_destination_enabled(SESSION_KEY, "local", False)
-    policy = get_destination_policy(SESSION_KEY)
+    assert set_backend_auto_enabled(SESSION_KEY, "local", False).ok is True
+    assert set_backend_auto_enabled(SESSION_KEY, "cubebot", True).ok is True
+    assert set_backend_auto_enabled(SESSION_KEY, "cubebot", False).ok is True
+    assert set_backend_auto_enabled(SESSION_KEY, "local", True).ok is True
 
-    assert result.ok is False
-    assert result.reason == "at_least_one_destination_required"
-    assert "At least one execution destination must remain on" in result.message
-    assert policy.local_enabled is True
-
-
-def test_destination_policy_counts_yolo_grant_as_available_ssh_destination(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    set_ssh_yolo_grant(SESSION_KEY, enabled=True, aliases=["cubebot"])
-
-    result = set_destination_enabled(SESSION_KEY, "local", False)
-    policy = get_destination_policy(SESSION_KEY)
-
-    assert result.ok is True
-    assert policy.local_enabled is False
+    assert list_backend_auto_policies(SESSION_KEY, ["local", "cubebot"]) == {
+        "local": True,
+        "cubebot": False,
+    }
