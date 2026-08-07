@@ -469,17 +469,15 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
 
     if tool_name == "ssh_mode":
         action = _oneline(str(args.get("action") or "status"))
-        if action == "request_use":
+        if action in {"use", "test", "on", "off"}:
             parts = [action]
-            alias = _oneline(str(args.get("alias") or ""))
+            backend = _oneline(str(args.get("backend") or args.get("alias") or ""))
             cwd = _oneline(str(args.get("cwd") or ""))
-            if alias:
-                parts.append(alias)
+            if backend:
+                parts.append(backend)
             if cwd:
                 parts.append(f"cwd={cwd}")
             return _truncate_preview(" ".join(parts), max_len)
-        if action == "request_local":
-            return "request_local -> local"
         return _truncate_preview(action, max_len)
 
     if tool_name == "process":

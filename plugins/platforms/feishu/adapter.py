@@ -2233,7 +2233,7 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
-    # CHATARCH_LOCAL_SEAM: Feishu/Lark card used by ssh_mode.request_use.
+    # CHATARCH_LOCAL_SEAM: Feishu/Lark card used by ssh_mode use.
     # Future conflict resolution must preserve allow-current, allow-all, deny,
     # state storage, and resolve_gateway_ssh_grant callback behavior.
     async def send_ssh_grant_approval(
@@ -2245,7 +2245,7 @@ class FeishuAdapter(BasePlatformAdapter):
         cwd: str | None = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an interactive card asking for model-initiated SSH authorization."""
+        """Send an interactive card asking for model-initiated backend authorization."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
@@ -2264,17 +2264,17 @@ class FeishuAdapter(BasePlatformAdapter):
                 }
 
             body_lines = [
-                f"**Target:** `{alias}`",
+                f"**Backend:** `{alias}`",
             ]
             if cwd:
                 body_lines.append(f"**Remote cwd:** `{cwd}`")
             if reason:
                 body_lines.append(f"**Reason:** {reason}")
-            body_lines.append("\nChoose how much SSH access to grant for this Thread.")
+            body_lines.append("\nChoose how much backend switching access to grant for this Thread.")
             card = {
                 "config": {"wide_screen_mode": True},
                 "header": {
-                    "title": {"content": "🔐 SSH Authorization Required", "tag": "plain_text"},
+                    "title": {"content": "🔐 Backend Authorization Required", "tag": "plain_text"},
                     "template": "orange",
                 },
                 "elements": [

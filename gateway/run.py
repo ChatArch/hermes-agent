@@ -2265,17 +2265,17 @@ from gateway.ssh_targets import (
     validate_ssh_target_for_runtime,
 )
 from gateway.ssh_bindings import (
-    add_ssh_yolo_alias,
+    LOCAL_BACKEND,
     clear_ssh_binding,
-    get_destination_policy,
+    get_backend_auto_policy,
     get_ssh_binding,
-    get_ssh_yolo_grant,
-    remove_ssh_yolo_alias,
+    is_local_backend,
+    list_backend_auto_policies,
+    normalize_backend_name,
     resolve_binding_task_overrides,
     resolve_binding_target,
-    set_destination_enabled,
+    set_backend_auto_enabled,
     set_ssh_binding,
-    set_ssh_yolo_grant,
 )
 from gateway.turn_context import TurnContext
 from gateway.platforms.base import (
@@ -5158,8 +5158,8 @@ class TurnRunner:
             except Exception as _e:
                 logger.error("Failed to send approval request: %s", _e)
 
-        # CHATARCH_LOCAL_SEAM: bridge model-side ssh_mode.request_use to the
-        # platform's native authorization card. The tool blocks on this sync
+        # CHATARCH_LOCAL_SEAM: bridge model-side ssh_mode use requests to the
+        # platform's native backend authorization card. The tool blocks on this sync
         # callback, while card delivery is scheduled on the gateway loop.
         def _ssh_grant_notify_sync(grant_data: dict) -> None:
             ctx._status_adapter.pause_typing_for_chat(ctx._status_chat_id)
@@ -18808,8 +18808,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reset_existing_thread=False,
         )
 
-    # CHATARCH_LOCAL_SEAM: keep the heavy SSH binding implementation here for
-    # now because it touches section keys, Feishu thread creation, terminal
+    # CHATARCH_LOCAL_SEAM: keep the heavy SSH/backend binding implementation
+    # here because it touches section keys, Feishu thread creation, terminal
     # backend overrides, and agent cache eviction. The public command metadata
     # and handler mapping are owned by chatarch_custom.gateway.local_features.
     async def _handle_ssh_command(self, event: MessageEvent) -> str:
@@ -18819,183 +18819,166 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         parts = raw_args.split()
         action = parts[0].lower() if parts else "help"
 
-        if action in {"help", ""}:
-            return (
-                "Usage:\n"
-                "/ssh list — list SSH targets\n"
-                "/ssh status — show this section's SSH binding\n"
-                "/ssh test <alias> — validate a target without changing binding\n"
-                "/ssh use <alias> [--cwd <remote-path>] — bind current section to SSH; in a Feishu parent chat, create a Thread by default\n"
-                "/ssh use <alias> --new-thread|-t|--thread [--cwd <remote-path>] — explicitly create a Feishu Thread and bind it\n"
-                "/ssh yolo status|on|off [alias|all] — manage model auto-switch grants for this section\n"
-                "/ssh local — return this section to local backend\n"
-                "/ssh local on|off — allow or block model-initiated return to local\n"
-                "/ssh off — alias for /ssh local"
-            )
+        usage = (
+            "Usage:\n"
+            "/ssh list — list local plus configured SSH backends\n"
+            "/ssh status — show this section's current backend and auto-switch policy\n"
+            "/ssh test <backend> — validate local or an SSH backend without switching\n"
+            "/ssh use <backend> [--cwd <remote-path>] — explicitly switch current backend; backend can be local\n"
+            "/ssh on <backend> — allow model-initiated switching to that backend\n"
+            "/ssh off <backend> — require approval before model-initiated switching to that backend"
+        )
 
-        if action == "list":
-            return render_ssh_targets(load_ssh_targets())
+        if action in {"help", ""}:
+            return usage
 
         section_key = self._session_key_for_source(event.source)
 
-        if action == "status":
-            grant = get_ssh_yolo_grant(section_key)
-            policy = get_destination_policy(section_key)
-            yolo_aliases = "all" if grant.allows_all else (", ".join(grant.aliases) if grant.aliases else "none")
-            yolo_lines = [
-                f"- yolo: {'on' if grant.enabled else 'off'}",
-                f"- yolo list: {yolo_aliases}",
-                f"- local destination: {'on' if policy.local_enabled else 'off'}",
-            ]
+        def _backend_arg() -> str:
+            return normalize_backend_name(parts[1]) if len(parts) > 1 else ""
+
+        def _target_for_backend(backend: str):
+            if is_local_backend(backend):
+                return None
+            return find_ssh_target(load_ssh_targets(), backend)
+
+        def _known_backend_names() -> list[str]:
+            return [LOCAL_BACKEND, *[target.alias for target in load_ssh_targets()]]
+
+        def _format_auto(value: bool) -> str:
+            return "on" if value else "off"
+
+        def _render_backend_lines() -> list[str]:
             resolved = resolve_binding_target(section_key, targets=load_ssh_targets())
-            if resolved is None:
-                return "\n".join([
-                    "SSH status:",
-                    "- current backend: local",
-                    "- section binding: none",
-                    f"- section key: {section_key}",
-                    *yolo_lines,
-                    "- use /ssh list to see targets",
-                ])
-            binding, target = resolved
+            current = resolved[0].alias if resolved else LOCAL_BACKEND
+            backends = _known_backend_names()
+            policy = list_backend_auto_policies(section_key, backends)
+            lines = ["SSH backends:"]
+            local_marks = []
+            if current == LOCAL_BACKEND:
+                local_marks.append("current")
+            local_marks.append(f"auto:{_format_auto(policy.get(LOCAL_BACKEND, True))}")
+            lines.append(f"- `{LOCAL_BACKEND}` (local; {', '.join(local_marks)})")
+            for target in load_ssh_targets():
+                marks = []
+                if current == target.alias:
+                    marks.append("current")
+                marks.append(f"auto:{_format_auto(policy.get(target.alias, False))}")
+                details = []
+                if target.host:
+                    details.append(f"host={target.host}")
+                if target.user:
+                    details.append(f"user={target.user}")
+                if target.port:
+                    details.append(f"port={target.port}")
+                if target.cwd:
+                    details.append(f"cwd={target.cwd}")
+                if target.identity_file:
+                    details.append("identity=[REDACTED_PATH]")
+                suffix = f" — {'; '.join(details)}" if details else ""
+                lines.append(f"- `{target.alias}` (ssh; {', '.join(marks)}){suffix}")
+            return lines
+
+        if action == "list":
+            return "\n".join(_render_backend_lines())
+
+        if action == "status":
+            resolved = resolve_binding_target(section_key, targets=load_ssh_targets())
+            current = resolved[0].alias if resolved else LOCAL_BACKEND
+            policy = list_backend_auto_policies(section_key, _known_backend_names())
             lines = [
                 "SSH status:",
-                "- current backend: ssh",
-                f"- section binding: `{binding.alias}`",
-                f"- binding source: {binding.source}",
+                f"- current backend: `{current}`",
+                f"- backend type: {'local' if current == LOCAL_BACKEND else 'ssh'}",
                 f"- section key: {section_key}",
-                *yolo_lines,
+                "- auto-switch:",
             ]
-            if target.host:
-                lines.append(f"- host: {target.host}")
-            if target.user:
-                lines.append(f"- user: {target.user}")
-            if target.port:
-                lines.append(f"- port: {target.port}")
-            cwd = binding.cwd or target.cwd
-            if cwd:
-                lines.append(f"- cwd: {cwd}")
-            if target.identity_file:
-                lines.append("- identity: [REDACTED_PATH]")
+            for backend in _known_backend_names():
+                lines.append(f"  - `{backend}`: {_format_auto(policy.get(backend, is_local_backend(backend)))}")
+            if resolved is not None:
+                binding, target = resolved
+                lines.extend([
+                    f"- binding source: {binding.source}",
+                ])
+                if target.host:
+                    lines.append(f"- host: {target.host}")
+                if target.user:
+                    lines.append(f"- user: {target.user}")
+                if target.port:
+                    lines.append(f"- port: {target.port}")
+                cwd = binding.cwd or target.cwd
+                if cwd:
+                    lines.append(f"- cwd: {cwd}")
+                if target.identity_file:
+                    lines.append("- identity: [REDACTED_PATH]")
             return "\n".join(lines)
 
-        if action == "yolo":
-            subaction = parts[1].lower() if len(parts) > 1 else "status"
-            alias = parts[2].strip() if len(parts) > 2 else ""
-            if event.source.platform == Platform.FEISHU and not event.source.thread_id:
-                return (
-                    "SSH YOLO is Thread-scoped. Open a Feishu Thread first, "
-                    "or use `/ssh use <alias> -t` to create a Thread and bind SSH there."
-                )
-            if subaction == "status":
-                grant = get_ssh_yolo_grant(section_key)
-                aliases = "all" if grant.allows_all else (", ".join(grant.aliases) if grant.aliases else "none")
-                return "\n".join([
-                    "SSH YOLO status:",
-                    f"- yolo: {'on' if grant.enabled else 'off'}",
-                    f"- yolo list: {aliases}",
-                    f"- section key: {section_key}",
-                ])
-            if subaction == "on":
-                targets = load_ssh_targets()
-                if alias and alias != "all" and find_ssh_target(targets, alias) is None:
-                    return f"Unknown SSH target: `{alias}`. YOLO was not changed. Use /ssh list to see targets."
-                if alias:
-                    grant = add_ssh_yolo_alias(section_key, alias)
-                else:
-                    grant = set_ssh_yolo_grant(
-                        section_key,
-                        enabled=True,
-                        aliases=get_ssh_yolo_grant(section_key).aliases,
-                    )
-                aliases = "all" if grant.allows_all else (", ".join(grant.aliases) if grant.aliases else "none")
-                return "\n".join([
-                    "SSH YOLO enabled for this section.",
-                    f"- yolo: {'on' if grant.enabled else 'off'}",
-                    f"- yolo list: {aliases}",
-                    f"- section key: {section_key}",
-                ])
-            if subaction == "off":
-                grant = remove_ssh_yolo_alias(section_key, alias or None)
-                aliases = "all" if grant.allows_all else (", ".join(grant.aliases) if grant.aliases else "none")
-                return "\n".join([
-                    "SSH YOLO updated for this section.",
-                    f"- yolo: {'on' if grant.enabled else 'off'}",
-                    f"- yolo list: {aliases}",
-                    f"- section key: {section_key}",
-                ])
-            return "Usage: /ssh yolo status|on|off [alias|all]"
-
         if action == "test":
-            alias = parts[1].strip() if len(parts) > 1 else ""
-            if not alias:
-                return "Usage: /ssh test <alias>"
-            target = find_ssh_target(load_ssh_targets(), alias)
+            backend = _backend_arg()
+            if not backend:
+                return "Usage: /ssh test <backend>"
+            if is_local_backend(backend):
+                return "SSH test: `local` backend is available."
+            target = _target_for_backend(backend)
             if target is None:
-                return f"Unknown SSH target: `{alias}`. No binding was changed. Use /ssh list to see targets."
+                return f"Unknown backend: `{backend}`. Use /ssh list to see backends."
             target_error = validate_ssh_target_for_runtime(target)
             if target_error:
                 return target_error
-            return f"SSH test: `{alias}` is configured. No binding was changed."
+            return f"SSH test: `{backend}` is configured. No binding was changed."
 
-        if action in {"off", "local"}:
-            if action == "local" and len(parts) > 1:
-                subaction = parts[1].strip().lower()
-                if subaction in {"on", "off"}:
-                    update = set_destination_enabled(section_key, "local", subaction == "on")
-                    if not update.ok:
-                        return update.message or "Local destination was not changed."
-                    if subaction == "on":
-                        return "Local destination enabled for this section. Model-initiated return to local is allowed."
-                    return "Local destination disabled for this section; model cannot return to local until you run `/ssh local on` or explicitly run `/ssh local`."
-                return "Usage: /ssh local [on|off]"
-            # A user-issued `/ssh local` is an explicit override: it returns the
-            # section to local and re-enables local as a model destination.
-            set_destination_enabled(section_key, "local", True)
-            clear_ssh_binding(section_key)
-            try:
-                from tools.terminal_tool import clear_task_env_overrides
-                clear_task_env_overrides(section_key)
-            except Exception:
-                pass
-            self._evict_cached_agent(section_key)
-            return "SSH binding cleared for this section. Current backend: local."
+        if action in {"on", "off"}:
+            backend = _backend_arg()
+            if not backend:
+                return f"Usage: /ssh {action} <backend>"
+            if not is_local_backend(backend) and _target_for_backend(backend) is None:
+                return f"Unknown backend: `{backend}`. Use /ssh list to see backends."
+            update = set_backend_auto_enabled(section_key, backend, action == "on")
+            if not update.ok:
+                return update.message or f"Backend `{backend}` auto-switch policy was not changed."
+            state = "enabled" if update.enabled else "disabled"
+            effect = "allowed" if update.enabled else "will require approval"
+            return f"Backend `{backend}` auto-switch {state} for this section; model-initiated use {effect}."
 
         if action == "use":
-            alias = parts[1].strip() if len(parts) > 1 else ""
-            if not alias:
-                return "Usage: /ssh use <alias> [--cwd <remote-path>] [--new-thread|-t|--thread]"
-            new_thread = any(flag in parts for flag in ("--new-thread", "--thread", "-t"))
+            backend = _backend_arg()
+            if not backend:
+                return "Usage: /ssh use <backend> [--cwd <remote-path>]"
+            if is_local_backend(backend):
+                clear_ssh_binding(section_key)
+                try:
+                    from tools.terminal_tool import clear_task_env_overrides
+                    clear_task_env_overrides(section_key)
+                except Exception:
+                    pass
+                self._evict_cached_agent(section_key)
+                return "Backend switched for this section: `local`."
+
+            target = _target_for_backend(backend)
+            if target is None:
+                return f"Unknown backend: `{backend}`. No binding was changed. Use /ssh list to see backends."
+            target_error = validate_ssh_target_for_runtime(target)
+            if target_error:
+                return target_error
             cwd = None
             if "--cwd" in parts:
                 idx = parts.index("--cwd")
                 if idx + 1 >= len(parts):
-                    return "Usage: /ssh use <alias> --cwd <remote-path>"
+                    return "Usage: /ssh use <backend> --cwd <remote-path>"
                 cwd = parts[idx + 1]
-
-            targets = load_ssh_targets()
-            target = find_ssh_target(targets, alias)
-            if target is None:
-                return f"Unknown SSH target: `{alias}`. No binding was changed. Use /ssh list to see targets."
-            target_error = validate_ssh_target_for_runtime(target)
-            if target_error:
-                return target_error
 
             source = event.source
             bind_source = source
             if not source.thread_id:
                 if source.platform != Platform.FEISHU:
-                    return "Please run `/ssh use <alias>` inside a thread/section that supports SSH bindings."
-                # Feishu parent-chat UX: default to creating a thread. Mobile
-                # users should not have to remember `-t`; explicit `-t` remains
-                # accepted but is no longer required.
+                    return "Please run `/ssh use <backend>` inside a thread/section that supports backend bindings."
                 adapter = self.adapters.get(source.platform)
                 create_thread = getattr(adapter, "create_thread", None) if adapter else None
                 if create_thread is None:
-                    return "Feishu /ssh --new-thread is unavailable: adapter does not support thread creation."
+                    return "Feishu /ssh use is unavailable: adapter does not support thread creation."
                 if not getattr(event, "message_id", None):
-                    return "Feishu /ssh --new-thread requires a message id to create a thread."
-                result = await create_thread(source.chat_id, "SSH target binding", reply_to=str(event.message_id))
+                    return "Feishu /ssh use requires a message id to create a thread."
+                result = await create_thread(source.chat_id, "SSH backend binding", reply_to=str(event.message_id))
                 if not getattr(result, "success", False):
                     return f"Failed to create Feishu thread: {getattr(result, 'error', 'unknown error')}"
                 thread_id = getattr(result, "thread_id", None) or getattr(result, "message_id", None)
@@ -19009,8 +18992,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
             bind_key = self._session_key_for_source(bind_source)
-            binding = set_ssh_binding(bind_key, alias=alias, cwd=cwd)
-            overrides = resolve_binding_task_overrides(bind_key, targets=targets)
+            binding = set_ssh_binding(bind_key, alias=backend, cwd=cwd, source="user")
+            overrides = resolve_binding_task_overrides(bind_key, targets=load_ssh_targets())
             if overrides:
                 try:
                     from tools.terminal_tool import register_task_env_overrides
@@ -19019,8 +19002,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pass
             self._evict_cached_agent(bind_key)
             lines = [
-                f"SSH enabled for this section: `{binding.alias}`",
-                "- backend: ssh",
+                f"Backend switched for this section: `{binding.alias}`",
+                "- backend type: ssh",
                 f"- section key: {bind_key}",
             ]
             effective_cwd = binding.cwd or target.cwd
@@ -19028,10 +19011,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 lines.append(f"- cwd: {effective_cwd}")
             if target.identity_file:
                 lines.append("- identity: [REDACTED_PATH]")
-            lines.append("Future terminal/file/execute_code calls in this section will use the SSH backend.")
+            lines.append("Future terminal/file/execute_code calls in this section will use this backend.")
             return "\n".join(lines)
 
-        return "Usage: /ssh [list|status|test <alias>|use <alias>|off|help]"
+        return usage
 
     # CHATARCH_LOCAL_SEAM: full handler remains in GatewayRunner until the
     # Feishu thread/session rewrite flow has a stable extension interface. The

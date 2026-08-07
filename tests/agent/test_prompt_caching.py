@@ -156,7 +156,7 @@ class TestPromptCachePlan:
         assert any("cache_control" in part for part in system_content)
         assert plan.tools[-1]["cache_control"] == MARKER
 
-    def test_tool_strip_is_request_local(self):
+    def test_tool_strip_preserves_original_tool_list(self):
         tools = _tool_heavy_native_tools()
         tools[-1]["cache_control"] = MARKER
 

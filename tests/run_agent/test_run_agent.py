@@ -1231,7 +1231,7 @@ class TestBuildApiKwargs:
         assert kwargs["messages"] is messages
         assert kwargs["timeout"] == 1800.0
 
-    def test_explicit_request_local_tools_reach_native_transport(self, agent, monkeypatch):
+    def test_explicit_cached_tools_reach_native_transport(self, agent, monkeypatch):
         from agent.prompt_caching import build_prompt_cache_plan
 
         canonical_tools = [
