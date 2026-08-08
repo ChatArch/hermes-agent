@@ -305,9 +305,10 @@ def _use(ctx: dict[str, str], args: dict[str, Any], task_id: str | None) -> str:
             },
         )
         if decision == "allow_all":
-            set_backend_auto_enabled(session_key, backend, True)
+            for name in _known_backend_names():
+                set_backend_auto_enabled(session_key, name, True)
         elif decision == "allow_current":
-            pass
+            set_backend_auto_enabled(session_key, backend, True)
         elif decision in {"deny", "timeout"}:
             return tool_result(
                 ok=False,
