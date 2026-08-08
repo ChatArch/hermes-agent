@@ -92,7 +92,7 @@ def test_ssh_mode_use_off_ssh_backend_requests_approval_and_does_not_switch(monk
     assert get_backend_auto_policy(SESSION_KEY, "cubebot").enabled is False
 
 
-def test_ssh_mode_use_off_ssh_backend_allow_current_switches_once_without_turning_it_on(monkeypatch, tmp_path):
+def test_ssh_mode_allow_current_enables_each_requested_backend_additively(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     import tools.ssh_mode_tool as ssh_mode_tool
     from tools.terminal_tool import clear_task_env_overrides, resolve_task_overrides
@@ -100,16 +100,23 @@ def test_ssh_mode_use_off_ssh_backend_allow_current_switches_once_without_turnin
     monkeypatch.setattr(
         ssh_mode_tool,
         "load_ssh_targets",
-        lambda: [SshTarget(alias="cubebot", host="127.0.0.1", user="cubebot")],
+        lambda: [
+            SshTarget(alias="cubebot", host="127.0.0.1", user="cubebot"),
+            SshTarget(alias="builder", host="127.0.0.2", user="builder"),
+        ],
     )
+    choices = iter(["allow_current", "allow_current"])
+    requests = []
 
-    def _notify(_data):
-        ssh_mode_tool.resolve_gateway_ssh_grant(SESSION_KEY, "allow_current")
+    def _notify(data):
+        requests.append(data["backend"])
+        ssh_mode_tool.resolve_gateway_ssh_grant(SESSION_KEY, next(choices))
 
     ssh_mode_tool.register_gateway_ssh_grant_notify(SESSION_KEY, _notify)
     tokens = _session_vars()
     try:
-        result = _call({"action": "use", "backend": "cubebot"})
+        first = _call({"action": "use", "backend": "cubebot"})
+        second = _call({"action": "use", "backend": "builder"})
         task_overrides = resolve_task_overrides("session-1")
         session_overrides = resolve_task_overrides(SESSION_KEY)
     finally:
@@ -118,26 +125,37 @@ def test_ssh_mode_use_off_ssh_backend_allow_current_switches_once_without_turnin
         clear_task_env_overrides("session-1")
         clear_task_env_overrides(SESSION_KEY)
 
-    assert result["ok"] is True
-    assert result["current_backend"] == "cubebot"
+    assert requests == ["cubebot", "builder"]
+    assert first["ok"] is True
+    assert first["current_backend"] == "cubebot"
+    assert second["ok"] is True
+    assert second["current_backend"] == "builder"
     assert task_overrides["env_type"] == "ssh"
-    assert task_overrides["ssh_alias"] == "cubebot"
+    assert task_overrides["ssh_alias"] == "builder"
     assert session_overrides["env_type"] == "ssh"
-    assert session_overrides["ssh_alias"] == "cubebot"
-    assert get_ssh_binding(SESSION_KEY).alias == "cubebot"
-    assert get_backend_auto_policy(SESSION_KEY, "cubebot").enabled is False
+    assert session_overrides["ssh_alias"] == "builder"
+    binding = get_ssh_binding(SESSION_KEY)
+    assert binding is not None
+    assert binding.alias == "builder"
+    assert get_backend_auto_policy(SESSION_KEY, "cubebot").enabled is True
+    assert get_backend_auto_policy(SESSION_KEY, "builder").enabled is True
 
 
-def test_ssh_mode_use_off_ssh_backend_allow_all_turns_backend_on(monkeypatch, tmp_path):
+def test_ssh_mode_allow_all_enables_every_backend_policy(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     import tools.ssh_mode_tool as ssh_mode_tool
+    from gateway.ssh_bindings import list_backend_auto_policies
     from tools.terminal_tool import clear_task_env_overrides, resolve_task_overrides
 
     monkeypatch.setattr(
         ssh_mode_tool,
         "load_ssh_targets",
-        lambda: [SshTarget(alias="cubebot", host="127.0.0.1", user="cubebot")],
+        lambda: [
+            SshTarget(alias="cubebot", host="127.0.0.1", user="cubebot"),
+            SshTarget(alias="builder", host="127.0.0.2", user="builder"),
+        ],
     )
+    set_backend_auto_enabled(SESSION_KEY, "local", False)
 
     def _notify(_data):
         ssh_mode_tool.resolve_gateway_ssh_grant(SESSION_KEY, "allow_all")
@@ -160,7 +178,11 @@ def test_ssh_mode_use_off_ssh_backend_allow_all_turns_backend_on(monkeypatch, tm
     assert task_overrides["ssh_alias"] == "cubebot"
     assert session_overrides["env_type"] == "ssh"
     assert session_overrides["ssh_alias"] == "cubebot"
-    assert get_backend_auto_policy(SESSION_KEY, "cubebot").enabled is True
+    assert list_backend_auto_policies(SESSION_KEY, ["local", "cubebot", "builder"]) == {
+        "local": True,
+        "cubebot": True,
+        "builder": True,
+    }
 
 
 def test_ssh_mode_use_local_respects_local_off_and_keeps_current_ssh(monkeypatch, tmp_path):
