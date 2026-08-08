@@ -1169,26 +1169,83 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
 # Thread-safe because each task_id is unique per rollout.
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
 
-# ── Per-session cwd records (cwd rearchitecture, step 1) ────────────────────
+# ── Per-session, per-backend cwd records ───────────────────────────────────
 #
-# The durable source of truth for "which directory is THIS session working
-# in". Keyed by the raw session/task key (NOT the collapsed container id):
-# the terminal env is shared across sessions, so any cwd state stored on the
-# env is a global mutable timeshared between sessions — the root cause of the
-# wrong-worktree bug class (env.cwd_owner stamping, _last_known_cwd, and the
-# ownership ladder in file_tools are all patches over that misplacement).
-#
-# Step 1 (this change): dual-write only. Every site that learns a session's
-# live cwd (post-command tracking, cwd-override registration) also records it
-# here. Readers still use the legacy env.cwd ladder. Later steps flip
-# file_tools and _resolve_command_cwd to read this store, then delete the
-# env-side tracking + ownership guards.
+# The durable source of truth for "which directory is THIS session working in".
+# This must be scoped by both conversation/session AND execution backend.
+# `local`, `ssh:backend-a`, and `ssh:backend-b` are different filesystems;
+# reusing a cwd record across them can route a command to a path that only exists
+# on the previous machine.  Environment objects may still be cached/evicted by
+# the terminal backend, but cwd defaults must never cross backend identity.
 _session_cwd: Dict[str, str] = {}
 _session_cwd_lock = threading.Lock()
+_SESSION_CWD_KEY_SEP = "\x1f"
 
 
-def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
-    """Record *cwd* as the working directory of *session_key*.
+def _default_cwd_for_env_type(env_type: str) -> str:
+    """Return the backend-local default cwd for *env_type*."""
+    backend = str(env_type or "local").strip().lower() or "local"
+    if backend == "local":
+        return _safe_getcwd()
+    if backend == "ssh":
+        return "~"
+    if backend == "vercel_sandbox":
+        return _VERCEL_SANDBOX_DEFAULT_CWD
+    return "/root"
+
+
+def _cwd_backend_key_from_config(
+    config: Optional[Dict[str, Any]] = None,
+    overrides: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Return a stable, non-secret cwd-scope key for a terminal backend."""
+    cfg = config or {}
+    ov = overrides or {}
+    env_type = str(ov.get("env_type") or cfg.get("env_type") or os.getenv("TERMINAL_ENV", "local"))
+    env_type = env_type.strip().lower() or "local"
+    if env_type == "ssh":
+        alias = str(ov.get("ssh_alias") or cfg.get("ssh_alias") or "").strip()
+        if alias:
+            return f"ssh:{alias}"
+        user = str(ov.get("ssh_user") or cfg.get("ssh_user") or "")
+        host = str(ov.get("ssh_host") or cfg.get("ssh_host") or "")
+        port = str(ov.get("ssh_port") or cfg.get("ssh_port") or 22)
+        # Host/user/port are enough to distinguish a concrete remote execution
+        # plane without embedding private key paths or other credentials.
+        digest = hashlib.sha256(f"{user}@{host}:{port}".encode("utf-8")).hexdigest()[:16]
+        return f"ssh:{digest}"
+    return env_type
+
+
+def _current_cwd_backend_key(session_key: Optional[str]) -> str:
+    """Resolve the active backend key for *session_key* from task overrides."""
+    try:
+        overrides = resolve_task_overrides(session_key)
+    except Exception:
+        overrides = {}
+    try:
+        config = apply_task_env_overrides(_get_env_config(), overrides)
+    except Exception:
+        config = {"env_type": os.getenv("TERMINAL_ENV", "local")}
+    return _cwd_backend_key_from_config(config, overrides)
+
+
+def _session_cwd_storage_key(
+    session_key: Optional[str],
+    backend_key: Optional[str] = None,
+) -> str:
+    raw_session = str(session_key or "default")
+    scoped_backend = backend_key or _current_cwd_backend_key(session_key)
+    return f"{raw_session}{_SESSION_CWD_KEY_SEP}{scoped_backend}"
+
+
+def record_session_cwd(
+    session_key: Optional[str],
+    cwd: Optional[str],
+    *,
+    backend_key: Optional[str] = None,
+) -> None:
+    """Record *cwd* as the backend-scoped working directory of *session_key*.
 
     Called wherever a session's live cwd becomes known: after a terminal
     command completes (the env's post-command tracking has just parsed the
@@ -1198,28 +1255,37 @@ def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
     """
     if not isinstance(cwd, str) or not cwd.strip():
         return
-    key = str(session_key or "default")
+    key = _session_cwd_storage_key(session_key, backend_key)
     with _session_cwd_lock:
         if _session_cwd.get(key) != cwd:
             _session_cwd[key] = cwd
 
 
-def get_session_cwd(session_key: Optional[str]) -> Optional[str]:
-    """Return the recorded working directory for *session_key*, if any.
+def get_session_cwd(
+    session_key: Optional[str],
+    *,
+    backend_key: Optional[str] = None,
+) -> Optional[str]:
+    """Return the backend-scoped cwd record for *session_key*, if any.
 
     No fallback chain here on purpose: callers decide what an absent record
     means (config default, TERMINAL_CWD seed, process cwd). ``None``/empty
-    keys read the ``"default"`` record.
+    keys read the ``"default"`` record for the active backend only.
     """
-    key = str(session_key or "default")
+    key = _session_cwd_storage_key(session_key, backend_key)
     with _session_cwd_lock:
         return _session_cwd.get(key)
 
 
 def clear_session_cwd(session_key: str) -> None:
-    """Drop a session's cwd record (session teardown)."""
+    """Drop all backend-scoped cwd records for a session (session teardown)."""
+    raw_session = str(session_key or "default")
+    prefix = f"{raw_session}{_SESSION_CWD_KEY_SEP}"
     with _session_cwd_lock:
-        _session_cwd.pop(session_key, None)
+        _session_cwd.pop(raw_session, None)  # Legacy pre-backend-scoped key.
+        for key in list(_session_cwd):
+            if key.startswith(prefix):
+                _session_cwd.pop(key, None)
 
 
 _BACKEND_OVERRIDE_KEYS = frozenset({
@@ -1228,6 +1294,7 @@ _BACKEND_OVERRIDE_KEYS = frozenset({
     "modal_image",
     "singularity_image",
     "daytona_image",
+    "ssh_alias",
     "ssh_host",
     "ssh_user",
     "ssh_port",
@@ -1236,6 +1303,18 @@ _BACKEND_OVERRIDE_KEYS = frozenset({
     "ssh_known_hosts",
     "ssh_host_key_policy",
     "ssh_persistent",
+})
+
+
+_SSH_IDENTITY_OVERRIDE_KEYS = frozenset({
+    "ssh_alias",
+    "ssh_host",
+    "ssh_user",
+    "ssh_port",
+    "ssh_key",
+    "ssh_identities_only",
+    "ssh_known_hosts",
+    "ssh_host_key_policy",
 })
 
 
@@ -1294,6 +1373,18 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     _task_env_overrides[task_id] = next_overrides
 
     backend_keys = set(previous.keys()) | set(next_overrides.keys())
+    new_cwd = next_overrides.get("cwd")
+    if isinstance(new_cwd, str) and new_cwd.strip():
+        # A registered workspace cwd IS the session's working directory until
+        # a `cd` changes it. Record it before any backend-change eviction return
+        # so explicit `/ssh use <backend> --cwd ...` also seeds the new backend's
+        # scoped cwd record.
+        record_session_cwd(
+            task_id,
+            new_cwd,
+            backend_key=_cwd_backend_key_from_config(overrides=next_overrides),
+        )
+
     if backend_keys & _BACKEND_OVERRIDE_KEYS:
         previous_backend = {key: previous.get(key) for key in _BACKEND_OVERRIDE_KEYS}
         next_backend = {key: next_overrides.get(key) for key in _BACKEND_OVERRIDE_KEYS}
@@ -1304,13 +1395,9 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     # If a live environment already exists for this task, a freshly registered
     # ``cwd`` override (e.g. the ACP client switching the editor's project root
     # mid-session via ``session/load`` / ``session/resume``) must take effect
-    # immediately. The session record is what commands resolve against;
-    # the live env's cwd is also updated so env-side seeding stays consistent.
-    new_cwd = next_overrides.get("cwd")
+    # immediately. The session record was updated above; the live env's cwd is
+    # also updated so env-side seeding stays consistent.
     if isinstance(new_cwd, str) and new_cwd.strip():
-        # A registered workspace cwd IS the session's working directory until
-        # a `cd` changes it.
-        record_session_cwd(task_id, new_cwd)
         # The live env is cached under the raw task_id for per-session surfaces
         # (ACP/gateway/dashboard) and under the collapsed container id for
         # isolation-keyed rollouts. Try the raw id first, then the container id,
@@ -1631,14 +1718,7 @@ def _get_env_config() -> Dict[str, Any]:
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, Vercel uses its documented workspace root, and everything
     # else starts in the backend's default root-like cwd.
-    if env_type == "local":
-        default_cwd = _safe_getcwd()
-    elif env_type == "ssh":
-        default_cwd = "~"
-    elif env_type == "vercel_sandbox":
-        default_cwd = _VERCEL_SANDBOX_DEFAULT_CWD
-    else:
-        default_cwd = "/root"
+    default_cwd = _default_cwd_for_env_type(env_type)
 
     # Read TERMINAL_CWD but sanity-check it for container backends.
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
@@ -1736,8 +1816,21 @@ def apply_task_env_overrides(config: Dict[str, Any], overrides: Dict[str, Any] |
 
     merged = dict(config or {})
     ov = overrides or {}
+    base_env_type = str(merged.get("env_type") or "local").strip().lower() or "local"
     if ov.get("env_type"):
         merged["env_type"] = str(ov["env_type"])
+    effective_env_type = str(merged.get("env_type") or "local").strip().lower() or "local"
+    backend_type_changed = effective_env_type != base_env_type
+    ssh_identity_overridden = effective_env_type == "ssh" and bool(
+        set(ov.keys()) & _SSH_IDENTITY_OVERRIDE_KEYS
+    )
+    if "cwd" not in ov and (backend_type_changed or ssh_identity_overridden):
+        # A session-scoped backend override without an explicit cwd is selecting
+        # a different execution filesystem.  Start from that backend's own safe
+        # default instead of carrying config["cwd"] from the previous/global
+        # backend (for example a local `/Users/...` or another SSH target path).
+        merged["cwd"] = _default_cwd_for_env_type(effective_env_type)
+        merged["host_cwd"] = None
     if ov.get("cwd"):
         override_cwd = str(ov["cwd"])
         if merged.get("env_type") in _CONTAINER_BACKENDS and _is_unusable_container_cwd(override_cwd):

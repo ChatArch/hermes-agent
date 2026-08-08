@@ -97,6 +97,121 @@ def test_register_changed_ssh_override_evicts_live_environment(monkeypatch):
             tt._last_activity.pop(task_id, None)
 
 
+def test_session_cwd_is_scoped_by_ssh_backend(monkeypatch):
+    """Switching SSH backends must not reuse another backend's recorded cwd."""
+    from tools import terminal_tool as tt
+
+    task_id = "ssh-cwd-scope-session"
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    try:
+        tt.register_task_env_overrides(
+            task_id,
+            {
+                "env_type": "ssh",
+                "ssh_alias": "backend-a",
+                "ssh_host": "a.internal",
+                "ssh_user": "rex",
+            },
+        )
+        tt.record_session_cwd(task_id, "/srv/only-on-backend-a")
+        assert tt.get_session_cwd(task_id) == "/srv/only-on-backend-a"
+
+        tt.register_task_env_overrides(
+            task_id,
+            {
+                "env_type": "ssh",
+                "ssh_alias": "backend-b",
+                "ssh_host": "b.internal",
+                "ssh_user": "rex",
+            },
+        )
+
+        assert tt.get_session_cwd(task_id) is None
+    finally:
+        tt.clear_task_env_overrides(task_id)
+
+
+def test_terminal_ssh_backend_switch_starts_in_new_backend_default_cwd(monkeypatch):
+    """A new SSH backend must start from its own default cwd, not prior backend cwd."""
+    import json
+
+    from tools import terminal_tool as tt
+
+    task_id = "ssh-cwd-switch-session"
+    created = []
+    calls = []
+
+    class FakeSSHEnv:
+        def __init__(self, *, host, cwd):
+            self.host = host
+            self.cwd = cwd
+            self.cleaned = False
+
+        def execute(self, command, *, cwd, timeout=None, **kwargs):
+            calls.append({"host": self.host, "command": command, "cwd": cwd})
+            if self.host == "a.internal":
+                self.cwd = "/srv/only-on-backend-a"
+            else:
+                self.cwd = cwd
+            return {"output": f"{self.cwd}\n", "returncode": 0}
+
+        def cleanup(self):
+            self.cleaned = True
+
+    def fake_create_environment(**kwargs):
+        env = FakeSSHEnv(
+            host=kwargs["ssh_config"]["host"],
+            cwd=kwargs["cwd"],
+        )
+        created.append({"host": env.host, "cwd": env.cwd})
+        return env
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setattr(tt, "_create_environment", fake_create_environment)
+    monkeypatch.setattr(
+        tt,
+        "_check_all_guards",
+        lambda *args, **kwargs: {"approved": True},
+    )
+
+    try:
+        tt.register_task_env_overrides(
+            task_id,
+            {
+                "env_type": "ssh",
+                "ssh_alias": "backend-a",
+                "ssh_host": "a.internal",
+                "ssh_user": "rex",
+            },
+        )
+        first = json.loads(tt.terminal_tool("pwd", task_id=task_id))
+        assert first["exit_code"] == 0
+        assert tt.get_session_cwd(task_id) == "/srv/only-on-backend-a"
+
+        tt.register_task_env_overrides(
+            task_id,
+            {
+                "env_type": "ssh",
+                "ssh_alias": "backend-b",
+                "ssh_host": "b.internal",
+                "ssh_user": "rex",
+            },
+        )
+        second = json.loads(tt.terminal_tool("pwd", task_id=task_id))
+        assert second["exit_code"] == 0
+    finally:
+        tt.clear_task_env_overrides(task_id)
+        with tt._env_lock:
+            tt._active_environments.pop(task_id, None)
+            tt._last_activity.pop(task_id, None)
+
+    assert created == [
+        {"host": "a.internal", "cwd": "~"},
+        {"host": "b.internal", "cwd": "~"},
+    ]
+    assert calls[-1] == {"host": "b.internal", "command": "pwd", "cwd": "~"}
+
+
 def test_file_tools_create_ssh_environment_from_task_override(monkeypatch):
     from tools import file_tools
     from tools import terminal_tool as tt
