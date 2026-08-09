@@ -18116,6 +18116,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # remain host-local and only receive gateway-readable paths.
             _already_sent = bool(agent_result.get("already_sent"))
             _media_materialization = None
+            _media_materialization_failed = False
             if response and "MEDIA:" in response:
                 try:
                     _media_materialization = await self._materialize_media_for_delivery(
@@ -18147,6 +18148,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _media_exc,
                         exc_info=True,
                     )
+                    _media_materialization_failed = True
+                    response = self._remote_media_failure_response(response)
 
             # Skip when streaming TTS already delivered audio for this turn (#60671).
             _stts_adapter = self._adapter_for_source(source)
@@ -18184,7 +18187,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             fallback_session_id=_run_start_session_id,
                             session_key=session_key,
                         )
-                if _media_materialization and _media_materialization.failures:
+                if (
+                    (_media_materialization and _media_materialization.failures)
+                    or _media_materialization_failed
+                ):
                     try:
                         _failure_adapter = self._adapter_for_source(source)
                         if _failure_adapter:
@@ -19879,6 +19885,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     os.unlink(p)
                 except OSError:
                     pass
+
+    @staticmethod
+    def _remote_media_failure_response(response: str) -> str:
+        """Return user-visible text for a failed remote MEDIA rewrite.
+
+        ``MEDIA:file://`` / ``MEDIA:ssh://`` directives are internal transport
+        controls. If the materializer itself errors before it can rewrite or
+        remove them, fail closed: keep the explanatory text, drop every real
+        MEDIA directive, and add an explicit attachment failure notice instead
+        of leaking the raw directive into chat.
+        """
+        from gateway.platforms.base import BasePlatformAdapter
+
+        notice = "⚠️ One or more remote attachments could not be retrieved."
+        cleaned = BasePlatformAdapter.strip_media_directives_for_display(
+            response or ""
+        ).strip()
+        if not cleaned:
+            return notice
+        if notice in cleaned:
+            return cleaned
+        return f"{cleaned}\n\n{notice}"
+
+    @staticmethod
+    def _queued_followup_first_response_for_direct_send(response: str) -> str:
+        """Sanitize queued-turn direct sends that bypass normal media delivery.
+
+        The queued-follow-up branch sends a completed response before recursing
+        into the user's next pending message. That branch uses ``adapter.send()``
+        directly, so it intentionally bypasses the normal runner/platform
+        response pipeline that materializes remote MEDIA directives and strips
+        internal transport markers. If a remote MEDIA directive reaches this
+        path, fail closed before sending the text bubble.
+        """
+        if not response:
+            return response
+        try:
+            from gateway.platforms.base import MEDIA_RESOURCE_URI_RE
+
+            if MEDIA_RESOURCE_URI_RE.search(response):
+                return GatewayRunner._remote_media_failure_response(response)
+        except Exception:
+            # If the detector itself fails, keep the user-facing output safe.
+            return GatewayRunner._remote_media_failure_response(response)
+        return response
 
     async def _materialize_media_for_delivery(
         self,
@@ -26287,9 +26338,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                 session_key or "?",
                             )
+                            queued_first_response = self._queued_followup_first_response_for_direct_send(
+                                first_response
+                            )
+                            if queued_first_response != first_response:
+                                logger.warning(
+                                    "Queued follow-up for session %s contained remote MEDIA directive; failing closed before direct send.",
+                                    session_key or "?",
+                                )
                             await adapter.send(
                                 source.chat_id,
-                                first_response,
+                                queued_first_response,
                                 metadata=_status_thread_metadata,
                             )
                         except Exception as e:

@@ -565,3 +565,55 @@ def test_materialized_remote_image_keeps_feishu_inline_reply_contract(monkeypatc
     }
     adapter.delete_message.assert_awaited_once_with("oc_chat", "om_streamed")
     adapter.send_multiple_images.assert_not_awaited()
+
+
+def test_remote_media_failure_response_strips_transport_directive():
+    from gateway.run import GatewayRunner
+
+    response = (
+        "当前这张是正在等待扫码的 live QR：\n\n"
+        "请扫这张：\n\n"
+        "MEDIA:ssh://build.example/srv/captures/login-qr.png"
+    )
+
+    cleaned = GatewayRunner._remote_media_failure_response(response)
+
+    assert "请扫这张" in cleaned
+    assert "MEDIA:" not in cleaned
+    assert "ssh://" not in cleaned
+    assert "could not be retrieved" in cleaned
+
+
+def test_remote_media_failure_response_notice_when_only_directive():
+    from gateway.run import GatewayRunner
+
+    cleaned = GatewayRunner._remote_media_failure_response(
+        "MEDIA:ssh://build.example/srv/captures/login-qr.png"
+    )
+
+    assert cleaned == "⚠️ One or more remote attachments could not be retrieved."
+
+
+def test_queued_followup_direct_send_fails_closed_for_remote_media():
+    from gateway.run import GatewayRunner
+
+    response = (
+        "当前这张是正在等待扫码的 live QR：\n\n"
+        "请扫这张：\n\n"
+        "MEDIA:ssh://build.example/srv/captures/login-qr.png"
+    )
+
+    cleaned = GatewayRunner._queued_followup_first_response_for_direct_send(response)
+
+    assert "请扫这张" in cleaned
+    assert "MEDIA:" not in cleaned
+    assert "ssh://" not in cleaned
+    assert "could not be retrieved" in cleaned
+
+
+def test_queued_followup_direct_send_leaves_plain_text_unchanged():
+    from gateway.run import GatewayRunner
+
+    response = "普通文本回复，不含附件 directive。"
+
+    assert GatewayRunner._queued_followup_first_response_for_direct_send(response) == response

@@ -4045,8 +4045,18 @@ class BasePlatformAdapter(ABC):
                     )
                 if not img_result.success:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                    await self._notify_media_delivery_failure(
+                        chat_id,
+                        _unquote(image_url[7:]) if image_url.startswith("file://") else image_url,
+                        metadata=metadata,
+                    )
             except Exception as img_err:
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                await self._notify_media_delivery_failure(
+                    chat_id,
+                    _unquote(image_url[7:]) if image_url.startswith("file://") else image_url,
+                    metadata=metadata,
+                )
 
     async def send_image(
         self,
@@ -4358,11 +4368,18 @@ class BasePlatformAdapter(ABC):
         must see a failure notice instead of a silent drop (#66797).
         """
         ext = Path(media_path).suffix.lower()
+        _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff", ".svg"}
         _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
-        if is_voice or should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
+        platform = getattr(self, "platform", None)
+        if is_voice or (
+            platform is not None
+            and should_send_media_as_audio(platform, ext, is_voice=is_voice)
+        ):
             text = "⚠️ Couldn't deliver the audio attachment."
         elif ext in _VIDEO_EXTS:
             text = "⚠️ Couldn't deliver the video attachment."
+        elif ext in _IMAGE_EXTS:
+            text = "⚠️ Couldn't deliver the image attachment."
         else:
             file_name = os.path.basename(media_path)
             text = f"⚠️ Couldn't deliver the file attachment ({file_name})."
