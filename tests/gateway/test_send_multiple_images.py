@@ -41,6 +41,7 @@ class _StubAdapter(BasePlatformAdapter):
         self.sent_images = []
         self.sent_animations = []
         self.sent_files = []
+        self.sent_texts = []
 
     async def connect(self, *, is_reconnect: bool = False):
         return True
@@ -50,6 +51,7 @@ class _StubAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id, content, reply_to=None, **kwargs):
         from gateway.platforms.base import SendResult
+        self.sent_texts.append((chat_id, content, reply_to, kwargs))
         return SendResult(success=True)
 
     async def get_chat_info(self, chat_id):
@@ -86,6 +88,35 @@ class TestBaseDefaultLoop:
         assert len(a.sent_animations) == 1
         assert len(a.sent_files) == 1
         assert a.sent_files[0][1] == "/tmp/foo.png"
+        assert a.sent_texts == []
+
+    def test_failed_image_send_notifies_user(self):
+        from gateway.platforms.base import SendResult
+
+        class _FailingImageAdapter(_StubAdapter):
+            async def send_image(self, chat_id, image_url, caption=None, **kwargs):
+                self.sent_images.append((chat_id, image_url, caption))
+                return SendResult(success=False, error="upload failed")
+
+        a = _FailingImageAdapter()
+        _run(a.send_multiple_images("chat1", [("https://x.com/a.png", "")]))
+
+        assert len(a.sent_images) == 1
+        assert len(a.sent_texts) == 1
+        assert a.sent_texts[0][1] == "⚠️ Couldn't deliver the image attachment."
+
+    def test_image_send_exception_notifies_user(self):
+        class _ExplodingImageAdapter(_StubAdapter):
+            async def send_image_file(self, chat_id, image_path, caption=None, **kwargs):
+                self.sent_files.append((chat_id, image_path, caption))
+                raise RuntimeError("boom")
+
+        a = _ExplodingImageAdapter()
+        _run(a.send_multiple_images("chat1", [("file:///tmp/foo.png", "")]))
+
+        assert len(a.sent_files) == 1
+        assert len(a.sent_texts) == 1
+        assert a.sent_texts[0][1] == "⚠️ Couldn't deliver the image attachment."
 
 
 # ---------------------------------------------------------------------------

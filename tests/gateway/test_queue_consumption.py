@@ -6,7 +6,13 @@ after the agent finishes its current task — not silently dropped.
 """
 
 import asyncio
+import importlib
+import sys
+import types
+from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import pytest
 
 
 from gateway.run import _dequeue_pending_event
@@ -26,6 +32,7 @@ from gateway.platforms.base import (
 class _StubAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+        self.sent = []
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
@@ -35,6 +42,8 @@ class _StubAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         from gateway.platforms.base import SendResult
+
+        self.sent.append({"chat_id": chat_id, "content": content, "metadata": metadata})
         return SendResult(success=True, message_id="msg-1")
 
     async def get_chat_info(self, chat_id):
@@ -218,5 +227,132 @@ class TestBusyInputModeQueueFifo:
             "five",
         ]
         assert runner._queue_depth(session_key, adapter=adapter) == len(texts)
+
+
+class _PendingFollowupRemoteMediaAgent:
+    """Fake agent that forces the pending-followup direct-send branch."""
+
+    calls = []
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.__class__.calls.append(message)
+        if len(self.__class__.calls) == 1:
+            return {
+                "final_response": (
+                    "当前这张是正在等待扫码的 live QR：\n\n"
+                    "请扫这张：\n\n"
+                    "MEDIA:ssh://build.example/srv/captures/login-qr.png"
+                ),
+                "pending_steer": "queued follow-up",
+                "response_previewed": False,
+                "messages": [],
+                "api_calls": 1,
+            }
+        return {
+            "final_response": "follow-up handled",
+            "response_previewed": False,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+def _make_gateway_runner(adapter):
+    gateway_run = importlib.import_module("gateway.run")
+    runner = gateway_run.GatewayRunner.__new__(gateway_run.GatewayRunner)
+    runner.adapters = {adapter.platform: adapter}
+    runner._voice_mode = {}
+    runner._prefill_messages = []
+    runner._ephemeral_system_prompt = ""
+    runner._reasoning_config = None
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._session_db = None
+    runner._running_agents = {}
+    runner._session_run_generation = {}
+    runner._queued_events = {}
+    runner._draining = False
+    runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
+    runner.hooks = SimpleNamespace(loaded_hooks=False)
+    runner.config = SimpleNamespace(
+        multiplex_profiles=False,
+        thread_sessions_per_user=False,
+        group_sessions_per_user=False,
+        stt_enabled=False,
+        streaming=SimpleNamespace(enabled=False),
+    )
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_pending_followup_direct_send_fails_closed_for_remote_media(
+    monkeypatch, tmp_path
+):
+    """Regression for the Feishu-visible raw MEDIA leak.
+
+    The pending-followup path sends a completed first response before recursing
+    into the next user turn. It uses adapter.send() directly, so before the fix
+    that first response leaked raw `MEDIA:ssh://...` text instead of the normal
+    materialization/strip pipeline handling it.
+    """
+    import yaml
+
+    _PendingFollowupRemoteMediaAgent.calls = []
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump(
+            {
+                "display": {"tool_progress": "off"},
+                "streaming": {"enabled": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fake_dotenv = types.ModuleType("dotenv")
+    setattr(fake_dotenv, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    setattr(fake_run_agent, "AIAgent", _PendingFollowupRemoteMediaAgent)
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    adapter = _StubAdapter()
+    runner = _make_gateway_runner(adapter)
+    source = MessageEvent(
+        text="send qr",
+        message_type=MessageType.TEXT,
+        source=MagicMock(
+            platform=Platform.TELEGRAM,
+            chat_id="chat-1",
+            thread_id=None,
+            chat_type="dm",
+            profile=None,
+        ),
+        message_id="m-1",
+    ).source
+
+    await runner._run_agent(
+        message="send qr",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-queued-media",
+        session_key="agent:main:telegram:dm:chat-1",
+    )
+
+    first_delivery = adapter.sent[0]["content"]
+    assert "请扫这张" in first_delivery
+    assert "MEDIA:" not in first_delivery
+    assert "ssh://" not in first_delivery
+    assert "could not be retrieved" in first_delivery
+    assert _PendingFollowupRemoteMediaAgent.calls == ["send qr", "queued follow-up"]
 
 
