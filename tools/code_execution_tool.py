@@ -838,7 +838,13 @@ def _get_or_create_env(task_id: str):
         else:
             image = ""
 
-        cwd = overrides.get("cwd") or config["cwd"]
+        try:
+            from tools.terminal_tool import get_session_cwd
+
+            recorded_cwd = get_session_cwd(task_id)
+        except Exception:
+            recorded_cwd = None
+        cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
 
         container_config = None
         if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:

@@ -311,6 +311,50 @@ def test_execute_code_uses_resolve_task_overrides_for_raw_task_id(monkeypatch):
     assert captured["ssh_config"]["host_key_policy"] == "strict"
 
 
+def test_execute_code_fresh_env_restores_backend_scoped_recorded_cwd(monkeypatch):
+    """execute_code fresh env should restore the current backend's recorded cwd."""
+    from tools import code_execution_tool as code_exec
+    from tools import terminal_tool as tt
+
+    task_id = "execute-session-recorded-cwd"
+    captured = {}
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    tt.register_task_env_overrides(
+        task_id,
+        {
+            "env_type": "ssh",
+            "ssh_alias": "backend-a",
+            "ssh_host": "example.internal",
+            "ssh_user": "rex",
+            "ssh_key": "/redacted/key",
+        },
+    )
+    tt.record_session_cwd(task_id, "/srv/backend-a")
+
+    class FakeEnv:
+        pass
+
+    def fake_create_environment(**kwargs):
+        captured.update(kwargs)
+        return FakeEnv()
+
+    monkeypatch.setattr(code_exec, "_create_environment", fake_create_environment, raising=False)
+    monkeypatch.setattr(tt, "_create_environment", fake_create_environment)
+    try:
+        env, env_type = code_exec._get_or_create_env(task_id)
+    finally:
+        tt.clear_task_env_overrides(task_id)
+        with tt._env_lock:
+            tt._active_environments.pop(task_id, None)
+            tt._last_activity.pop(task_id, None)
+
+    assert isinstance(env, FakeEnv)
+    assert env_type == "ssh"
+    assert captured["env_type"] == "ssh"
+    assert captured["cwd"] == "/srv/backend-a"
+
+
 def test_execute_code_top_level_dispatch_uses_task_override_backend(monkeypatch):
     """Top-level execute_code must route by effective backend, not global config only."""
     from tools import code_execution_tool as code_exec
