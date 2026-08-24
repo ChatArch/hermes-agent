@@ -17404,11 +17404,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return await self._dispatch_busy_slash_command(
                     event, _cmd_def_inner, _quick_key, source,
                 )
-            if self._draining:
-                return (
-                    f"⏳ Gateway is {self._status_action_gerund()} "
-                    "and is not accepting new work right now."
-                )
             if _cmd_def_inner and _cmd_def_inner.name == "context":
                 return await self._handle_context_command(event)
 

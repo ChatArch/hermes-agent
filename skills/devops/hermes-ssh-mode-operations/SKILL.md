@@ -1,6 +1,6 @@
 ---
 name: hermes-ssh-mode-operations
-description: "Use when operating Hermes SSH Mode: manage local/SSH backends with /ssh list/status/test/use/on/off, validate redacted targets, and verify model auto-switch policy."
+description: "Use when operating Hermes SSH Mode targets and bindings."
 version: 1.1.0
 author: Hermes Agent
 license: MIT

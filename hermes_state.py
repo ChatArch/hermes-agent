@@ -359,7 +359,7 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
 
 T = TypeVar("T")
 
-DEFAULT_DB_PATH = get_hermes_home() / "state.db"
+DEFAULT_DB_PATH = Path(get_hermes_home()) / "state.db"
 
 # How long SessionDB stops attempting read-only opens after one fails, before
 # probing again. Long enough that a genuinely unreadable file isn't retried per
@@ -406,7 +406,7 @@ def _default_db_path() -> Path:
     """
     if DEFAULT_DB_PATH != _IMPORT_DEFAULT_DB_PATH:
         return DEFAULT_DB_PATH
-    return get_hermes_home() / "state.db"
+    return Path(get_hermes_home()) / "state.db"
 
 
 # ---------------------------------------------------------------------------
