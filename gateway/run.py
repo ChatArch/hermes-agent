@@ -17406,6 +17406,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             if _cmd_def_inner and _cmd_def_inner.name == "context":
                 return await self._handle_context_command(event)
+            if self._draining and _cmd_def_inner:
+                return (
+                    f"⏳ Gateway is {self._status_action_gerund()} "
+                    "and is not accepting new work right now."
+                )
 
             # Slash command access control on the running-agent fast-path.
             # Mirrors the cold-path gate further below so non-admin users
