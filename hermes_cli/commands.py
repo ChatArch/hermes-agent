@@ -278,8 +278,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills", args_hint="<what to learn from>"),
     CommandDef("init", "Generate or update AGENTS.md project instructions from a repo scan",
                "Tools & Skills", args_hint="[notes]"),
-    CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
-               cli_only=True, args_hint="[subcommand]",
+    CommandDef("cron", "Manage scheduled tasks (gateway: read-only list)", "Tools & Skills",
+               args_hint="[subcommand]", busy_policy="dispatch",
+               execute="gateway_cron",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
     CommandDef("suggestions", "Review suggested automations (accept/dismiss)",
                "Tools & Skills", aliases=("suggest",), args_hint="[accept|dismiss N | catalog]",
@@ -1278,11 +1279,11 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     and silently clamps /update off, breaking Telegram parity.
 #   - interrupt/platform/compress-local: ChatArch control and emergency rescue
 #     surfaces, kept behind /hermes so they do not consume native Slack slots.
-#   - usage/blueprint: lower-frequency inspection and automation surfaces moved
-#     behind /hermes so the established native /insights command keeps a slot.
+#   - usage/blueprint/cron: lower-frequency inspection and automation surfaces
+#     moved behind /hermes so the established native /insights command keeps a slot.
 _SLACK_VIA_HERMES_ONLY = frozenset({
     "topup", "moa", "debug", "egress", "init", "version", "diff", "update",
-    "interrupt", "platform", "compress-local", "usage", "blueprint",
+    "interrupt", "platform", "compress-local", "usage", "blueprint", "cron",
 })
 
 
