@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from gateway.config import Platform, PlatformConfig
@@ -162,6 +163,40 @@ async def test_feishu_inline_image_does_not_delete_streamed_text_on_failed_send(
     adapter.send_image_file.assert_awaited_once()
     adapter.delete_message.assert_not_awaited()
     adapter.send_multiple_images.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_queued_feishu_media_replaces_streamed_preview(tmp_path):
+    """Queued-turn media must pass the preview ID into inline delivery."""
+    image = tmp_path / "queued-chart.png"
+    image.write_bytes(b"fake image bytes")
+    runner = GatewayRunner.__new__(GatewayRunner)
+    adapter = _media_adapter_for_image(image)
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        user_id="ou_user",
+        thread_id="omt_thread",
+    )
+
+    await runner._deliver_queued_first_response(
+        f"Queued caption\nMEDIA:{image}",
+        source,
+        adapter,
+        metadata={"thread_id": "omt_thread", "reply_to_message_id": "om_user"},
+        event_message_id="om_user",
+        text_already_delivered=True,
+        stream_consumer=SimpleNamespace(
+            message_id="om_streamed_text",
+            _turn_split_delivery=False,
+        ),
+    )
+
+    adapter.send_image_file.assert_awaited_once()
+    adapter.delete_message.assert_awaited_once_with(
+        "oc_chat",
+        "om_streamed_text",
+    )
 
 
 def test_feishu_thread_metadata_preserves_reply_anchor_for_adapter_fallback():

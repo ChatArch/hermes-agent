@@ -48,7 +48,10 @@ class TestBuildSSHCommand:
                                                       stdin=MagicMock()))
         monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
 
-    def test_base_flags(self):
+    def test_base_flags(self, monkeypatch):
+        # ControlMaster flags are POSIX-only (#73927): assert them only
+        # where multiplexing is enabled so the test passes on Windows too.
+        monkeypatch.setattr(ssh_env, "_SSH_MULTIPLEX", True)
         env = SSHEnvironment(host="h", user="u")
         cmd = " ".join(env._build_ssh_command())
         for flag in ("ControlMaster=auto", "ControlPersist=300",
@@ -104,6 +107,22 @@ class TestBuildSSHCommand:
         assert "IdentitiesOnly=yes" in scp_cmd
         assert "-i" in scp_cmd and "/k" in scp_cmd
         assert f"UserKnownHostsFile={tmp_path / 'known_hosts'}" in scp_cmd
+
+    def test_controlmaster_gated_off_on_windows(self, monkeypatch):
+        """#73927: Windows OpenSSH has no Unix-domain ControlMaster, so the
+        ControlPath/ControlMaster/ControlPersist options must be omitted —
+        passing them fails the connection with 'getsockname failed'."""
+        monkeypatch.setattr(ssh_env, "_SSH_MULTIPLEX", False)
+        env = SSHEnvironment(host="h", user="u")
+        cmd = " ".join(env._build_ssh_command())
+        assert "ControlMaster" not in cmd
+        assert "ControlPath" not in cmd
+        assert "ControlPersist" not in cmd
+        # Non-multiplex flags must still be present — the backend works,
+        # just without connection pooling.
+        assert "BatchMode=yes" in cmd
+        assert "StrictHostKeyChecking=accept-new" in cmd
+        assert env._build_ssh_command()[-1] == "u@h"
 
     def test_user_host_suffix(self):
         env = SSHEnvironment(host="h", user="u")
@@ -226,6 +245,24 @@ class TestControlSocketPath:
         with pytest.raises(RuntimeError, match="must be private"):
             ssh_env.SSHEnvironment._make_control_dir()
 
+    def test_nonmultiplex_platform_skips_posix_mode_checks(
+        self, monkeypatch, tmp_path
+    ):
+        """Windows uses no Unix socket, so POSIX mode bits are irrelevant."""
+        monkeypatch.setattr(ssh_env, "_SSH_MULTIPLEX", False)
+        monkeypatch.setattr(
+            "tools.environments.ssh.tempfile.gettempdir",
+            lambda: str(tmp_path),
+        )
+        monkeypatch.setattr(
+            "tools.environments.ssh.os.access",
+            lambda *a, **k: pytest.fail("POSIX access check should be skipped"),
+        )
+
+        control_dir = ssh_env.SSHEnvironment._make_control_dir()
+
+        assert control_dir.exists()
+
     def test_path_differs_for_different_targets(self):
         """Different (user, host, port) triples must produce different paths."""
         base = SSHEnvironment(host="h", user="u", port=22).control_socket
@@ -267,6 +304,17 @@ class TestSSHPreflight:
 
         with pytest.raises(RuntimeError, match="SSH is not installed or not in PATH"):
             ssh_env._ensure_ssh_available()
+
+    def test_scp_is_required_only_when_file_sync_is_enabled(self, monkeypatch):
+        monkeypatch.setattr(
+            ssh_env.shutil,
+            "which",
+            lambda name: "/usr/bin/ssh" if name == "ssh" else None,
+        )
+
+        ssh_env._ensure_ssh_available()
+        with pytest.raises(RuntimeError, match="SCP is not installed"):
+            ssh_env._ensure_ssh_available(require_scp=True)
 
 
     def test_ssh_environment_connects_when_ssh_exists(self, monkeypatch):

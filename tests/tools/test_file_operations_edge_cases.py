@@ -264,7 +264,7 @@ class TestPaginationBounds:
 
         def fake_exec(command, *args, **kwargs):
             commands.append(command)
-            if command.startswith("wc -c"):
+            if command.startswith("if [ -f ") or command.startswith("wc -c"):
                 return MagicMock(exit_code=0, stdout="12")
             if command.startswith("head -c"):
                 return MagicMock(exit_code=0, stdout="line1\nline2\n")
@@ -280,7 +280,7 @@ class TestPaginationBounds:
         assert result.error is None
         assert "1|line1" in result.content
         sed_commands = [cmd for cmd in commands if cmd.startswith("sed -n")]
-        assert sed_commands == ["sed -n '1,1p' 'notes.txt'"]
+        assert sed_commands == ["sed -n '1,1p' 'notes.txt' | cut -b1-8001"]
 
     def test_read_file_allows_utf8_text_when_head_sample_ends_mid_codepoint(self):
         """A valid UTF-8 text file must survive a lossy boundary sample."""
@@ -291,7 +291,7 @@ class TestPaginationBounds:
         sample = "a" * 998 + "\ufffd"
 
         def fake_exec(command, *args, **kwargs):
-            if command.startswith("wc -c"):
+            if "wc -c" in command:
                 return MagicMock(exit_code=0, stdout=str(len(text.encode("utf-8"))))
             if command.startswith("head -c"):
                 return MagicMock(exit_code=0, stdout=sample)
@@ -318,7 +318,7 @@ class TestPaginationBounds:
         sample = "a" * 998 + "\ufffd"
 
         def fake_exec(command, *args, **kwargs):
-            if command.startswith("wc -c"):
+            if "wc -c" in command:
                 return MagicMock(exit_code=0, stdout=str(len(text.encode("utf-8"))))
             if command.startswith("head -c"):
                 return MagicMock(exit_code=0, stdout=sample)
@@ -364,6 +364,32 @@ class TestPaginationBounds:
 
 
 class TestSearchContextParsing:
+    def test_search_with_grep_uses_extended_regex(self):
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        with patch.object(ops, "_exec") as mock_exec:
+            mock_exec.return_value = MagicMock(
+                exit_code=0,
+                stdout="./first.txt:1:foo\n./second.txt:1:bar\n",
+            )
+            result = ops._search_with_grep(
+                "foo|bar",
+                path=".",
+                file_glob=None,
+                limit=10,
+                offset=0,
+                output_mode="content",
+                context=0,
+            )
+
+        cmd_arg = mock_exec.call_args[0][0]
+        assert cmd_arg.startswith("set -o pipefail; grep -rnHE ")
+        assert result.error is None
+        assert result.total_count == 2
+        assert [match.content for match in result.matches] == ["foo", "bar"]
+
     def test_parse_search_context_line_prefers_rightmost_numeric_separator(self):
         parsed = _parse_search_context_line("dir/file-12-name.py-8-context here")
 
