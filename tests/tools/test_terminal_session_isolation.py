@@ -240,6 +240,20 @@ def test_evict_task_environment_removes_session_key_when_called_without_context(
     assert env_key not in terminal_tool._last_activity
 
 
+def test_cleanup_vm_removes_hashed_session_environment_without_context():
+    """Session teardown may run after ContextVars have already been cleared."""
+    session_key = "agent:main:feishu:group:oc_chat:omt_thread"
+    env_key = _expected_session_key(session_key)
+    with terminal_tool._env_lock:
+        terminal_tool._active_environments[env_key] = FakeEnv(env_key)
+        terminal_tool._last_activity[env_key] = 1.0
+
+    terminal_tool.cleanup_vm(session_key)
+
+    assert env_key not in terminal_tool._active_environments
+    assert env_key not in terminal_tool._last_activity
+
+
 def test_image_override_change_evicts_existing_hard_isolated_env():
     task_id = "benchmark-task"
     terminal_tool.register_task_env_overrides(task_id, {"docker_image": "old/image:latest"})

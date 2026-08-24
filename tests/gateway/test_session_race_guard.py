@@ -130,6 +130,39 @@ async def test_draining_gateway_rejects_same_active_session_thread_command():
     runner._handle_thread_command.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_pause_bypasses_draining_gate_for_idle_session():
+    """Emergency pause control, especially /pause off, must work mid-drain."""
+    runner = _make_runner()
+    runner._draining = True
+    runner._restart_requested = True
+    runner._handle_pause_command = AsyncMock(return_value="pause updated")
+
+    event = _make_event(text="/pause off")
+    result = await runner._handle_message(event)
+
+    assert result == "pause updated"
+    runner._handle_pause_command.assert_awaited_once_with(event)
+
+
+@pytest.mark.asyncio
+async def test_pause_bypasses_draining_gate_for_active_session():
+    """The busy-session fast path must preserve the same emergency control."""
+    runner = _make_runner()
+    runner._draining = True
+    runner._restart_requested = True
+    event = _make_event(text="/pause off")
+    session_key = build_session_key(event.source)
+    runner._running_agents = {session_key: MagicMock()}
+    runner._check_slash_access = lambda *_args: None
+    runner._dispatch_busy_slash_command = AsyncMock(return_value="pause updated")
+
+    result = await runner._handle_message(event)
+
+    assert result == "pause updated"
+    runner._dispatch_busy_slash_command.assert_awaited_once()
+
+
 # ------------------------------------------------------------------
 # Test 1: Sentinel is placed before _handle_message_with_agent runs
 # ------------------------------------------------------------------

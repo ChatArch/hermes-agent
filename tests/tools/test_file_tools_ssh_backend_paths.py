@@ -6,6 +6,7 @@ host Python process may keep local bookkeeping keys, but it must not hand a
 host-resolved macOS path to a remote SSH shell.
 """
 
+import base64
 import json
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from tools.file_operations import PatchResult, ReadResult, SearchMatch, SearchRe
 class _RecordingFileOps:
     def __init__(self):
         self.read_calls = []
+        self.read_bytes_calls = []
         self.search_calls = []
         self.write_calls = []
         self.patch_calls = []
@@ -22,6 +24,21 @@ class _RecordingFileOps:
     def read_file(self, path, offset=1, limit=500):
         self.read_calls.append((path, offset, limit))
         return ReadResult(content="1|hello\n", total_lines=1, file_size=6)
+
+    def read_file_bytes(self, path, max_bytes=None):
+        self.read_bytes_calls.append((path, max_bytes))
+        content = b"remote docx bytes"
+        return ReadResult(
+            base64_content=base64.b64encode(content).decode("ascii"),
+            file_size=len(content),
+        )
+
+    @staticmethod
+    def _add_line_numbers(content, start_line=1):
+        return "\n".join(
+            f"{line_number}|{line}"
+            for line_number, line in enumerate(content.splitlines(), start_line)
+        )
 
     def search(self, pattern, path=".", target="content", file_glob=None,
                limit=50, offset=0, output_mode="content", context=0):
@@ -101,6 +118,34 @@ def test_read_file_ssh_session_passes_backend_path_not_host_resolved(monkeypatch
     assert "/System/Volumes/Data" not in str(ops.read_calls)
 
 
+def test_read_file_ssh_missing_binary_reports_backend_not_found(monkeypatch):
+    """A remote suffix must not preempt the backend's existence result."""
+    from tools import file_tools
+    from tools import terminal_tool
+
+    task_id = "ssh-read-missing-binary"
+    requested = "/home/rex/work/missing.png"
+    host_resolved = "/System/Volumes/Data/home/rex/work/missing.png"
+    ops = _RecordingFileOps()
+
+    def missing(path, offset=1, limit=500):
+        ops.read_calls.append((path, offset, limit))
+        return ReadResult(error=f"File not found: {path}")
+
+    ops.read_file = missing
+    _install_common_stubs(monkeypatch, file_tools, requested, host_resolved, ops)
+    _register_ssh_task(terminal_tool, task_id)
+
+    try:
+        result = json.loads(file_tools.read_file_tool(requested, task_id=task_id))
+    finally:
+        terminal_tool.clear_task_env_overrides(task_id)
+        file_tools.clear_file_ops_cache(task_id)
+
+    assert "not found" in result["error"].lower()
+    assert ops.read_calls == [(requested, 1, 2000)]
+
+
 def test_read_file_ssh_session_docx_skips_host_document_extraction(monkeypatch, tmp_path):
     """Remote structured documents must not be opened/extracted from the host filesystem."""
     from tools import file_tools
@@ -121,6 +166,17 @@ def test_read_file_ssh_session_docx_skips_host_document_extraction(monkeypatch, 
         "extract_document_text",
         lambda path: (_ for _ in ()).throw(AssertionError("host document extraction must not run for SSH reads")),
     )
+    monkeypatch.setattr(
+        read_extract,
+        "extract_document_bytes",
+        lambda content, path: (
+            "remote document text"
+            if content == b"remote docx bytes" and path == requested
+            else (_ for _ in ()).throw(
+                AssertionError(f"unexpected backend document input: {path}")
+            )
+        ),
+    )
 
     try:
         result = json.loads(file_tools.read_file_tool(requested, offset=1, limit=5, task_id=task_id))
@@ -129,7 +185,9 @@ def test_read_file_ssh_session_docx_skips_host_document_extraction(monkeypatch, 
         file_tools.clear_file_ops_cache(task_id)
 
     assert not result.get("error"), result
-    assert ops.read_calls == [(requested, 1, 5)]
+    assert ops.read_calls == []
+    assert ops.read_bytes_calls and ops.read_bytes_calls[0][0] == requested
+    assert "remote document text" in result.get("content", "")
     assert "host docx content" not in json.dumps(result)
 
 
