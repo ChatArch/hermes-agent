@@ -1769,6 +1769,43 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_thread_metadata_without_reply_anchor_falls_back_to_chat_id(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_cron"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        adapter._run_blocking = _direct
+        result = asyncio.run(
+            adapter.send(
+                chat_id="oc_chat",
+                content="cron delivery",
+                metadata={"thread_id": "omt-thread"},
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].receive_id_type, "chat_id")
+        self.assertEqual(captured["request"].request_body.receive_id, "oc_chat")
+        self.assertEqual(result.message_id, "om_cron")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_retries_transient_failure(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

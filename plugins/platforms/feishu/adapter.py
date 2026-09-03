@@ -5395,34 +5395,32 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
 
-        # For topic/thread messages that fell back from reply→create, use
-        # thread_id as receive_id so the message lands in the topic instead of
-        # the main chat.
+        # Feishu create-message does not accept thread_id as receive_id_type.
+        # Cron deliveries can have a target thread_id but no reply anchor; in
+        # that case send to the parent chat instead of failing validation.
         _thread_id = (metadata or {}).get("thread_id")
         if _thread_id:
-            body = self._build_create_message_body(
-                receive_id=_thread_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
+            logger.warning(
+                "[Feishu] Thread metadata for chat %s has no reply anchor; "
+                "sending to chat_id instead of invalid thread_id create",
+                chat_id,
             )
-            request = self._build_create_message_request("thread_id", body)
-        else:
-            receive_id = chat_id
-            receive_id_type = "chat_id"
-            if chat_id.startswith("feishu_user_id:"):
-                receive_id = chat_id.split(":", 1)[1]
-                receive_id_type = "user_id"
-            elif chat_id.startswith("ou_"):
-                receive_id_type = "open_id"
 
-            body = self._build_create_message_body(
-                receive_id=receive_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_create_message_request(receive_id_type, body)
+        receive_id = chat_id
+        receive_id_type = "chat_id"
+        if chat_id.startswith("feishu_user_id:"):
+            receive_id = chat_id.split(":", 1)[1]
+            receive_id_type = "user_id"
+        elif chat_id.startswith("ou_"):
+            receive_id_type = "open_id"
+
+        body = self._build_create_message_body(
+            receive_id=receive_id,
+            msg_type=msg_type,
+            content=payload,
+            uuid_value=str(uuid.uuid4()),
+        )
+        request = self._build_create_message_request(receive_id_type, body)
         return await self._run_blocking(self._client.im.v1.message.create, request)
 
     @staticmethod
