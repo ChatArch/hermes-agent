@@ -213,6 +213,20 @@ def _test_backend(ctx: dict[str, str], args: dict[str, Any]) -> str:
     return tool_result(ok=True, backend=backend, type="ssh", target=_target_summary(target))
 
 
+def _register_backend_overrides(ctx: dict[str, str], session_key: str, overrides: dict[str, Any]) -> None:
+    if not overrides:
+        return
+    try:
+        from tools.terminal_tool import register_task_env_overrides
+
+        task_key = ctx["session_id"] or session_key
+        register_task_env_overrides(task_key, overrides)
+        if session_key and session_key != task_key:
+            register_task_env_overrides(session_key, overrides)
+    except Exception:
+        pass
+
+
 def _switch_to_backend(ctx: dict[str, str], backend: str, args: dict[str, Any], *, source: str) -> str:
     session_key = ctx["session_key"]
     if is_local_backend(backend):
@@ -246,15 +260,7 @@ def _switch_to_backend(ctx: dict[str, str], backend: str, args: dict[str, Any], 
     reason = str(args.get("reason") or "").strip() or None
     binding = set_ssh_binding(session_key, alias=backend, cwd=cwd, source=source, reason=reason)
     overrides = resolve_binding_task_overrides(session_key, targets=targets)
-    if overrides:
-        try:
-            from tools.terminal_tool import register_task_env_overrides
-
-            register_task_env_overrides(ctx["session_id"] or session_key, overrides)
-            if session_key and session_key != (ctx["session_id"] or session_key):
-                register_task_env_overrides(session_key, overrides)
-        except Exception:
-            pass
+    _register_backend_overrides(ctx, session_key, overrides)
     return tool_result(
         ok=True,
         backend="ssh",
@@ -276,6 +282,30 @@ def _use(ctx: dict[str, str], args: dict[str, Any], task_id: str | None) -> str:
     backend = normalize_backend_name(str(args.get("backend") or args.get("alias") or ""))
     if not backend:
         return tool_error("backend is required for ssh_mode.use")
+
+    current_backend = _current_backend(session_key)
+    if backend == current_backend:
+        if is_local_backend(backend):
+            return _switch_to_backend(ctx, backend, args, source="agent-current")
+        targets = load_ssh_targets()
+        target = find_ssh_target(targets, backend)
+        if target is None:
+            return tool_error(f"Unknown backend: {backend}", known_backends=_known_backend_names())
+        target_error = validate_ssh_target_for_runtime(target)
+        if target_error:
+            return tool_error(target_error)
+        binding = get_ssh_binding(session_key)
+        _register_backend_overrides(ctx, session_key, resolve_binding_task_overrides(session_key, targets=targets))
+        return tool_result(
+            ok=True,
+            backend="ssh",
+            current_backend=backend,
+            alias=backend,
+            cwd=(binding.cwd if binding else None) or target.cwd,
+            source=binding.source if binding else None,
+            changed=False,
+            message="Backend is already selected for this session; no authorization is needed.",
+        )
 
     if ctx["platform"] == "feishu" and not ctx["thread_id"] and not is_local_backend(backend):
         return tool_result(
