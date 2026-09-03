@@ -92,6 +92,67 @@ def test_ssh_mode_use_off_ssh_backend_requests_approval_and_does_not_switch(monk
     assert get_backend_auto_policy(SESSION_KEY, "cubebot").enabled is False
 
 
+def test_ssh_mode_use_current_backend_skips_off_policy_and_approval(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import tools.ssh_mode_tool as ssh_mode_tool
+    from tools.terminal_tool import clear_task_env_overrides, resolve_task_overrides
+
+    monkeypatch.setattr(
+        ssh_mode_tool,
+        "load_ssh_targets",
+        lambda: [SshTarget(alias="cubebot", host="127.0.0.1", user="cubebot")],
+    )
+    set_ssh_binding(SESSION_KEY, alias="cubebot", source="user")
+    set_backend_auto_enabled(SESSION_KEY, "cubebot", False)
+    requests = []
+
+    def _notify(data):
+        requests.append(data["backend"])
+        ssh_mode_tool.resolve_gateway_ssh_grant(SESSION_KEY, "deny")
+
+    ssh_mode_tool.register_gateway_ssh_grant_notify(SESSION_KEY, _notify)
+    tokens = _session_vars()
+    try:
+        result = _call({"action": "use", "backend": "cubebot", "reason": "already there"})
+        task_overrides = resolve_task_overrides("session-1")
+        session_overrides = resolve_task_overrides(SESSION_KEY)
+    finally:
+        ssh_mode_tool.unregister_gateway_ssh_grant_notify(SESSION_KEY)
+        clear_session_vars(tokens)
+        clear_task_env_overrides("session-1")
+        clear_task_env_overrides(SESSION_KEY)
+
+    binding = get_ssh_binding(SESSION_KEY)
+    assert result["ok"] is True
+    assert result["current_backend"] == "cubebot"
+    assert result["changed"] is False
+    assert "approval_required" not in result
+    assert requests == []
+    assert binding is not None
+    assert binding.source == "user"
+    assert get_backend_auto_policy(SESSION_KEY, "cubebot").enabled is False
+    assert task_overrides["env_type"] == "ssh"
+    assert task_overrides["ssh_alias"] == "cubebot"
+    assert session_overrides["env_type"] == "ssh"
+    assert session_overrides["ssh_alias"] == "cubebot"
+
+
+def test_ssh_mode_use_local_current_backend_skips_off_policy(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    set_backend_auto_enabled(SESSION_KEY, "local", False)
+    tokens = _session_vars()
+    try:
+        result = _call({"action": "use", "backend": "local", "reason": "already local"})
+    finally:
+        clear_session_vars(tokens)
+
+    assert result["ok"] is True
+    assert result["backend"] == "local"
+    assert result["changed"] is False
+    assert "approval_required" not in result
+    assert get_backend_auto_policy(SESSION_KEY, "local").enabled is False
+
+
 def test_ssh_mode_allow_current_enables_each_requested_backend_additively(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     import tools.ssh_mode_tool as ssh_mode_tool
