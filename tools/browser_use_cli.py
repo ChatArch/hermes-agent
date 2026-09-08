@@ -527,6 +527,10 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     if blocked:
         return tool_error(blocked)
 
+    from tools.browser_use_cli_remote import effective_browser_backend, browser_exec_ssh
+    if effective_browser_backend(task_id) == "ssh":
+        return browser_exec_ssh(code, session, _clamp_timeout(timeout_s), task_id, local)
+
     cmd = _find_cli()
     if not cmd:
         return tool_error("browser-use CLI not found on PATH, and uvx is unavailable for a zero-install run. "

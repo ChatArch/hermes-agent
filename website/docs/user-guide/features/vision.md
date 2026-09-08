@@ -169,6 +169,10 @@ The SSH reader reuses the existing bounded artifact transfer: canonical regular-
 
 A screenshot can be saved on the server by a browser or script. Its directory is not what determines whether vision works: the producer's backend and the reader's backend must agree. Browser engine/CDP selection remains a separate concern from terminal selection; a gateway browser path must not be guessed to exist on the SSH target.
 
+With the `browser-use` driver and an SSH-bound session, the Python CLI runs through that session's backend. The target needs its own installed `browser-use` CLI and an explicitly provisioned private CDP endpoint in its shell environment (`BU_CDP_URL` or `BU_CDP_WS`). Hermes does not automatically copy a personal browser profile, forward cloud credentials, install a browser, or reinterpret a gateway-local endpoint on the target. Missing target prerequisites return structured errors without falling back to gateway execution.
+
+The remote workspace defaults to `~/.cache/hermes/browser-use/workspace/<scope>/`. Unless the target already specifies `BH_TMP_DIR`, screenshots are saved below that workspace in a per-daemon `screenshots/` directory. IPC uses a separate short per-daemon directory to avoid Unix socket path limits. Use `print(capture_screenshot())` to expose the captured path; Hermes transfers that exact recent file through the bounded artifact reader and attaches the native image. Named calls reuse their daemon and workspace. The external browser's owner remains responsible for its lifecycle; a failed or timed-out user action is never automatically replayed.
+
 Gateway-generated images and TTS audio keep explicit gateway-local resource identifiers during SSH work. TTS provider configuration and its optional `output_path` remain gateway-local; omit `output_path` for normal platform delivery. An unmapped generated image is not advertised as a remote file that does not exist.
 
 ### Workarounds for SSH clipboard access
