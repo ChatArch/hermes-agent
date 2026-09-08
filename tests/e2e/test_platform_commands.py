@@ -115,7 +115,12 @@ class TestSlashCommands:
 
         monkeypatch.setenv("INVOCATION_ID", "e2e-systemd")
         runner.request_restart = MagicMock(return_value=True)
-        runner._handle_message_with_agent = AsyncMock(return_value="agent-handled")
+        async def delayed_agent_reply(*args, **kwargs):
+            # Reproduce worker completion after the old ~2s polling window.
+            await asyncio.sleep(2.2)
+            return "agent-handled"
+
+        runner._handle_message_with_agent = AsyncMock(side_effect=delayed_agent_reply)
 
         send = await send_and_capture(adapter, "restart gateway", platform, chat_id="group-chat-1", user_id="u1", chat_type="group")
 
