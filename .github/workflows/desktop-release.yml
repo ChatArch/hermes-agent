@@ -20,7 +20,7 @@ permissions:
 
 concurrency:
   group: desktop-release-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   DESKTOP_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}

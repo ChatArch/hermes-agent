@@ -44,8 +44,31 @@ export async function publishRelease({ directory, event, repository, tag, commit
   const marker = `<!-- desktop-release:${repository}:${tag}:${commit} -->`
   const body = `${marker}\n${readFileSync(path.join(directory, 'release-notes.md'), 'utf8')}`
   let release = await request('GET', `${base}/releases/tags/${tag}`, undefined, true)
-  if (release && (release.body !== body || release.target_commitish !== commit))
-    throw new Error('Existing release is not owned by this source run')
+  if (!release) {
+    const matches = []
+    for (let page = 1; page <= 10; page++) {
+      const releases = await request('GET', `${base}/releases?per_page=100&page=${page}`)
+      matches.push(...releases.filter(candidate => candidate.tag_name === tag))
+      if (matches.length > 1) throw new Error('Ambiguous releases for tag')
+      if (releases.length < 100) break
+      if (page === 10) throw new Error('Release lookup pagination limit reached')
+    }
+    release = matches[0]
+  }
+  const verifyIdentity = (candidate, id = candidate?.id) => {
+    if (
+      !candidate ||
+      !Number.isSafeInteger(candidate.id) ||
+      candidate.id !== id ||
+      candidate.tag_name !== tag ||
+      candidate.body !== body ||
+      candidate.target_commitish !== commit ||
+      candidate.prerelease !== false ||
+      typeof candidate.draft !== 'boolean'
+    )
+      throw new Error('Release is not owned by this source run')
+  }
+  if (release) verifyIdentity(release)
   if (!release)
     release = await request('POST', `${base}/releases`, {
       tag_name: tag,
@@ -55,12 +78,20 @@ export async function publishRelease({ directory, event, repository, tag, commit
       draft: true,
       prerelease: false
     })
+  verifyIdentity(release)
+  const releaseId = release.id
+  const expectedDigests = new Map(
+    await Promise.all(names.map(async name => [name, `sha256:${await hashFile(path.join(directory, name))}`]))
+  )
   const existing = await request('GET', `${base}/releases/${release.id}/assets?per_page=100`)
-  if (existing.some(asset => !names.includes(asset.name)))
+  if (
+    existing.some(asset => !names.includes(asset.name)) ||
+    new Set(existing.map(asset => asset.name)).size !== existing.length
+  )
     throw new Error('Existing release contains unexpected assets')
   for (const name of names) {
     const file = path.join(directory, name)
-    const digest = `sha256:${await hashFile(file)}`
+    const digest = expectedDigests.get(name)
     const asset = existing.find(entry => entry.name === name)
     if (asset) {
       if (asset.state !== 'uploaded' || asset.digest !== digest)
@@ -78,8 +109,28 @@ export async function publishRelease({ directory, event, repository, tag, commit
   }
   if (release.draft) {
     await verifyTag()
-    await request('PATCH', `${base}/releases/${release.id}`, { draft: false })
+    const published = await request('PATCH', `${base}/releases/${releaseId}`, { draft: false })
+    verifyIdentity(published, releaseId)
+    if (published.draft !== false) throw new Error('Release remains draft after publication')
   }
+  const verified = await request('GET', `${base}/releases/${releaseId}`)
+  verifyIdentity(verified, releaseId)
+  if (verified.draft !== false) throw new Error('Release readback is still draft')
+  const assets = await request('GET', `${base}/releases/${releaseId}/assets?per_page=100`)
+  if (
+    assets.length !== names.length ||
+    new Set(assets.map(asset => asset.name)).size !== names.length ||
+    assets.some(
+      asset =>
+        !expectedDigests.has(asset.name) ||
+        asset.state !== 'uploaded' ||
+        asset.digest !== expectedDigests.get(asset.name)
+    )
+  )
+    throw new Error('Published asset readback is incomplete or differs')
+  const url = `https://github.com/${repository}/releases/tag/${tag}`
+  if (verified.html_url !== url) throw new Error('Release URL readback mismatch')
+  return verified.html_url
 }
 
 async function apiRequest(method, endpoint, data, allowMissing = false) {
@@ -102,8 +153,8 @@ async function apiRequest(method, endpoint, data, allowMissing = false) {
   return response.json()
 }
 
-if (isMain(import.meta.url))
-  await publishRelease({
+if (isMain(import.meta.url)) {
+  const url = await publishRelease({
     directory: path.resolve('desktop-bundle'),
     event: process.env.GITHUB_EVENT_NAME,
     repository: process.env.GITHUB_REPOSITORY,
@@ -111,3 +162,5 @@ if (isMain(import.meta.url))
     commit: process.env.GITHUB_SHA,
     request: apiRequest
   })
+  console.log(`Verified GitHub Release: ${url}`)
+}

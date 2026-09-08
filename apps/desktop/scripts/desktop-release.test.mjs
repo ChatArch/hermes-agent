@@ -149,15 +149,37 @@ describe('desktop release contracts', () => {
       let assets = []
       let writes = 0
       let failUpload = true
+      let hideByTag = false
+      let pages = null
+      let mutateReadback = value => value
+      let mutateAssets = value => value
+      let mutatePatch = value => value
+      let finalReadback = false
+      const calls = []
+      const releaseUrl = `https://github.com/${metadata.repository}/releases/tag/${metadata.tag}`
       const request = async (method, endpoint, data) => {
+        calls.push([method, endpoint])
         if (method !== 'GET') writes++
         if (endpoint.includes('/git/ref/')) return { object: { type: 'commit', sha: metadata.commit } }
-        if (method === 'GET' && endpoint.includes('/releases/tags/')) return release
+        if (method === 'GET' && endpoint.includes('/releases/tags/')) {
+          finalReadback = false
+          return hideByTag ? null : release
+        }
+        if (method === 'GET' && endpoint.includes('/releases?')) {
+          const page = Number(new URL(`https://api.github.com${endpoint}`).searchParams.get('page'))
+          return pages ? pages[page - 1] : release ? [release] : []
+        }
+        if (method === 'GET' && endpoint.endsWith('/releases/1')) {
+          finalReadback = true
+          return mutateReadback(release)
+        }
+        if (method === 'GET' && endpoint.includes('/assets?') && finalReadback) return mutateAssets(assets)
         if (method === 'GET') return assets
         if (method === 'POST')
           return (release = {
             ...data,
             id: 1,
+            html_url: releaseUrl,
             upload_url: 'https://uploads.github.com/repos/ChatArch/hermes-agent/releases/1/assets{?name}'
           })
         if (method === 'UPLOAD') {
@@ -173,7 +195,7 @@ describe('desktop release contracts', () => {
           return asset
         }
         release = { ...release, ...data }
-        return release
+        return mutatePatch(release)
       }
       const options = { directory, ...metadata, request }
       await expect(publishRelease({ ...options, event: 'pull_request' })).rejects.toThrow('tag-only')
@@ -181,14 +203,74 @@ describe('desktop release contracts', () => {
       await expect(publishRelease(options)).rejects.toThrow('interrupted')
       expect(release.draft).toBe(true)
       failUpload = false
-      await publishRelease(options)
+      hideByTag = true
+      pages = [Array.from({ length: 100 }, (_, index) => ({ tag_name: `other-${index}` })), [release]]
+      expect(await publishRelease(options)).toBe(releaseUrl)
+      expect(calls.slice(-2)).toEqual([
+        ['GET', `/repos/${metadata.repository}/releases/1`],
+        ['GET', `/repos/${metadata.repository}/releases/1/assets?per_page=100`]
+      ])
+      expect(
+        calls.some(([method, endpoint]) => method === 'GET' && endpoint.endsWith('/releases?per_page=100&page=2'))
+      ).toBe(true)
+      expect(calls.filter(([method]) => method === 'POST')).toHaveLength(1)
+      hideByTag = false
       expect(release.draft).toBe(false)
       const before = writes
-      await publishRelease(options)
+      expect(await publishRelease(options)).toBe(releaseUrl)
       expect(writes).toBe(before)
+      expect(calls.slice(-2)).toEqual([
+        ['GET', `/repos/${metadata.repository}/releases/1`],
+        ['GET', `/repos/${metadata.repository}/releases/1/assets?per_page=100`]
+      ])
+      for (const change of [
+        { draft: true },
+        { target_commitish: 'b'.repeat(40) },
+        { tag_name: 'v2026.9.9' },
+        { body: 'changed' },
+        { id: 2 },
+        { html_url: 'https://example.invalid/' }
+      ]) {
+        mutateReadback = value => ({ ...value, ...change })
+        await expect(publishRelease(options)).rejects.toThrow()
+      }
+      mutateReadback = value => value
+      for (const mutation of [
+        value => value.slice(1),
+        value => [...value.slice(1), value[1]],
+        value => value.map((asset, index) => (index ? asset : { ...asset, name: 'unexpected.zip' })),
+        value => value.map((asset, index) => (index ? asset : { ...asset, digest: 'sha256:wrong' })),
+        value => value.map((asset, index) => (index ? asset : { ...asset, state: 'new' }))
+      ]) {
+        mutateAssets = mutation
+        await expect(publishRelease(options)).rejects.toThrow('asset readback')
+      }
+      mutateAssets = value => value
+      expect(writes).toBe(before)
+      for (const change of [{ draft: true }, { target_commitish: 'b'.repeat(40) }]) {
+        release = { ...release, draft: true }
+        mutatePatch = value => ({ ...value, ...change })
+        await expect(publishRelease(options)).rejects.toThrow()
+      }
+      mutatePatch = value => value
+      release = { ...release, draft: true }
+      mutateAssets = value => value.slice(1)
+      await expect(publishRelease(options)).rejects.toThrow('asset readback')
+      expect(release.draft).toBe(false)
+      mutateAssets = value => value
+      hideByTag = true
+      pages = [[release, { ...release, id: 2 }]]
+      const afterPatchChecks = writes
+      await expect(publishRelease(options)).rejects.toThrow('Ambiguous')
+      pages = Array.from({ length: 10 }, () => Array.from({ length: 100 }, () => ({ tag_name: 'other' })))
+      await expect(publishRelease(options)).rejects.toThrow('pagination limit')
+      pages = [[{ ...release, body: 'unowned draft' }]]
+      await expect(publishRelease(options)).rejects.toThrow('not owned')
+      expect(writes).toBe(afterPatchChecks)
+      hideByTag = false
       assets[0].digest = 'sha256:wrong'
       await expect(publishRelease(options)).rejects.toThrow('never overwritten')
-      expect(writes).toBe(before)
+      expect(writes).toBe(afterPatchChecks)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -201,6 +283,7 @@ describe('desktop release contracts', () => {
     expect(workflow.permissions).toEqual({ contents: 'read' })
     expect(workflow.on.pull_request).toBeTruthy()
     expect(workflow.on.pull_request_target).toBeUndefined()
+    expect(workflow.concurrency['cancel-in-progress']).toBe("${{ github.event_name == 'pull_request' }}")
     expect(workflow.jobs.publish.if).toContain("github.event_name == 'push'")
     expect(workflow.jobs.publish.needs).toContain('validate')
     expect(workflow.jobs.publish.permissions).toEqual({ contents: 'write' })
