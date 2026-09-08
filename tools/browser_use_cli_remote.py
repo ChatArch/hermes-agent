@@ -48,6 +48,8 @@ except subprocess.TimeoutExpired:
 except OSError as exc:
     fail("remote_cli_launch_failed", str(exc))
 result = {"success": proc.returncode == 0, "exit_code": proc.returncode, "output": proc.stdout[:50000], "workspace": str(workspace), "backend": "ssh"}
+if proc.returncode and "hermes_browser_isolation_failed" in proc.stdout + proc.stderr:
+    result.update(error_type="remote_browser_isolation_failed", error="Named-tab isolation failed; user code was not executed.")
 if proc.stderr:
     result["stderr"] = proc.stderr[:4000]
 for path in reversed(re.findall(r"(/[^\s\"']+?\.(?:png|jpe?g|webp))", proc.stdout, re.I)):

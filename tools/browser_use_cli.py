@@ -36,36 +36,29 @@ _PRIVATE_BROWSER_SENTINEL = "_HERMES_BU_PRIVATE_BROWSER"
 # SAME tab. Steering each onto a tab it created prevents clobbering. Runs once per daemon (marker keyed by
 # BU_NAME + daemon pid).
 _OWN_TAB_PREAMBLE = """\
-# hermes: pin this named session to its own tab (once per daemon process)
+# hermes: own a fresh tab before executing any user action
 def _hermes_ensure_own_tab():
-    import os as _os, tempfile as _tf
-    _name = _os.environ.get("BU_NAME", "default")
+    import os as _os
     try:
-        # Key the marker by the daemon's pid so a daemon restart (which
-        # re-attaches to the first shared page) re-pins automatically,
-        # while agent-driven tab switches mid-session are left alone.
         from browser_harness import _ipc as _bipc
-        _dpid = _bipc.pid_path(_name).read_text().strip() or "0"
-    except Exception:
-        _dpid = "0"
-    _uid = _os.getuid() if hasattr(_os, "getuid") else 0
-    _marker = _os.path.join(
-        _tf.gettempdir(), "hermes-bu-owntab-%s-%s-%s" % (_uid, _name, _dpid)
-    )
-    if _os.path.exists(_marker):
-        return
-    try:
-        # Force a fresh target: new_tab() would REUSE a blank current tab,
-        # which is exactly the tab a sibling daemon may also hold.
+        _name = _os.environ.get("BU_NAME", "default")
+        _pid_path = _bipc.pid_path(_name)
+        _dpid = _pid_path.read_text().strip()
+        if not _dpid.isdigit() or int(_dpid) <= 0:
+            raise RuntimeError("daemon identity is unavailable")
+        # The IPC directory is private; a public temp marker must not authorize a tab.
+        _marker = _pid_path.with_name("hermes-own-tab-%s-%s.marker" % (_name, _dpid))
+        if _marker.is_file():
+            return
         _tid = cdp("Target.createTarget", url="about:blank").get("targetId")
-        if _tid:
-            switch_tab(_tid)
-    except Exception:
-        pass  # best-effort: worst case is pre-fix behavior
-    try:
-        open(_marker, "w").close()
-    except OSError:
-        pass
+        if not isinstance(_tid, str) or not _tid:
+            raise RuntimeError("target creation returned no id")
+        switch_tab(_tid)
+        if current_tab().get("targetId") != _tid:
+            raise RuntimeError("target switch was not confirmed")
+        _marker.write_text(_tid)
+    except Exception as _exc:
+        raise RuntimeError("hermes_browser_isolation_failed: user code was not executed") from _exc
 _hermes_ensure_own_tab()
 del _hermes_ensure_own_tab
 """
