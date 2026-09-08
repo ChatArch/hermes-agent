@@ -1518,15 +1518,21 @@ class TestContextLengthCache:
         invalidated at step 1 and re-resolved instead of returned."""
         mock_fetch.return_value = {}
         cache_file = tmp_path / "cache.yaml"
-        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+        with (
+            patch("agent.model_metadata._get_context_cache_path", return_value=cache_file),
+            patch(
+                "agent.model_metadata.fetch_endpoint_model_metadata",
+                return_value={"test/model": {"context_length": 4096}},
+            ),
+        ):
             # Write the poison entry directly — save_context_length now refuses it.
             cache_file.write_text(
                 "context_lengths:\n  test/model@http://x: 0\n", encoding="utf-8"
             )
             assert get_cached_context_length("test/model", "http://x") == 0
             result = get_model_context_length("test/model", base_url="http://x")
-            assert result > 0
-            assert get_cached_context_length("test/model", "http://x") != 0
+            assert result == 4096
+            assert get_cached_context_length("test/model", "http://x") is None
 
 
     def test_null_context_lengths_key_returns_empty(self, tmp_path):
