@@ -1,12 +1,18 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { createRequire } from 'node:module'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 import yaml from 'js-yaml'
 import { assetName, collectAssets, targets, validTag, validateBundle, validateSource } from './desktop-release.mjs'
 import { publishRelease } from './publish-desktop-release.mjs'
-import { validateNativeBinary, validatePackagedPaths } from './validate-release-package.mjs'
+import {
+  normalizeArchivePath,
+  validateNativeBinary,
+  validatePackagedPaths,
+  validateReleasePackage
+} from './validate-release-package.mjs'
 
 const temp = () => mkdtempSync(path.join(process.env.TMPDIR || process.cwd(), 'desktop-release-test-'))
 const metadata = {
@@ -36,6 +42,91 @@ async function fixture(root) {
 }
 
 describe('desktop release contracts', () => {
+  test('archive paths stay relative and reject unsafe forms without hiding private paths', () => {
+    for (const name of [
+      '/dist/assets/icon.js',
+      '\\dist\\assets\\icon.js',
+      'dist/assets/icon.js',
+      'dist\\assets\\icon.js',
+      '/dist\\assets/icon.js'
+    ]) {
+      expect(normalizeArchivePath(name)).toBe(path.join('dist', 'assets', 'icon.js'))
+      expect(path.isAbsolute(normalizeArchivePath(name))).toBe(false)
+    }
+    for (const name of [
+      '',
+      '/',
+      '\\',
+      '../secret.js',
+      '/dist/../secret.js',
+      '\\dist\\..\\secret.js',
+      './dist/icon.js',
+      'dist//icon.js',
+      'C:\\dist\\icon.js',
+      'C:icon.js',
+      '/C:/icon.js',
+      '\\\\server\\share\\icon.js',
+      '//server/share/icon.js',
+      '\\\\?\\C:\\icon.js',
+      '/dist/icon.js:stream',
+      '/dist/\0icon.js',
+      '/dist/icon.js.',
+      '/dist/icon.js ',
+      '/dist/NUL.js'
+    ]) {
+      expect(() => normalizeArchivePath(name)).toThrow('Unsafe archive path')
+      expect(() => validatePackagedPaths([name])).toThrow('Unsafe archive path')
+    }
+    for (const name of ['/dist/.env', '\\dist\\.env', '\\profiles\\work\\config.yaml', '/dist/.cache/private']) {
+      expect(() => validatePackagedPaths([name])).toThrow('Private state')
+    }
+  })
+
+  test('real ASAR validation accepts POSIX and Windows list paths without skipping content checks', async () => {
+    const root = temp()
+    const asar = createRequire(import.meta.url)('@electron/asar')
+    const listPackage = asar.listPackage.bind(asar)
+    const listing = vi.spyOn(asar, 'listPackage')
+    try {
+      for (const privateContent of [false, true]) {
+        const source = path.join(root, privateContent ? 'private-source' : 'clean-source')
+        const resources = path.join(root, privateContent ? 'private-resources' : 'clean-resources')
+        mkdirSync(path.join(source, 'dist/assets'), { recursive: true })
+        mkdirSync(resources)
+        writeFileSync(
+          path.join(source, 'package.json'),
+          JSON.stringify({
+            version: metadata.version,
+            repository: { url: `https://github.com/${metadata.repository}.git` }
+          })
+        )
+        writeFileSync(
+          path.join(source, 'dist/assets/icon.js'),
+          privateContent ? source : 'export const icon = "fixture"'
+        )
+        await asar.createPackage(source, path.join(resources, 'app.asar'))
+        for (const separator of ['/', '\\']) {
+          listing.mockImplementation(archive =>
+            listPackage(archive).map(name => name.replaceAll('\\', '/').replaceAll('/', separator))
+          )
+          if (privateContent) {
+            expect(() => validateReleasePackage(resources, metadata, source)).toThrow('Private build-host path')
+          } else {
+            expect(() => validateReleasePackage(resources, metadata, source)).not.toThrow()
+            listing.mockImplementation(archive => [
+              ...listPackage(archive).map(name => name.replaceAll('\\', '/').replaceAll('/', separator)),
+              `${separator}dist${separator}assets${separator}missing.js`
+            ])
+            expect(() => validateReleasePackage(resources, metadata, source)).toThrow('was not found in this archive')
+          }
+        }
+      }
+    } finally {
+      listing.mockRestore()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test('native executable headers must identify the requested architecture', () => {
     const root = temp()
     const file = path.join(root, 'executable')

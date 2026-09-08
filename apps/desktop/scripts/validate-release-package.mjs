@@ -35,9 +35,30 @@ export function validateNativeBinary(file, platform, arch) {
   if (!validators[platform]?.()) throw new Error('Packaged executable architecture mismatch')
 }
 
+export function normalizeArchivePath(name) {
+  if (typeof name !== 'string') throw new Error('Unsafe archive path')
+  const virtual = name.replaceAll('\\', '/')
+  const relative = virtual.startsWith('/') ? virtual.slice(1) : virtual
+  const parts = relative.split('/')
+  if (
+    parts.some(
+      part =>
+        !part ||
+        part === '.' ||
+        part === '..' ||
+        /[\x00-\x1f\x7f<>:"|?*]/.test(part) ||
+        /[. ]$/.test(part) ||
+        /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part)
+    )
+  ) {
+    throw new Error(`Unsafe archive path: ${name}`)
+  }
+  return parts.join(path.sep)
+}
+
 export function validatePackagedPaths(paths) {
   for (const name of paths) {
-    const parts = name.replaceAll('\\', '/').split('/').filter(Boolean)
+    const parts = normalizeArchivePath(name).split(path.sep)
     if (
       parts.some(part =>
         /^(\.env(?:\..*)?|\.hermes|profiles?|tokens?\.json|credentials?\.json|\.cache|__pycache__|\.git)$/i.test(part)
@@ -51,7 +72,7 @@ export function validatePackagedPaths(paths) {
 export function validateReleasePackage(resources, metadata, sourceRoot) {
   const asar = require('@electron/asar')
   const archive = path.join(resources, 'app.asar')
-  const paths = asar.listPackage(archive)
+  const paths = asar.listPackage(archive).map(normalizeArchivePath)
   validatePackagedPaths(paths)
   const packaged = JSON.parse(asar.extractFile(archive, 'package.json').toString())
   if (
@@ -74,8 +95,7 @@ export function validateReleasePackage(resources, metadata, sourceRoot) {
     }
   }
   for (const name of paths) {
-    if (/\.(m?js|cjs|json|html|css|map|txt)$/i.test(name))
-      inspect(name, asar.extractFile(archive, name.replace(/^\//, '')))
+    if (/\.(m?js|cjs|json|html|css|map|txt)$/i.test(name)) inspect(name, asar.extractFile(archive, name))
   }
   const walk = directory => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
