@@ -38,7 +38,7 @@ def test_session_ssh_override_beats_global_local_backend(monkeypatch):
     )
     fake = SimpleNamespace(execute=lambda *a, **k: {"returncode": 0, "output": ""})
     try:
-        with patch.object(tt, "_create_environment", return_value=fake) as create:
+        with patch("tools.terminal_tool_backends._create_environment", return_value=fake) as create:
             assert tt.ensure_task_env(task_id) is fake
         assert create.call_args.kwargs["env_type"] == "ssh"
         assert create.call_args.kwargs["ssh_config"]["host"] == "example.invalid"

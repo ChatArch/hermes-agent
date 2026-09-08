@@ -44,6 +44,7 @@ PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 # This dict is kept only so existing history keeps resolving; the effective
 # AUTHOR_MAP below merges it with the directory (directory wins).
 LEGACY_AUTHOR_MAP = {
+    "agent@Agents-Mac-mini.local": "teknium1",
     '1073853456@qq.com': 'LooKeng',  # ChatArch legacy mapping retained during official sync
     'DavidMetcalfe@users.noreply.github.com': 'DavidMetcalfe',  # ChatArch legacy mapping retained during official sync
     'agent@agents-Mac-mini.local': 'agent',  # ChatArch legacy mapping retained during official sync

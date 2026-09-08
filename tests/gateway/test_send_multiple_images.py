@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 
 
@@ -38,6 +38,7 @@ class _StubAdapter(BasePlatformAdapter):
     name = "stub"
 
     def __init__(self):
+        super().__init__(PlatformConfig(), Platform.TELEGRAM)
         self.sent_images = []
         self.sent_animations = []
         self.sent_files = []
@@ -435,5 +436,4 @@ class TestEmailMultiImage:
         assert to_addr == "user@example.com"
         assert len(file_paths) == 3
         assert "alt 0" in body
-
 

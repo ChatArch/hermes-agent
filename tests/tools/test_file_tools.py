@@ -562,6 +562,18 @@ class TestSessionCwdSurvivesEnvRecreation:
     Regression guard for issue #26211.
     """
 
+    @staticmethod
+    def _finish_terminal_command(task_id, env, *, observed):
+        from tools.terminal_tool_result import finalize_foreground_result
+
+        finalize_foreground_result(
+            command="pwd", result={"output": "", "returncode": 0, "cwd_observed": observed,
+                                   "cwd": env.cwd if observed else None},
+            env=env, env_type="local", effective_task_id=task_id,
+            task_id=task_id, session_id=task_id, session_key=task_id,
+            workdir=None, command_cwd=None, approval_note=None,
+        )
+
     @patch("tools.terminal_tool._active_environments", new_callable=dict)
     @patch("tools.file_tools._file_ops_cache", new_callable=dict)
     @patch("tools.terminal_tool._get_env_config")
@@ -606,10 +618,10 @@ class TestSessionCwdSurvivesEnvRecreation:
 
     @patch("tools.terminal_tool._active_environments", new_callable=dict)
     @patch("tools.file_tools._file_ops_cache", new_callable=dict)
-    def test_live_cwd_read_mirrors_into_session_record(self, mock_cache, mock_active):
-        """Live cwd reads remember the cwd for env-recreation fallback."""
+    def test_observed_terminal_cwd_records_file_resolution_root(self, mock_cache, mock_active):
+        """Observed command cwd survives into file resolution and env recreation."""
         import tools.terminal_tool as tt
-        from tools.file_tools import _get_live_tracking_cwd
+        from tools.file_tools_paths import _authoritative_workspace_root
 
         task_id = "default"
         tt.clear_session_cwd(task_id)
@@ -620,7 +632,8 @@ class TestSessionCwdSurvivesEnvRecreation:
         cached.env.cwd_owner = "default"
         mock_cache[task_id] = cached
 
-        live = _get_live_tracking_cwd(task_id)
+        self._finish_terminal_command(task_id, cached.env, observed=True)
+        live = _authoritative_workspace_root(task_id)
 
         assert live == "/Users/user/project"
         assert tt.get_session_cwd(task_id) == "/Users/user/project"
@@ -628,10 +641,10 @@ class TestSessionCwdSurvivesEnvRecreation:
 
     @patch("tools.terminal_tool._active_environments", new_callable=dict)
     @patch("tools.file_tools._file_ops_cache", new_callable=dict)
-    def test_live_cwd_read_ignores_other_session_owner(self, mock_cache, mock_active):
+    def test_unobserved_terminal_result_ignores_other_session_cwd(self, mock_cache, mock_active):
         """A shared terminal env must not leak another session's cwd."""
         import tools.terminal_tool as tt
-        from tools.file_tools import _get_live_tracking_cwd
+        from tools.file_tools_paths import _authoritative_workspace_root
 
         task_id = "session-a"
         tt.clear_session_cwd(task_id)
@@ -642,19 +655,21 @@ class TestSessionCwdSurvivesEnvRecreation:
         cached.env.cwd_owner = "session-b"
         mock_cache[task_id] = cached
 
-        assert _get_live_tracking_cwd(task_id) is None
+        self._finish_terminal_command(task_id, cached.env, observed=False)
+        assert _authoritative_workspace_root(task_id) != cached.env.cwd
         assert tt.get_session_cwd(task_id) is None
 
     @patch("tools.terminal_tool._active_environments", new_callable=dict)
     @patch("tools.file_tools._file_ops_cache", new_callable=dict)
     @patch("tools.terminal_tool._get_env_config")
-    @patch("tools.terminal_tool._create_environment")
+    @patch("tools.terminal_tool_backends._create_environment")
     def test_mirrored_cwd_survives_when_cache_already_cleared(
         self, mock_create_env, mock_config, mock_cache, mock_active
     ):
         """Proactive live-cwd mirror restores cwd even after cache cleanup."""
         import tools.terminal_tool as tt
-        from tools.file_tools import _get_file_ops, _get_live_tracking_cwd
+        from tools.file_tools import _get_file_ops
+        from tools.file_tools_paths import _authoritative_workspace_root
 
         task_id = "default"
         tt.clear_session_cwd(task_id)
@@ -664,7 +679,8 @@ class TestSessionCwdSurvivesEnvRecreation:
         cached.env.cwd = "/Users/user/project"
         cached.env.cwd_owner = "default"
         mock_cache[task_id] = cached
-        assert _get_live_tracking_cwd(task_id) == "/Users/user/project"
+        self._finish_terminal_command(task_id, cached.env, observed=True)
+        assert _authoritative_workspace_root(task_id) == "/Users/user/project"
         assert tt.get_session_cwd(task_id) == "/Users/user/project"
 
         mock_cache.pop(task_id, None)

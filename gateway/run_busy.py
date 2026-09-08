@@ -776,7 +776,10 @@ class GatewayBusySessionMixin:
         """Return ordinary slash handlers shared by idle and busy dispatch."""
         from chatarch_custom.gateway.local_features import LOCAL_GATEWAY_HANDLER_BY_COMMAND
         handlers = self._command_handler_table(self._PLAIN_COMMANDS)
-        handlers.update({name: getattr(self, handler) for name, handler in LOCAL_GATEWAY_HANDLER_BY_COMMAND.items()})
+        handlers.update({
+            name: self._handle_local_command_during_drain if self._draining else getattr(self, handler)
+            for name, handler in LOCAL_GATEWAY_HANDLER_BY_COMMAND.items()
+        })
         return handlers
 
     async def _send_command_ack(self, source, text: str, label: str) -> None:

@@ -510,7 +510,7 @@ class TestCronWithGatewayOrigin:
         tokens = set_session_vars(platform="telegram", chat_id="789", cron_session=True)
         try:
             from unittest.mock import patch as mock_patch
-            with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
+            with mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"):
                 result = check_all_command_guards("rm -rf /tmp/stuff", "local")
                 assert not result["approved"]
                 assert "BLOCKED" in result["message"]

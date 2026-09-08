@@ -714,10 +714,13 @@ class TestLaunchdServiceRecovery:
         calls = []
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
 
-        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
+        monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 12.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
-        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
-        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: calls.append(("term", pid, force)))
+        monkeypatch.setattr(gateway_cli, "probe_gateway_loop_liveness", lambda pid: gateway_cli.GATEWAY_LOOP_ALIVE)
+        monkeypatch.setattr(
+            gateway_cli, "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append(("drain", pid, timeout)) or False,
+        )
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 321,
@@ -732,7 +735,7 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_restart()
 
         assert calls == [
-            ("term", 321, False),
+            ("drain", 321, 12.0),
             ["launchctl", "kickstart", "-k", target],
         ]
         # The drain can silently hold for the full budget (180s default); the
@@ -855,7 +858,8 @@ class TestLaunchdServiceRecovery:
 
         assert exc.value.code == 1
         assert calls == []
-        assert "refusing to restart" in capsys.readouterr().out.lower()
+        refusal = capsys.readouterr().out.lower()
+        assert "refusing" in refusal and "/restart in chat" in refusal
 
 
     def test_gateway_supervisor_detection_ignores_xpc_on_non_darwin(

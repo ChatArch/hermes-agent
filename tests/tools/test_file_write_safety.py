@@ -258,15 +258,15 @@ class TestCheckSensitivePathMacOSBypass:
 
     def test_relative_path_resolving_to_private_etc_is_blocked(self, monkeypatch):
         """Relative workspace symlinks must not bypass sensitive path checks."""
-        from tools import file_tools
+        from tools import file_tools_write_guards
 
         monkeypatch.setattr(
-            file_tools,
+            file_tools_write_guards,
             "_resolve_path_for_task",
             lambda filepath, task_id="default": Path("/private/etc/hosts"),
         )
 
-        assert file_tools._check_sensitive_path("workspace-link") is not None
+        assert file_tools_write_guards._check_sensitive_path("workspace-link") is not None
 
 
 class TestAtomicWrite:

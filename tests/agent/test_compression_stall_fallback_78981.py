@@ -80,7 +80,8 @@ class _StalledSummaryWorker:
             attempt = len(self.routes)
         if attempt <= self.stall_attempts:
             # Connection open, zero tokens, zero fence progress.
-            self.release.wait(timeout=10)
+            while not fence.is_cancelled and not self.release.wait(timeout=0.01):
+                pass
             return ([{"role": "assistant", "content": "late"}], "late-prompt")
         if not fence.begin_commit():
             return ([{"role": "assistant", "content": "cancelled"}], "cancelled")

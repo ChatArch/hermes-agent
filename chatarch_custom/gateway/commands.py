@@ -16,6 +16,9 @@ from gateway.ssh_bindings import (LOCAL_BACKEND, clear_ssh_binding, get_backend_
 logger = logging.getLogger("gateway.run")
 
 class ChatArchGatewayMixin:
+    async def _handle_local_command_during_drain(self, event: MessageEvent):
+        return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
+
     def _template_usage(self) -> str:
         return "Usage: /template <name|list|create|update|use> [instruction...]"
 

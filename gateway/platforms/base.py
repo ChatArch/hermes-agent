@@ -2835,6 +2835,8 @@ class BasePlatformAdapter(ABC):
             text = _media_failure_text("audio")
         elif ext in _VIDEO_EXTS:
             text = _media_failure_text("video")
+        elif ext in _IMAGE_EXTS:
+            text = _media_failure_text("image")
         else:
             text = _media_failure_text("file", os.path.basename(media_path))
         try:

@@ -24,6 +24,10 @@ def _no_codex_backoff(monkeypatch):
 
 def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(
+        "agent.model_metadata._fetch_codex_oauth_context_lengths_with_source",
+        lambda access_token: ({}, False),
+    )
+    monkeypatch.setattr(
         "model_tools.get_tool_definitions",
         lambda **kwargs: [
             {
@@ -1725,7 +1729,10 @@ def test_run_conversation_codex_empty_output_cap_returns_bounded_error(monkeypat
     result = agent.run_conversation("think forever")
 
     assert calls["count"] == 3
-    assert "Responses API returned no output items" in str(result)
+    assert result["failed"] is True
+    assert result["completed"] is False
+    assert result["error"] == result["final_response"]
+    assert "Invalid API response after 3 retries" in result["error"]
 
 
 def test_run_conversation_codex_continues_after_max_output_incomplete(monkeypatch):

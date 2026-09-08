@@ -46,6 +46,11 @@ def test_effective_map_merges_legacy_and_directory():
         assert release.AUTHOR_MAP[email] == login
 
 
+def test_historical_case_distinct_agent_authors_keep_separate_attribution():
+    assert release.resolve_author("agent", "agent@Agents-Mac-mini.local") == "@teknium1"
+    assert release.resolve_author("agent", "agent@agents-Mac-mini.local") == "@momomojo"
+
+
 
 
 # ── add_contributor.py CLI behavior ───────────────────────────────────
