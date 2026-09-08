@@ -312,9 +312,11 @@ def _resolve_output_base(
     return file_path, None
 
 
-def _media_tag(paths: List[str], voice_compatible: bool) -> str:
-    """``MEDIA:<path>`` lines; the ``[[audio_as_voice]]`` marker asks the platform for a voice bubble."""
-    media_tag = "\n".join(f"MEDIA:{path}" for path in paths)
+def _media_tag(paths: List[str], voice_compatible: bool, task_id: Optional[str] = None) -> str:
+    """Keep gateway-generated audio distinct from same-named backend files."""
+    from tools.image_source import _is_local_terminal_backend
+    resources = paths if _is_local_terminal_backend(task_id) else [Path(path).absolute().as_uri() for path in paths]
+    media_tag = "\n".join(f"MEDIA:{path}" for path in resources)
     return f"[[audio_as_voice]]\n{media_tag}" if voice_compatible else media_tag
 
 
@@ -410,7 +412,8 @@ def _synthesize_chunks(chunks: List[str], base_path: Path, generated_artifacts: 
 
 def text_to_speech_tool(
     text: str, output_path: Optional[str] = None, speed: Optional[float] = None,
-    instructions: Optional[str] = None, provider: Optional[str] = None) -> str:
+    instructions: Optional[str] = None, provider: Optional[str] = None,
+    task_id: Optional[str] = None) -> str:
     """Convert text to speech with long-form chunking; returns the JSON result envelope.
 
     Text is normalized, split into provider-safe chunks (never silently truncated), synthesized
@@ -455,7 +458,7 @@ def text_to_speech_tool(
             logger.info("TTS audio saved: %s (%s bytes, provider: %s)", path, f"{os.path.getsize(path):,}", provider)
         return json.dumps({
             "success": True, "file_path": final_paths[0], "file_paths": final_paths,
-            "media_tag": _media_tag(final_paths, voice_compatible),
+            "media_tag": _media_tag(final_paths, voice_compatible, task_id=task_id),
             "provider": chunk_results[0].get("provider", provider), "voice_compatible": voice_compatible,
             "chunk_count": len(chunks), "delivery_file_count": len(final_paths),
             "combined_chunks": bool(combined_chunks),
@@ -534,7 +537,7 @@ TTS_SCHEMA = {
             },
             "output_path": {
                 "type": "string",
-                "description": f"Optional custom file path to save the audio. Defaults to {display_hermes_home()}/audio_cache/<timestamp>.mp3"
+                "description": f"Optional gateway-local file path to save the audio (not a path on the SSH target). Omit for normal delivery. Defaults to {display_hermes_home()}/audio_cache/<timestamp>.mp3"
             },
             "speed": {
                 "type": "number",
@@ -570,6 +573,7 @@ registry.register(
     schema=TTS_SCHEMA,
     handler=lambda args, **kw: text_to_speech_tool(
         text=args.get("text", ""),
+        task_id=kw.get("task_id"),
         **{k: args.get(k) for k in ("output_path", "speed", "instructions", "provider")}),
     check_fn=check_tts_requirements,
     emoji="🔊")

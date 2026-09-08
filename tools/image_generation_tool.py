@@ -296,7 +296,7 @@ def _active_terminal_env(task_id: str | None):
         return None
 
 
-def _agent_cache_base_for_env(env: Any) -> str | None:
+def _agent_cache_base_for_env(env: Any, task_id: str | None = None) -> str | None:
     if env is not None:
         # Optional extension hook: an environment may expose its own agent-visible cache root.
         explicit = getattr(env, "agent_visible_cache_base", None)
@@ -312,7 +312,9 @@ def _agent_cache_base_for_env(env: Any) -> str | None:
             return f"{str(remote_home).rstrip('/')}/.hermes"
         if env.__class__.__name__ in _CONTAINER_HOME_ENVS:
             return "/root/.hermes"
-    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    from tools.terminal_tool import _get_env_config, apply_task_env_overrides, resolve_task_overrides
+    config = apply_task_env_overrides(_get_env_config(), resolve_task_overrides(task_id))
+    backend = str(config["env_type"]).strip().lower()
     return _CACHE_BASE_BY_BACKEND.get(backend)
 
 
@@ -329,7 +331,19 @@ def _postprocess_image_generate_result(raw: str, task_id: str | None = None) -> 
     if not isinstance(image, str) or not _looks_like_absolute_file_path(image):
         return raw
     env = _active_terminal_env(task_id)
-    cache_base = _agent_cache_base_for_env(env)
+    from tools.terminal_tool import _get_env_config, apply_task_env_overrides, resolve_task_overrides
+    config = apply_task_env_overrides(_get_env_config(), resolve_task_overrides(task_id))
+    if config["env_type"] == "ssh" and getattr(env, "_sync_manager", None) is None:
+        # SSH has no shared cache mount and does not sync Hermes state by default.
+        # Keep an explicit gateway resource instead of advertising a phantom remote file.
+        from pathlib import Path
+        resource = Path(image).absolute().as_uri()
+        payload.setdefault("host_image", image)
+        payload["image_resource"] = resource
+        payload["media_tag"] = f"MEDIA:{resource}"
+        payload.pop("agent_visible_image", None)
+        return json.dumps(payload, ensure_ascii=False)
+    cache_base = _agent_cache_base_for_env(env, task_id)
     if not cache_base:
         return raw
     try:
@@ -706,7 +720,8 @@ def _confine_source_images(image_url, reference_image_urls, task_id, *, permitte
     credential guard) so generation obeys the same confinement as vision. URLs/data: pass
     through; local backend is a no-op. Returns ``(image_url, reference_image_urls, error_json_or_None)``.
     """
-    if (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local"):
+    from tools.image_source import _is_local_terminal_backend
+    if _is_local_terminal_backend(task_id):
         return image_url, reference_image_urls, None
     from model_tools import _run_async
     from tools.image_source import ImageResolutionError, resolve_local_source_to_data_url

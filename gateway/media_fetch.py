@@ -67,13 +67,15 @@ def _active_remote_env():
     """The live remote BaseEnvironment for the current session, or None (local backend / no env yet).
     Keyed by the session id the turn registered its sandbox under (falls back to the session key)."""
     from agent.prompt_builder import _REMOTE_TERMINAL_BACKENDS, _plugin_backend_is_remote
-    from gateway.platforms.base import _tenv
     from gateway.session_context import get_session_env
+    from tools.terminal_tool import _get_env_config, apply_task_env_overrides, resolve_task_overrides
     from tools.terminal_tool_lifecycle import get_active_env
-    backend = _tenv("TERMINAL_ENV", "local").strip().lower()
+    task_id = get_session_env("HERMES_SESSION_ID") or get_session_env("HERMES_SESSION_KEY") or "default"
+    config = apply_task_env_overrides(_get_env_config(), resolve_task_overrides(task_id))
+    backend = str(config["env_type"]).strip().lower()
     if backend not in _REMOTE_TERMINAL_BACKENDS and not _plugin_backend_is_remote(backend):
         return None
-    return get_active_env(get_session_env("HERMES_SESSION_ID") or get_session_env("HERMES_SESSION_KEY") or "default")
+    return get_active_env(task_id)
 
 
 def fetch_remote_media(path: str) -> Optional[str]:

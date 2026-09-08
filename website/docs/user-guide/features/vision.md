@@ -155,7 +155,23 @@ powershell.exe -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms;
 
 Text can sometimes still bridge through terminal paste or OSC52, but image clipboard access and local screenshot temp paths remain tied to the machine running Hermes.
 
-### Workarounds for SSH
+### Images on an SSH execution backend
+
+Clipboard access is separate from reading a file already on the server. In a gateway session bound with `/ssh use <alias>`, `vision_analyze` resolves ordinary image paths against the **effective session/task backend**, not the gateway process's default terminal backend. Absolute paths, paths relative to the backend cwd, and `~/` paths are supported without switching the session to Local.
+
+For explicit ownership:
+
+- `ssh://<current-alias>/absolute/path.png` reads from the currently bound target. A different alias, credentials, port, query, or fragment is rejected; the URI does not authorize another connection.
+- `file:///absolute/gateway/cache/path.png` denotes a gateway-local image. During remote execution, host reads remain confined to the existing media-cache allowlist. A missing or denied gateway resource is not retried against the remote filesystem.
+- HTTP(S) and `data:` image sources retain their existing behavior.
+
+The SSH reader reuses the existing bounded artifact transfer: canonical regular-file checks, protected-path screening, size/time limits, and temporary-file cleanup. Only the requested media bytes cross to the gateway for decoding and model input; no checkout, credentials, or Hermes profile is synchronized. Video analysis and image-generation reference inputs use the same source resolver. Native-versus-auxiliary vision routing remains unchanged.
+
+A screenshot can be saved on the server by a browser or script. Its directory is not what determines whether vision works: the producer's backend and the reader's backend must agree. Browser engine/CDP selection remains a separate concern from terminal selection; a gateway browser path must not be guessed to exist on the SSH target.
+
+Gateway-generated images and TTS audio keep explicit gateway-local resource identifiers during SSH work. TTS provider configuration and its optional `output_path` remain gateway-local; omit `output_path` for normal platform delivery. An unmapped generated image is not advertised as a remote file that does not exist.
+
+### Workarounds for SSH clipboard access
 
 1. **Upload the image file** — Save the image locally, upload it to the remote server via `scp`, VSCode's file explorer (drag-and-drop), or any file transfer method. Then reference it by path. *(A `/attach <filepath>` command is planned for a future release.)*
 
