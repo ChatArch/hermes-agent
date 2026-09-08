@@ -1483,7 +1483,7 @@ class TestAdapterBehavior(unittest.TestCase):
             )
         }
         with (
-            patch.dict(os.environ, proxy_vars, clear=False),
+            patch.dict(os.environ, {**proxy_vars, "NO_PROXY": "*", "no_proxy": "*"}, clear=False),
             patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
             patch.object(AutoBackend, "connect_tcp", new=fake_connect_tcp),
             self.assertRaises(SSRFConnectionBlocked),

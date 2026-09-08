@@ -290,7 +290,7 @@ async def send_and_capture(adapter, text: str, platform: Platform, **event_kwarg
     event = make_event(platform, text, **event_kwargs)
     adapter.send.reset_mock()
     await adapter.handle_message(event)
-    for _ in range(40):  # up to ~2s; returns as soon as the send lands
+    for _ in range(200):  # up to ~10s on busy CI; returns as soon as the send lands
         if adapter.send.called:
             break
         await asyncio.sleep(0.05)

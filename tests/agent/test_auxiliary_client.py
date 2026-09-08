@@ -3257,6 +3257,30 @@ class TestCodexAdapterPromptCacheKey:
         ])
         assert "prompt_cache_retention" not in captured
 
+    def test_astra_auxiliary_request_uses_official_contract(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://api.openai.com/v1",
+            model="gpt-6-astra",
+        )
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": "none"}},
+        )
+        assert captured["reasoning"]["effort"] == "low"
+        assert "prompt_cache_retention" not in captured
+
+    def test_astra_auxiliary_proxy_keeps_legacy_effort_contract(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://responses.example.com/v1",
+            model="gpt-6-astra",
+        )
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": "none"}},
+        )
+        assert captured["reasoning"]["effort"] == "none"
+
+
 
 
 class TestCodexAdapterGithubResponsesMessageIdDrop:

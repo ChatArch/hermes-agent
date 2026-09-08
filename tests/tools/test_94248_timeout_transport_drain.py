@@ -195,3 +195,48 @@ def test_agent_drain_shuts_sockets_down_without_fd_release(monkeypatch):
     assert sock.shutdown_calls == 1
     assert not sock.closed, "drain must never release socket FDs"
     assert close_calls["n"] == 0, "drain must never call client.close()"
+
+def test_timeout_drains_real_socket_before_worker_closes(monkeypatch):
+    import socket
+    import threading
+    from run_agent import AIAgent
+    import agent.agent_runtime_helpers as helpers
+
+    reader, peer = socket.socketpair()
+    entered = threading.Event()
+
+    class SocketChild(_SslBlockedChild, AIAgent):
+        def __init__(self):
+            super().__init__()
+            self.client = object()
+            self._client_lock = threading.RLock()
+            self._codex_session = None
+            self._active_request_abort = None
+
+        def run_conversation(self, *_args, **_kwargs):
+            entered.set()
+            try:
+                assert reader.recv(1) == b""
+                return {"final_response": "socket drained", "api_calls": 1}
+            finally:
+                self.unwound.set()
+
+        def _drain_transports_after_abandonment(self, *, reason):
+            assert entered.is_set()
+            return AIAgent._drain_transports_after_abandonment(self, reason=reason)
+
+    child = SocketChild()
+    monkeypatch.setattr(helpers, "_iter_pool_sockets", lambda _: iter([reader]))
+    monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.25)
+    monkeypatch.setattr(delegate_tool, "_get_worktree_isolation", lambda: False)
+    try:
+        result = _run(child, monkeypatch, timeout=0.25)
+        assert result["status"] == "timeout"
+        assert child.unwound.wait(2)
+        assert child.closed.wait(2)
+        assert not child.close_while_blocked
+        assert reader.fileno() >= 0, "shutdown must not release/reuse the worker's fd"
+    finally:
+        peer.close()
+        child.unwound.wait(2)
+        reader.close()

@@ -292,15 +292,38 @@ def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url:
     pre-5.6 ``prompt_cache_retention`` knob is dropped)."""
     if not _is_official_openai_responses_route(model, base_url):
         return
-    reasoning = kwargs.get("reasoning")
-    if isinstance(reasoning, dict):
-        requested = str(reasoning.get("effort") or "").strip().lower()
-        reasoning["effort"] = clamp_effort(requested, CODEX_ASTRA_EFFORTS) if requested else "low"
-    for key in ("temperature", "top_p", "top_logprobs", "logprobs", "prompt_cache_retention"):
-        kwargs.pop(key, None)
-    include = kwargs.get("include")
-    if isinstance(include, list):
-        kwargs["include"] = [item for item in include if "logprob" not in str(item).lower()]
+    bodies = [kwargs]
+    extra = kwargs.get("extra_body")
+    if isinstance(extra, dict):
+        kwargs["extra_body"] = extra = dict(extra)
+        bodies.append(extra)
+    for body in bodies:
+        reasoning = body.get("reasoning")
+        if isinstance(reasoning, dict):
+            reasoning = dict(reasoning)
+            if body is not kwargs and isinstance(kwargs.get("reasoning"), dict):
+                reasoning = {**kwargs["reasoning"], **reasoning}
+            requested = str(reasoning.get("effort") or "").strip().lower()
+            reasoning["effort"] = clamp_effort(requested, CODEX_ASTRA_EFFORTS) if requested else "low"
+            body["reasoning"] = reasoning
+        for key in ("temperature", "top_p", "top_logprobs", "logprobs", "prompt_cache_retention"):
+            body.pop(key, None)
+        include = body.get("include")
+        if isinstance(include, list):
+            body["include"] = [item for item in include if "logprob" not in str(item).lower()]
+        options = body.get("prompt_cache_options")
+        if isinstance(options, dict):
+            options = dict(options)
+            options.pop("ttl", None)
+            if options:
+                body["prompt_cache_options"] = options
+            else:
+                body.pop("prompt_cache_options", None)
+    options = kwargs.pop("prompt_cache_options", None)
+    if isinstance(options, dict) and options and (extra is None or isinstance(extra, dict)):
+        extra = dict(extra or {})
+        extra.setdefault("prompt_cache_options", options)
+        kwargs["extra_body"] = extra
 
 
 def _content_cache_key(instructions: str, tools: Optional[list[dict[str, Any]]], scope_id: str = "") -> Optional[str]:
