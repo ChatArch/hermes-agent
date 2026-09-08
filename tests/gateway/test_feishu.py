@@ -330,7 +330,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         from lark_oapi.ws import Client as FeishuWSClient
 
         signature = inspect.signature(FeishuWSClient)
-        self.assertIn("app_id", signature.parameters)
+        self.assertIn("extra_ua_tags", signature.parameters)
 
 
     def test_disconnect_sends_websocket_close_frame(self):
@@ -458,13 +458,10 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                 loop.close()
 
         self.assertTrue(connected)
-        # Verify the Channel SDK UA tag is present when the installed/active SDK
-        # signature supports it — this is the fix for group @mention delivery on
-        # newer Feishu SDKs, while older pinned SDKs remain startup-compatible.
         self.assertEqual(len(ws_calls), 1)
         call_kwargs = ws_calls[0]
         self.assertEqual(call_kwargs["extra_ua_tags"], ["channel"],
-                         "extra_ua_tags must be ['channel'] to enable group event routing when supported")
+                         "extra_ua_tags must be ['channel'] to enable group event routing")
 
 
     @patch.dict(os.environ, {}, clear=True)

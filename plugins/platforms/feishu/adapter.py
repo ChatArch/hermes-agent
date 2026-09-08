@@ -4335,20 +4335,14 @@ class FeishuAdapter(BasePlatformAdapter):
         if loop is None or loop.is_closed():
             raise RuntimeError("adapter loop is not ready")
         await self._hydrate_bot_identity()
-        ws_kwargs = {
-            "app_id": self._app_id,
-            "app_secret": self._app_secret,
-            "log_level": lark.LogLevel.INFO,
-            "event_handler": self._event_handler,
-            "domain": domain,
-        }
-        # Newer Feishu SDKs accept extra_ua_tags=["channel"] to opt into
-        # Channel WebSocket events. The pinned runtime SDK (lark-oapi==1.6.8)
-        # does not expose that kwarg, so gate it by signature to keep startup
-        # compatible while preserving the tag when the SDK supports it.
-        if "extra_ua_tags" in inspect.signature(FeishuWSClient.__init__).parameters:
-            ws_kwargs["extra_ua_tags"] = ["channel"]
-        self._ws_client = FeishuWSClient(**ws_kwargs)
+        self._ws_client = FeishuWSClient(
+            app_id=self._app_id,
+            app_secret=self._app_secret,
+            log_level=lark.LogLevel.INFO,
+            event_handler=self._event_handler,
+            domain=domain,
+            extra_ua_tags=["channel"],
+        )
         self._ws_future = loop.run_in_executor(
             None,
             _run_official_feishu_ws_client,
