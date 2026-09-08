@@ -85,7 +85,7 @@ jobs:
         run: npm ci
       - name: Release contract tests
         working-directory: apps/desktop
-        run: npx --no-install vitest run --project electron scripts/desktop-release.test.mjs electron/install-source.test.ts scripts/write-build-stamp.test.mjs electron/bootstrap-runner.test.ts --maxWorkers=2
+        run: npx --no-install vitest run --project electron scripts/local-pack-publish.test.mjs scripts/desktop-release.test.mjs electron/install-source.test.ts scripts/write-build-stamp.test.mjs electron/bootstrap-runner.test.ts --maxWorkers=2
       - name: Build shell and stage native dependencies
         run: npm run build --workspace apps/desktop
       - name: Build unsigned installers (never publish)

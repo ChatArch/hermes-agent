@@ -36,6 +36,38 @@ function electronBuilderCli() {
   return path.join(path.dirname(pkgJson), rel)
 }
 
+function withoutPublishFlags(callerArgs) {
+  const args = []
+  for (let index = 0; index < callerArgs.length; index++) {
+    const argument = callerArgs[index]
+    if (argument === "--") {
+      args.push(...callerArgs.slice(index))
+      break
+    }
+    if (argument === "-pd" || argument.startsWith("-pd=")) {
+      args.push(argument === "-pd" ? "--prepackaged" : `--prepackaged=${argument.slice(4)}`)
+      continue
+    }
+    const publish = /^(?:--publish|--p|-p)(?:=(.*))?$/.exec(argument)
+    const platformPublish = /^-([mwl]+)p(?:=(.*))?$/.exec(argument)
+    if (publish || platformPublish) {
+      const inlineValue = publish ? publish[1] : platformPublish[2]
+      const policy = inlineValue === undefined ? callerArgs[++index] : inlineValue
+      if (policy !== "never") {
+        throw new Error("Only --publish never is allowed; publishing belongs to the separate release job")
+      }
+      if (platformPublish) args.push(`-${platformPublish[1]}`)
+      continue
+    }
+    if (/^--(?:no-)?(?:publish|p)(?:[.=]|$)/.test(argument) || /^-[A-Za-z]*p[A-Za-z]*(?:=|$)/.test(argument)) {
+      throw new Error("Only --publish never is allowed; unsupported publish flag")
+    }
+    args.push(argument)
+  }
+  return args
+}
+
+const callerArgs = withoutPublishFlags(process.argv.slice(2))
 const dist = electronDistDir()
 // Local `hermes desktop` builds only ever package (--dir or dist), never
 // publish a GitHub release — CI publication is a separate job. But the npm
@@ -55,7 +87,7 @@ if (dist && fs.existsSync(distBinary(dist))) {
       "via @electron/get (electronVersion + ELECTRON_MIRROR)."
   )
 }
-args.push(...process.argv.slice(2))
+args.push(...callerArgs)
 
 const result = spawnSync(process.execPath, [electronBuilderCli(), ...args], {
   stdio: "inherit",
