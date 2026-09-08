@@ -7,7 +7,8 @@ import { expect, test } from 'vitest'
 import { buildPinArgs, buildPosixPinArgs, resolveInstallScript } from './bootstrap-runner'
 import { assertInstallOrigin, installRepository } from './install-source'
 
-test('repository identity reaches download, cache and both native installers without upstream fallback', async () => {
+// Allow the 30s native manifest probe plus bounded assertions and cleanup.
+test('repository identity reaches download, cache and both native installers without upstream fallback', { timeout: 40_000 }, async () => {
   const home = mkdtempSync(path.join(process.env.TMPDIR || process.cwd(), 'desktop-source-test-'))
   const stamp = { repository: 'ChatArch/hermes-agent', commit: 'c'.repeat(40), branch: 'main' }
 
