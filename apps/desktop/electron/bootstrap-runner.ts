@@ -346,7 +346,9 @@ async function resolveInstallScript({
   }
 
   const repository = installRepository(installStamp)
-  const cacheKey = installStamp?.repository ? `${repository.replace('/', '_')}-${installRef.cacheKey}` : installRef.cacheKey
+  const cacheKey = installStamp?.repository
+    ? `${repository.replace('/', '_')}-${installRef.cacheKey}`
+    : installRef.cacheKey
   const cached = cachedScriptPath(hermesHome, cacheKey)
   const resolvedCommit = installRef.pinned ? installRef.ref : null
 
