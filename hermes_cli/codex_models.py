@@ -121,6 +121,14 @@ def _finalize_codex_models(model_ids: List[str]) -> List[str]:
     return _add_context_variants(_add_forward_compat_models(model_ids))
 
 
+def _drop_undiscovered_astra(model_ids: List[str]) -> List[str]:
+    """Astra is account-gated: only the live account-scoped catalog may advertise it. A stale
+    ``models_cache.json`` or a ``config.toml`` default is a compatibility hint, not entitlement."""
+    from agent.reasoning_effort import is_astra_model
+
+    return [model for model in model_ids if not is_astra_model(model)]
+
+
 def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
     """Best-effort extraction of ``chatgpt_account_id`` from the OAuth JWT.
 
@@ -279,4 +287,4 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
         if model_id not in ordered:
             ordered.append(model_id)
 
-    return _finalize_codex_models(ordered)
+    return _finalize_codex_models(_drop_undiscovered_astra(ordered))

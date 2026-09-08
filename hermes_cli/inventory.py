@@ -605,7 +605,9 @@ def _append_unconfigured_rows(
     the saved model so GUI pickers don't silently snap to some other provider.
     """
     from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
+    from hermes_cli.models import (
+        CANONICAL_PROVIDERS, _PROVIDER_LABELS, _model_requires_account_discovery,
+    )
 
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
@@ -617,6 +619,11 @@ def _append_unconfigured_rows(
         if current_only and entry.slug.lower() != cur:
             continue
         if entry.slug.lower() == cur:
+            saved_model = "" if _model_requires_account_discovery(entry.slug, cur_model) else cur_model
+            tail = (
+                "Astra requires successful account-scoped model discovery."
+                if cur_model and not saved_model else "Showing the saved model only."
+            )
             cfg = PROVIDER_REGISTRY.get(entry.slug)
             auth_type = cfg.auth_type if cfg else "api_key"
             key_env = (
@@ -625,11 +632,9 @@ def _append_unconfigured_rows(
                 else ""
             )
             warning = (
-                f"Configured provider missing usable credentials; paste {key_env} to reactivate. "
-                "Showing the saved model only."
+                f"Configured provider missing usable credentials; paste {key_env} to reactivate. {tail}"
                 if auth_type == "api_key" and key_env
-                else "Configured provider is not authenticated; run `hermes model` to reactivate. "
-                "Showing the saved model only."
+                else f"Configured provider is not authenticated; run `hermes model` to reactivate. {tail}"
             )
             extras.append(
                 {
@@ -637,8 +642,8 @@ def _append_unconfigured_rows(
                     "name": _PROVIDER_LABELS.get(entry.slug, entry.label),
                     "is_current": True,
                     "is_user_defined": False,
-                    "models": [cur_model] if cur_model else [],
-                    "total_models": 1 if cur_model else 0,
+                    "models": [saved_model] if saved_model else [],
+                    "total_models": 1 if saved_model else 0,
                     "source": "configured-current",
                     "authenticated": False,
                     "auth_type": auth_type,

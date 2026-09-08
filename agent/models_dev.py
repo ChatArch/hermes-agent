@@ -171,6 +171,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "novita": "novita-ai",
     "anthropic": "anthropic",
     "openai": "openai",
+    "openai-api": "openai",
     "openai-codex": "openai",
     "zai": "zai",
     "kimi": "kimi-for-coding",
@@ -880,6 +881,19 @@ class ModelCapabilities:
 
 _OVERRIDE_WARNED_KEYS: set = set()
 
+# Account-gated models may be usable before models.dev has indexed them.  Keep
+# their capabilities available for an explicitly selected/discovered model
+# without adding them to any picker catalog.
+_BUILTIN_MODEL_METADATA: Dict[Tuple[str, str], Dict[str, Any]] = {
+    ("openai", "gpt-6-astra"): {
+        "limit": {"context": 1_050_000, "output": 128_000},
+        "modalities": {"input": ["text", "image"], "output": ["text"]},
+        "tool_call": True,
+        "reasoning": True,
+        "family": "gpt-6",
+    },
+}
+
 
 def _load_model_overrides() -> Dict[str, Any]:
     """Load the ``model_overrides`` config section.
@@ -1191,6 +1205,9 @@ def get_model_capabilities(
     """
     models = _get_provider_models(provider, allow_network=allow_network)
     entry = _find_model_entry(models, model) if models is not None else None
+    if entry is None:
+        provider_key = PROVIDER_TO_MODELS_DEV.get((provider or "").strip(), (provider or "").strip())
+        entry = _BUILTIN_MODEL_METADATA.get((provider_key, (model or "").strip().lower()))
 
     # Select the override AFTER the catalog lookup: explicit overrides
     # always apply; _default entries only fill gaps for catalog misses.
@@ -1497,9 +1514,10 @@ def get_model_info(
     mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
 
     def _from_override_alone() -> Optional[ModelInfo]:
-        override = _override_for(provider_id, model_id, catalog_hit=False)
+        builtin = _BUILTIN_MODEL_METADATA.get((mdev_id, model_id.strip().lower()))
+        override = _override_for(provider_id, model_id, catalog_hit=builtin is not None)
         if override is None:
-            return None
+            return _parse_model_info(model_id, builtin, mdev_id) if builtin is not None else None
         # Seed the same safe defaults get_model_capabilities uses for
         # unknown models (200K context, tools on) so the two
         # unknown-model paths agree; the override patches its fields on
@@ -1508,7 +1526,7 @@ def get_model_info(
             "limit": {"context": 200000, "output": 8192},
             "tool_call": True,
         }
-        shaped = _merge_catalog_entry_with_override(base, override)
+        shaped = _merge_catalog_entry_with_override(builtin if builtin is not None else base, override)
         return _parse_model_info(model_id, shaped, mdev_id)
 
     # NOTE: keep the zero-argument call on the allow_network path. Dozens

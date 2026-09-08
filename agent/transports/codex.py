@@ -10,6 +10,11 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
+from agent.reasoning_effort import (
+    CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS, clamp_effort,
+    codex_supported_efforts, is_astra_model,
+)
+
 # Cron fires build session_id as ``cron_<job_id>_<YYYYMMDD_HHMMSS>`` (see
 # cron/scheduler.py). The trailing timestamp is per-fire noise; stripped so
 # repeat fires of the same job share a cache scope (see #51395/#52295).
@@ -195,6 +200,73 @@ def _default_prompt_cache_retention_for_request(
     if _EXTENDED_PROMPT_CACHE_MODEL_RE.search(normalized):
         return "24h"
     return None
+
+
+def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
+    """Astra on the canonical API origin only — exact host, so a Responses-compatible proxy or a
+    lookalike subdomain keeps the generic contract."""
+    if not is_astra_model(model):
+        return False
+    from utils import base_url_hostname
+
+    return base_url_hostname(str(base_url or "")).lower() == "api.openai.com"
+
+
+def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: bool = False) -> tuple[str, ...]:
+    """Keep Astra's new vocabulary off unrelated Responses-compatible endpoints."""
+    if is_astra_model(model) and not (
+        is_codex_backend or _is_official_openai_responses_route(model, base_url)
+    ):
+        return CODEX_LEGACY_EFFORTS
+    return codex_supported_efforts(str(model or ""))
+
+
+def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url: Any) -> None:
+    """Astra's official-API contract, applied AFTER ``request_overrides`` so an override can't put a
+    rejected field back on the wire: ``reasoning.effort`` is ``low..max`` only (``none``/``minimal``
+    400), sampling and logprob knobs are rejected, and cache lifetime is fixed server-side
+    (``prompt_cache_options.ttl`` accepts only its ``30m`` default, so nothing is sent for it and the
+    pre-5.6 ``prompt_cache_retention`` knob is dropped)."""
+    if not _is_official_openai_responses_route(model, base_url):
+        return
+    # The SDK overlays extra_body after its named arguments. Normalize both
+    # layers, copying nested dictionaries so shared provider config is unchanged.
+    bodies = [kwargs]
+    extra = kwargs.get("extra_body")
+    if isinstance(extra, dict):
+        kwargs["extra_body"] = extra = dict(extra)
+        bodies.append(extra)
+    for body in bodies:
+        reasoning = body.get("reasoning")
+        if isinstance(reasoning, dict):
+            reasoning = dict(reasoning)
+            # Merge partial nested reasoning explicitly: SDK versions can
+            # replace the whole dictionary rather than recursively merge it.
+            if body is not kwargs and isinstance(kwargs.get("reasoning"), dict):
+                reasoning = {**kwargs["reasoning"], **reasoning}
+            requested = str(reasoning.get("effort") or "").strip().lower()
+            reasoning["effort"] = clamp_effort(requested, CODEX_ASTRA_EFFORTS) if requested else "low"
+            body["reasoning"] = reasoning
+        for key in ("temperature", "top_p", "top_logprobs", "logprobs", "prompt_cache_retention"):
+            body.pop(key, None)
+        include = body.get("include")
+        if isinstance(include, list):
+            body["include"] = [item for item in include if "logprob" not in str(item).lower()]
+        options = body.get("prompt_cache_options")
+        if isinstance(options, dict):
+            options = dict(options)
+            options.pop("ttl", None)
+            if options:
+                body["prompt_cache_options"] = options
+            else:
+                body.pop("prompt_cache_options", None)
+    # prompt_cache_options is body-only, not a Responses.create SDK keyword.
+    # Preserve other options through extra_body, respecting its higher precedence.
+    options = kwargs.pop("prompt_cache_options", None)
+    if isinstance(options, dict) and options and (extra is None or isinstance(extra, dict)):
+        extra = dict(extra or {})
+        extra.setdefault("prompt_cache_options", options)
+        kwargs["extra_body"] = extra
 
 
 def _content_cache_key(
@@ -512,7 +584,10 @@ class ResponsesApiTransport(ProviderTransport):
             # OpenAI/Codex Responses backend — per-model vocabulary
             # (live-verified: "max" is gpt-5.6-only, "minimal" always
             # rejected). #68365 premise confirmed.
-            _supported = codex_supported_efforts(model)
+            _supported = _codex_efforts_for_route(
+                model, params.get("base_url"),
+                is_codex_backend=params.get("is_codex_backend") is True,
+            )
         reasoning_effort = clamp_effort(reasoning_effort, _supported)
 
         response_tools = _responses_tools(tools)
@@ -662,6 +737,8 @@ class ResponsesApiTransport(ProviderTransport):
         request_overrides = params.get("request_overrides")
         if request_overrides:
             kwargs.update(request_overrides)
+
+        _sanitize_astra_request_kwargs(kwargs, model, params.get("base_url"))
 
         if "prompt_cache_key" in kwargs:
             bounded_cache_key = _bounded_prompt_cache_key(kwargs["prompt_cache_key"])

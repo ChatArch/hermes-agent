@@ -3888,11 +3888,15 @@ def list_authenticated_providers(
     # post-pass so it covers every provider section uniformly, regardless of
     # which branch emitted the row.
     if current_model:
+        from hermes_cli.models import _model_requires_account_discovery
+
         for _row in results:
             if not _row.get("is_current") or _row.get("native_catalog_empty"):
                 continue
             _models = _row.get("models") or []
-            if current_model not in _models:
+            if current_model not in _models and not _model_requires_account_discovery(
+                _row.get("slug"), current_model
+            ):
                 _row["models"] = [current_model, *_models]
                 _row["total_models"] = _row.get("total_models", len(_models)) + 1
             break

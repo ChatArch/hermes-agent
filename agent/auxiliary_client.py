@@ -1629,12 +1629,18 @@ class _CodexCompletionsAdapter:
                     # Codex transport (agent.reasoning_effort): per-model —
                     # "max" is gpt-5.6-only, "minimal"/"ultra" always
                     # rejected (live-verified, #68365).
-                    from agent.reasoning_effort import (
-                        clamp_effort,
-                        codex_supported_efforts,
-                    )
+                    from agent.reasoning_effort import clamp_effort
+                    from agent.transports.codex import _codex_efforts_for_route
 
-                    effort = clamp_effort(effort, codex_supported_efforts(model))
+                    # Equivalent to upstream's URL-only route classifier; this
+                    # fork has not adopted the unrelated adapter extraction.
+                    is_codex_backend = (
+                        base_url_host_matches(_host_for_input, "chatgpt.com")
+                        and "/backend-api/codex" in _host_for_input.lower()
+                    )
+                    effort = clamp_effort(effort, _codex_efforts_for_route(
+                        model, _host_for_input, is_codex_backend=is_codex_backend
+                    ))
                     resp_kwargs["reasoning"] = {
                         "effort": effort,
                         "summary": "auto",
@@ -1733,6 +1739,9 @@ class _CodexCompletionsAdapter:
             logger.debug(
                 "Codex auxiliary: prompt_cache_key derivation skipped", exc_info=True
             )
+        # Caller overrides must not restore fields rejected by official Astra.
+        from agent.transports.codex import _sanitize_astra_request_kwargs
+        _sanitize_astra_request_kwargs(resp_kwargs, model, _host_for_input)
 
         # Stream and collect the response
         text_parts: List[str] = []

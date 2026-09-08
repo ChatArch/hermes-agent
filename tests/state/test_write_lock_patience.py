@@ -85,6 +85,10 @@ class TestTranscriptWritePatience:
         """When patience genuinely runs out, the error must say the lock was
         held by another process — not read like disk/permission damage."""
         monkeypatch.setattr(SessionDB, "_WRITE_PATIENCE_S", 0.2)
+        # SQLite must yield before the deliberately shortened Python budget;
+        # otherwise its native busy handler outlasts the holder and succeeds.
+        with db._lock:
+            db._conn.execute("PRAGMA busy_timeout=10")
 
         started = threading.Event()
         holder = threading.Thread(

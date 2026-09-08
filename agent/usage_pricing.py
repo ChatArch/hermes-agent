@@ -137,6 +137,7 @@ class PricingEntry:
     input_cost_per_million_above: Optional[Decimal] = None
     output_cost_per_million_above: Optional[Decimal] = None
     cache_read_cost_per_million_above: Optional[Decimal] = None
+    cache_write_cost_per_million_above: Optional[Decimal] = None
 
 
 @dataclass(frozen=True)
@@ -1009,6 +1010,24 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ),
 }
 
+
+# Upstream GPT-6 Astra published whole-request context-tier pricing.
+_OFFICIAL_DOCS_PRICING[("openai", "gpt-6-astra")] = PricingEntry(
+    input_cost_per_million=Decimal('10.00'),
+    output_cost_per_million=Decimal('50.00'),
+    cache_read_cost_per_million=Decimal('1.00'),
+    cache_write_cost_per_million=Decimal('12.50'),
+    source="official_docs_snapshot",
+    source_url='https://developers.openai.com/api/docs/models/gpt-6-astra',
+    pricing_version='openai-gpt-6-astra-2026-09',
+    tier_threshold_tokens=272000,
+    input_cost_per_million_above=Decimal('20.00'),
+    output_cost_per_million_above=Decimal('75.00'),
+    cache_read_cost_per_million_above=Decimal('2.00'),
+    cache_write_cost_per_million_above=Decimal('25.00'),
+)
+_OFFICIAL_DOCS_PRICING[("openai", "gpt-6-astra-900k")] = _OFFICIAL_DOCS_PRICING[("openai", "gpt-6-astra")]
+
 # GPT-5.6 "-pro" high-effort variants bill at the same per-token rates as
 # their base tiers (more tokens per task, not a higher rate). Alias them
 # onto the base entries so the snapshot stays single-source. The Hermes-side
@@ -1478,6 +1497,7 @@ def estimate_usage_cost(
     input_rate = entry.input_cost_per_million
     output_rate = entry.output_cost_per_million
     cache_read_rate = entry.cache_read_cost_per_million
+    cache_write_rate = entry.cache_write_cost_per_million
     if (
         entry.tier_threshold_tokens is not None
         and usage.prompt_tokens > entry.tier_threshold_tokens
@@ -1488,6 +1508,8 @@ def estimate_usage_cost(
             output_rate = entry.output_cost_per_million_above
         if entry.cache_read_cost_per_million_above is not None:
             cache_read_rate = entry.cache_read_cost_per_million_above
+        if entry.cache_write_cost_per_million_above is not None:
+            cache_write_rate = entry.cache_write_cost_per_million_above
 
     if usage.input_tokens and input_rate is None:
         return CostResult(amount_usd=None, status="unknown", source=entry.source, label="n/a")
@@ -1503,7 +1525,7 @@ def estimate_usage_cost(
                 notes=("cache-read pricing unavailable for route",),
             )
     if usage.cache_write_tokens:
-        if entry.cache_write_cost_per_million is None:
+        if cache_write_rate is None:
             return CostResult(
                 amount_usd=None,
                 status="unknown",
@@ -1518,8 +1540,8 @@ def estimate_usage_cost(
         amount += Decimal(usage.output_tokens) * output_rate / _ONE_MILLION
     if cache_read_rate is not None:
         amount += Decimal(usage.cache_read_tokens) * cache_read_rate / _ONE_MILLION
-    if entry.cache_write_cost_per_million is not None:
-        amount += Decimal(usage.cache_write_tokens) * entry.cache_write_cost_per_million / _ONE_MILLION
+    if cache_write_rate is not None:
+        amount += Decimal(usage.cache_write_tokens) * cache_write_rate / _ONE_MILLION
     if entry.request_cost is not None and usage.request_count:
         amount += Decimal(usage.request_count) * entry.request_cost
 
