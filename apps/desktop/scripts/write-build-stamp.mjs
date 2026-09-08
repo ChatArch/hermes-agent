@@ -26,7 +26,7 @@
  * commit as unpinned and follows the branch instead of fetching a fake SHA.
  */
 
-import { mkdirSync, writeFileSync } from "fs"
+import { mkdirSync, readFileSync, writeFileSync } from "fs"
 import { resolve, join, relative } from "path"
 import { execSync } from "child_process"
 
@@ -52,7 +52,7 @@ function tryExec(cmd, opts) {
 }
 
 export function fromCI(env = process.env) {
-  const sha = env.GITHUB_SHA
+  const sha = env.DESKTOP_SOURCE_COMMIT || env.GITHUB_SHA
   if (!sha) return null
   const branch = env.GITHUB_REF_NAME || env.GITHUB_HEAD_REF || null
   return {
@@ -114,6 +114,17 @@ export function isFallbackCommit(commit) {
   return typeof commit === "string" && /^0{7,40}$/.test(commit)
 }
 
+export function resolveRepository({ env = process.env, repoRoot = REPO_ROOT, execFn = tryExec } = {}) {
+  const remote = execFn("git remote get-url origin", { cwd: repoRoot })
+  const fromRemote = remote?.match(/^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+\/[^/]+?)(?:\.git)?\/?$/)?.[1]
+  const repository = env.DESKTOP_SOURCE_REPOSITORY || env.GITHUB_REPOSITORY || fromRemote ||
+    JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).repository.url.match(/github\.com\/([^/]+\/[^/]+?)\.git$/)?.[1]
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(repository)) {
+    throw new Error("Cannot resolve a safe GitHub source repository for the desktop stamp")
+  }
+  return repository
+}
+
 function main() {
   const stamp = resolveStamp()
   if (!stamp || !stamp.commit) {
@@ -152,7 +163,9 @@ function main() {
   const payload = {
     schemaVersion: STAMP_SCHEMA_VERSION,
     commit: stamp.commit,
-    branch: stamp.branch,
+    repository: resolveRepository(),
+    version: process.env.DESKTOP_RELEASE_VERSION || JSON.parse(readFileSync(join(DESKTOP_ROOT, "package.json"), "utf8")).version,
+    branch: process.env.DESKTOP_RELEASE_VERSION ? "main" : stamp.branch,
     builtAt: new Date().toISOString(),
     dirty: stamp.dirty,
     source: stamp.source

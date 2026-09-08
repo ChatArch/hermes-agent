@@ -8,8 +8,17 @@ import {
   fromFallback,
   fromLocalGit,
   isFallbackCommit,
-  resolveStamp
+  resolveStamp,
+  resolveRepository
 } from './write-build-stamp.mjs'
+
+test('source stamp uses the PR head identity and local fork remote instead of upstream defaults', () => {
+  const env = { DESKTOP_SOURCE_REPOSITORY: 'Fork/hermes-agent', DESKTOP_SOURCE_COMMIT: 'b'.repeat(40), GITHUB_REPOSITORY: 'ChatArch/hermes-agent', GITHUB_SHA: 'a'.repeat(40) }
+  assert.equal(fromCI(env).commit, env.DESKTOP_SOURCE_COMMIT)
+  assert.equal(resolveRepository({ env, execFn: () => null }), env.DESKTOP_SOURCE_REPOSITORY)
+  assert.equal(resolveRepository({ env: {}, execFn: () => 'git@github.com:Fork/hermes-agent.git' }), 'Fork/hermes-agent')
+  assert.throws(() => resolveRepository({ env: { DESKTOP_SOURCE_REPOSITORY: '../invalid/repository' }, execFn: () => null }))
+})
 
 test('fromCI reads GITHUB_SHA / GITHUB_REF_NAME', () => {
   assert.deepEqual(

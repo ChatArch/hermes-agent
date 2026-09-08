@@ -1,0 +1,169 @@
+name: Desktop release
+
+on:
+  push:
+    tags: ['v[0-9][0-9][0-9][0-9].*']
+  pull_request:
+    paths:
+      - '.github/workflows/desktop-release.yml'
+      - 'apps/desktop/**'
+      - 'apps/shared/**'
+      - 'package*.json'
+      - 'pyproject.toml'
+      - 'hermes_cli/__init__.py'
+      - 'scripts/install.sh'
+      - 'scripts/install.ps1'
+      - 'docs/desktop-releases.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DESKTOP_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+  DESKTOP_SOURCE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+  DESKTOP_RELEASE_TAG: ${{ github.event_name == 'pull_request' && format('preview-pr-{0}', github.event.number) || github.ref_name }}
+  CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.source.outputs.matrix }}
+      version: ${{ steps.source.outputs.version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.DESKTOP_SOURCE_REPOSITORY }}
+          ref: ${{ env.DESKTOP_SOURCE_COMMIT }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+      - id: source
+        run: node apps/desktop/scripts/desktop-release.mjs prepare
+
+  build:
+    needs: source
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.source.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      DESKTOP_RELEASE_VERSION: ${{ needs.source.outputs.version }}
+      NODE_OPTIONS: --max-old-space-size=6144
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.DESKTOP_SOURCE_REPOSITORY }}
+          ref: ${{ env.DESKTOP_SOURCE_COMMIT }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+      - name: Validate source and native architecture
+        env:
+          TARGET_PLATFORM: ${{ matrix.platform }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          node apps/desktop/scripts/desktop-release.mjs prepare
+          node apps/desktop/scripts/desktop-release.mjs configure "$TARGET_PLATFORM" "$TARGET_ARCH"
+      - name: Linux packaging prerequisites
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y rpm libarchive-tools
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Release contract tests
+        working-directory: apps/desktop
+        run: npx --no-install vitest run --project electron scripts/desktop-release.test.mjs electron/install-source.test.ts scripts/write-build-stamp.test.mjs electron/bootstrap-runner.test.ts --maxWorkers=2
+      - name: Build shell and stage native dependencies
+        run: npm run build --workspace apps/desktop
+      - name: Build unsigned installers (never publish)
+        working-directory: apps/desktop
+        env:
+          TARGET_BUILDER: ${{ matrix.builder }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          node scripts/patch-electron-builder-mac-binary.mjs
+          node scripts/run-electron-builder.mjs --config desktop-release-config.json "--$TARGET_BUILDER" "--$TARGET_ARCH" --publish never
+      - name: Validate and collect installers
+        env:
+          TARGET_PLATFORM: ${{ matrix.platform }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: node apps/desktop/scripts/desktop-release.mjs collect "$TARGET_PLATFORM" "$TARGET_ARCH"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: desktop-assets/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  validate:
+    needs: [source, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.DESKTOP_SOURCE_REPOSITORY }}
+          ref: ${{ env.DESKTOP_SOURCE_COMMIT }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: desktop-assets
+      - name: Validate complete matrix and generate checksums and notes
+        run: |
+          node apps/desktop/scripts/desktop-release.mjs prepare
+          node apps/desktop/scripts/desktop-release.mjs bundle
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-release-bundle
+          path: desktop-bundle/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'ChatArch/hermes-agent'
+    needs: [source, build, validate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: desktop-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-release-bundle
+          path: desktop-bundle
+      - name: Recheck tag ancestry
+        run: node apps/desktop/scripts/desktop-release.mjs prepare
+      - name: Publish verified draft through GitHub API
+        env:
+          DESKTOP_RELEASE_TOKEN: ${{ github.token }}
+        run: node apps/desktop/scripts/publish-desktop-release.mjs
