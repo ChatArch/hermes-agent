@@ -733,6 +733,8 @@ function loadInstallStamp() {
         return Object.freeze({
           schemaVersion: parsed.schemaVersion,
           commit: parsed.commit,
+          repository: parsed.repository,
+          version: parsed.version,
           branch: parsed.branch || null,
           builtAt: parsed.builtAt || null,
           dirty: Boolean(parsed.dirty),

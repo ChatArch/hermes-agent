@@ -115,6 +115,15 @@ while [[ $# -gt 0 ]]; do
             NO_SKILLS=true
             shift
             ;;
+        --repository)
+            if [[ ! "$2" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+                echo "Invalid source repository" >&2
+                exit 1
+            fi
+            REPO_URL_SSH="git@github.com:$2.git"
+            REPO_URL_HTTPS="https://github.com/$2.git"
+            shift 2
+            ;;
         --branch|-Branch)
             BRANCH="$2"
             shift 2
@@ -175,6 +184,7 @@ while [[ $# -gt 0 ]]; do
             echo "                   write \$HERMES_HOME/.no-bundled-skills so future"
             echo "                   'hermes update' runs never inject bundled skills either"
             echo "  --branch NAME  Git branch to install (default: main)"
+            echo "  --repository OWNER/REPO  Source repository (default: NousResearch/hermes-agent)"
             echo "  --commit SHA   Pin checkout to a specific commit after clone/update"
             echo "                   (ignored when it would roll an existing install back)"
             echo "  --force-commit Apply --commit even if it rolls the install backwards"
