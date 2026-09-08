@@ -91,7 +91,9 @@ class _StalledSummaryWorker:
             fence.finish_commit()
 
 
-def _run(worker, *, chain, timeouts, messages, idle=0.05, ceiling=0.2):
+def _run(worker, *, chain, timeouts, messages, idle=2.0, ceiling=10.0):
+    # Exercise a stalled worker, not whether a loaded CI runner can start and
+    # cancel a fresh thread inside 50/200ms. Production budgets are unchanged.
     with _patch_chain(chain):
         return run_compress_context_with_progress_timeout(
             worker=worker,
