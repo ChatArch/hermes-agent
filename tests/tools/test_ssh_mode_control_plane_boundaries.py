@@ -280,7 +280,8 @@ class _LocalSessionDB:
     def __init__(self):
         self.list_calls = []
 
-    def list_sessions_rich(self, **kwargs):
+    def list_recent_sessions_bounded(self, *, limit, exclude_sources, timeout_seconds):
+        kwargs = dict(limit=limit, exclude_sources=exclude_sources, timeout_seconds=timeout_seconds)
         self.list_calls.append(kwargs)
         return [
             {

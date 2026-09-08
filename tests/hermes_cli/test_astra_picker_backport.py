@@ -1,6 +1,6 @@
 """Account-gated Astra must not be injected through the saved-model picker path."""
 import pytest
-from hermes_cli.model_switch import list_authenticated_providers
+from hermes_cli.model_switch_providers import list_authenticated_providers
 
 
 @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-astra-900k"])

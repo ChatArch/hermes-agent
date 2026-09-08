@@ -9,7 +9,7 @@ def test_explicit_astra_resolves_and_uses_official_responses(monkeypatch, tmp_pa
     """A fresh profile resolves metadata and routes the official endpoint without live I/O."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda *args, **kwargs: {})
-    monkeypatch.setattr("run_agent.OpenAI", lambda **_kwargs: SimpleNamespace())
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", lambda **_kwargs: SimpleNamespace())
     monkeypatch.setattr("model_tools.get_tool_definitions", lambda *args, **kwargs: [])
 
     from run_agent import AIAgent
@@ -85,6 +85,7 @@ def test_astra_900k_opt_in_preserves_live_limits_and_wire_contract(monkeypatch, 
 def test_picker_revalidates_cached_astra_and_never_injects_saved_entitlement(monkeypatch, tmp_path, provider, model):
     from hermes_cli import models
     from hermes_cli.inventory import ConfigContext, _append_unconfigured_rows
+    from hermes_cli.model_switch_providers import _finalize_picker_rows
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(models, "_credential_fingerprint", lambda _: "synthetic-account")
@@ -105,6 +106,8 @@ def test_picker_revalidates_cached_astra_and_never_injects_saved_entitlement(mon
     monkeypatch.setattr(models, "_PROVIDER_MODELS_STALE_SERVE_MAX", 0)
     assert models.cached_provider_model_ids(provider, ttl_seconds=0) == ["gpt-5.6-sol"]
     assert calls == [provider]
+    row = {"slug": provider, "is_current": True, "models": ["gpt-5.6-sol"], "total_models": 1}
+    assert model not in _finalize_picker_rows([row], {}, model)[0]["models"]
     ctx = ConfigContext(provider, model, "", {}, [])
     assert _append_unconfigured_rows([], ctx, current_only=True)[0]["models"] == []
 

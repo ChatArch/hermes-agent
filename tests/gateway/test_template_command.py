@@ -93,7 +93,8 @@ def test_template_command_registered_for_gateway():
 @pytest.mark.asyncio
 async def test_template_command_lists_available_templates_without_starting_thread(monkeypatch, tmp_path):
     import gateway.run as gateway_run
-    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path)
+    import chatarch_custom.gateway.commands as custom_commands
+    monkeypatch.setattr(custom_commands, "get_hermes_home", lambda: tmp_path)
 
     templates_dir = tmp_path / "templates"
     (templates_dir / "prd").mkdir(parents=True)
@@ -128,7 +129,8 @@ async def test_template_command_lists_available_templates_without_starting_threa
 @pytest.mark.asyncio
 async def test_template_command_list_handles_empty_template_store(monkeypatch, tmp_path):
     import gateway.run as gateway_run
-    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path)
+    import chatarch_custom.gateway.commands as custom_commands
+    monkeypatch.setattr(custom_commands, "get_hermes_home", lambda: tmp_path)
 
     runner = _runner()
     adapter = _adapter()
@@ -162,7 +164,8 @@ Write a concise PRD with goals, constraints, solution, and acceptance criteria.
     )
 
     import gateway.run as gateway_run
-    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path)
+    import chatarch_custom.gateway.commands as custom_commands
+    monkeypatch.setattr(custom_commands, "get_hermes_home", lambda: tmp_path)
 
     runner = _runner()
     adapter = _adapter()
@@ -192,7 +195,8 @@ Write a concise PRD with goals, constraints, solution, and acceptance criteria.
 @pytest.mark.asyncio
 async def test_template_command_create_starts_thread_with_template_authoring_prompt(monkeypatch, tmp_path):
     import gateway.run as gateway_run
-    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path)
+    import chatarch_custom.gateway.commands as custom_commands
+    monkeypatch.setattr(custom_commands, "get_hermes_home", lambda: tmp_path)
 
     runner = _runner()
     adapter = _adapter()
@@ -214,7 +218,8 @@ async def test_template_command_create_starts_thread_with_template_authoring_pro
 @pytest.mark.asyncio
 async def test_template_command_create_inside_existing_thread_does_not_create_nested_thread(monkeypatch, tmp_path):
     import gateway.run as gateway_run
-    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path)
+    import chatarch_custom.gateway.commands as custom_commands
+    monkeypatch.setattr(custom_commands, "get_hermes_home", lambda: tmp_path)
 
     runner = _runner()
     adapter = _adapter()
@@ -247,7 +252,8 @@ async def test_template_command_create_inside_existing_thread_does_not_create_ne
 @pytest.mark.asyncio
 async def test_template_command_update_starts_thread_with_template_update_prompt(monkeypatch, tmp_path):
     import gateway.run as gateway_run
-    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path)
+    import chatarch_custom.gateway.commands as custom_commands
+    monkeypatch.setattr(custom_commands, "get_hermes_home", lambda: tmp_path)
 
     runner = _runner()
     adapter = _adapter()
@@ -267,7 +273,8 @@ async def test_template_command_update_starts_thread_with_template_update_prompt
 @pytest.mark.asyncio
 async def test_template_command_unknown_use_target_returns_guidance(monkeypatch, tmp_path):
     import gateway.run as gateway_run
-    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path)
+    import chatarch_custom.gateway.commands as custom_commands
+    monkeypatch.setattr(custom_commands, "get_hermes_home", lambda: tmp_path)
 
     templates_dir = tmp_path / "templates"
     (templates_dir / "prd").mkdir(parents=True)
@@ -290,7 +297,8 @@ async def test_template_command_unknown_use_target_returns_guidance(monkeypatch,
 @pytest.mark.asyncio
 async def test_template_command_rejects_invalid_template_name_before_prompt_or_thread(monkeypatch, tmp_path):
     import gateway.run as gateway_run
-    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path)
+    import chatarch_custom.gateway.commands as custom_commands
+    monkeypatch.setattr(custom_commands, "get_hermes_home", lambda: tmp_path)
 
     runner = _runner()
     adapter = _adapter()
@@ -308,7 +316,8 @@ async def test_template_command_rejects_invalid_template_name_before_prompt_or_t
 @pytest.mark.asyncio
 async def test_template_command_rejects_when_current_thread_agent_is_running(monkeypatch, tmp_path):
     import gateway.run as gateway_run
-    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path)
+    import chatarch_custom.gateway.commands as custom_commands
+    monkeypatch.setattr(custom_commands, "get_hermes_home", lambda: tmp_path)
 
     prd_dir = tmp_path / "templates" / "prd"
     prd_dir.mkdir(parents=True)

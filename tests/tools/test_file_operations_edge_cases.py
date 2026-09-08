@@ -9,7 +9,9 @@ import subprocess
 import pytest
 from unittest.mock import MagicMock, patch
 
-from tools.file_operations import ShellFileOperations, _parse_search_context_line
+from tests.tools.file_ops_fakes import READ_SENTINEL_RE, compound_read_output
+from tools.file_operations import ShellFileOperations
+from tools.file_operations_search import _parse_search_context_line
 
 
 # =========================================================================
@@ -264,14 +266,15 @@ class TestPaginationBounds:
 
         def fake_exec(command, *args, **kwargs):
             commands.append(command)
-            if command.startswith("if [ -f ") or command.startswith("wc -c"):
-                return MagicMock(exit_code=0, stdout="12")
-            if command.startswith("head -c"):
-                return MagicMock(exit_code=0, stdout="line1\nline2\n")
-            if command.startswith("sed -n"):
-                return MagicMock(exit_code=0, stdout="line1\n")
-            if command.startswith("wc -l"):
-                return MagicMock(exit_code=0, stdout="2")
+            m = READ_SENTINEL_RE.search(command)
+            if m:
+                return MagicMock(
+                    exit_code=0,
+                    stdout=compound_read_output(
+                        m.group(0), size=12, sample=b"line1\nline2\n",
+                        content="line1\n", total_lines=2,
+                    ),
+                )
             return MagicMock(exit_code=0, stdout="")
 
         with patch.object(ops, "_exec", side_effect=fake_exec):
@@ -279,8 +282,9 @@ class TestPaginationBounds:
 
         assert result.error is None
         assert "1|line1" in result.content
-        sed_commands = [cmd for cmd in commands if cmd.startswith("sed -n")]
-        assert sed_commands == ["sed -n '1,1p' 'notes.txt' | cut -b1-8001"]
+        # The clamped range rides the single compound probe.
+        assert len(commands) == 1
+        assert "sed -n '1,1p' 'notes.txt' 2>/dev/null | cut -b1-8001" in commands[0]
 
     def test_read_file_allows_utf8_text_when_head_sample_ends_mid_codepoint(self):
         """A valid UTF-8 text file must survive a lossy boundary sample."""
@@ -344,7 +348,7 @@ class TestPaginationBounds:
             commands.append(command)
             if command.startswith("test -e"):
                 return MagicMock(exit_code=0, stdout="exists")
-            if command.startswith("rg --files"):
+            if "--files" in command:
                 return MagicMock(exit_code=0, stdout="a.py\n")
             return MagicMock(exit_code=0, stdout="")
 
@@ -353,9 +357,9 @@ class TestPaginationBounds:
             result = ops.search("*.py", target="files", path=".", offset=-4, limit=-2)
 
         assert result.files == ["a.py"]
-        rg_commands = [cmd for cmd in commands if cmd.startswith("rg --files")]
+        rg_commands = [cmd for cmd in commands if "--files" in cmd]
         assert rg_commands
-        assert "| head -n 1" in rg_commands[0]
+        assert "| head -n 2" in rg_commands[0]
 
 
 # =========================================================================

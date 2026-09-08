@@ -248,7 +248,8 @@ def test_cleanup_vm_removes_hashed_session_environment_without_context():
         terminal_tool._active_environments[env_key] = FakeEnv(env_key)
         terminal_tool._last_activity[env_key] = 1.0
 
-    terminal_tool.cleanup_vm(session_key)
+    from tools.terminal_tool_lifecycle import cleanup_vm
+    cleanup_vm(session_key)
 
     assert env_key not in terminal_tool._active_environments
     assert env_key not in terminal_tool._last_activity
@@ -274,7 +275,7 @@ def test_terminal_tool_creates_separate_environments_for_separate_sessions(monke
         created.append(kwargs["task_id"])
         return FakeEnv(kwargs["task_id"])
 
-    monkeypatch.setattr(terminal_tool, "_create_environment", fake_create_environment)
+    monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fake_create_environment)
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
 
     def run_in_session(session_key: str):
@@ -305,7 +306,7 @@ def test_terminal_tool_reuses_environment_within_same_session(monkeypatch):
         created.append(kwargs["task_id"])
         return FakeEnv(kwargs["task_id"])
 
-    monkeypatch.setattr(terminal_tool, "_create_environment", fake_create_environment)
+    monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fake_create_environment)
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
 
     def _run():
@@ -334,7 +335,7 @@ def test_compaction_session_id_rotation_keeps_same_gateway_session_env(monkeypat
         created.append(kwargs["task_id"])
         return FakeEnv(kwargs["task_id"])
 
-    monkeypatch.setattr(terminal_tool, "_create_environment", fake_create_environment)
+    monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fake_create_environment)
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
     session_key = "agent:main:feishu:group:oc_chat:omt_thread"
 
@@ -366,7 +367,7 @@ def test_terminal_file_and_code_execution_share_session_environment(monkeypatch)
         created.append(kwargs["task_id"])
         return FakeEnv(kwargs["task_id"])
 
-    monkeypatch.setattr(terminal_tool, "_create_environment", fake_create_environment)
+    monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fake_create_environment)
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
     session_key = "agent:main:feishu:group:oc_chat:omt_thread"
 
@@ -398,7 +399,7 @@ def test_code_execution_environment_uses_session_key(monkeypatch):
         created.append(kwargs["task_id"])
         return FakeEnv(kwargs["task_id"])
 
-    monkeypatch.setattr(terminal_tool, "_create_environment", fake_create_environment)
+    monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fake_create_environment)
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
 
     def get_env_for_session(session_key: str):
@@ -448,7 +449,7 @@ def test_session_key_ssh_override_drives_terminal_file_code_without_transcript_r
         created.append(kwargs)
         return FakeTypedEnv(kwargs["task_id"], kwargs["env_type"], kwargs["cwd"])
 
-    monkeypatch.setattr(terminal_tool, "_create_environment", fake_create_environment)
+    monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fake_create_environment)
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
     session_key = "agent:main:feishu:group:oc_chat:omt_thread"
     ssh_overrides = {

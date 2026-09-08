@@ -130,7 +130,7 @@ def _candidate_task_ids(task_id: str, fallback_task_ids: tuple[str, ...]) -> tup
 
 def _active_materialization_env(task_ids: tuple[str, ...]) -> Any | None:
     try:
-        from tools.terminal_tool import get_active_env
+        from tools.terminal_tool_lifecycle import get_active_env
     except Exception:
         return None
 
@@ -251,8 +251,9 @@ def materialize_response_media(
 
     from gateway.platforms.base import (
         DEFAULT_INBOUND_MEDIA_MAX_BYTES,
+        MEDIA_DELIVERY_STRICT_ENV,
+        _TRUTHY,
         _media_delivery_recency_seconds,
-        _media_delivery_strict_mode,
         validate_media_delivery_path,
     )
 
@@ -340,7 +341,7 @@ def materialize_response_media(
             destination = _destination_for(ref, target_cache)
             recent_window = (
                 _media_delivery_recency_seconds()
-                if _media_delivery_strict_mode()
+                if os.environ.get(MEDIA_DELIVERY_STRICT_ENV, "0").strip().lower() in _TRUTHY
                 else None
             )
             metadata = env.materialize_file(
