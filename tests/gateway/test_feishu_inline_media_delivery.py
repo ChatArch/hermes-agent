@@ -28,6 +28,39 @@ def _media_adapter_for_image(image, *, name="Feishu", caption="Caption before im
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failed", [False, True])
+async def test_streamed_turn_materializes_before_delivery_and_preserves_preview_identity(tmp_path, failed):
+    image = tmp_path / "remote.png"
+    image.write_bytes(b"image")
+    adapter = _media_adapter_for_image(image)
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+    adapter.extract_media = BasePlatformAdapter.extract_media
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.adapters = {Platform.FEISHU: adapter}
+    runner._should_send_voice_reply = lambda *args, **kwargs: False
+    runner._materialize_media_for_delivery = AsyncMock(return_value=SimpleNamespace(
+        response="MEDIA:ssh://host/image.png" if failed else f"Caption\nMEDIA:{image}",
+        failures=("unavailable",) if failed else (),
+    ))
+    source = SessionSource(platform=Platform.FEISHU, chat_id="oc_chat", user_id="ou_user", thread_id="omt_topic")
+    event = MessageEvent(text="image", source=source, message_id="om_user")
+    result = await runner._hmwa_deliver_turn_response(
+        event, source, SimpleNamespace(session_id="rotated"), build_session_key(source), 1,
+        {"already_sent": True, "stream_message_id": "om_preview"}, [],
+        "MEDIA:ssh://host/image.png", "", False, fallback_session_id="original",
+    )
+    assert result is None
+    assert runner._materialize_media_for_delivery.await_args.kwargs["fallback_session_id"] == "original"
+    if failed:
+        adapter.send_image_file.assert_not_awaited()
+        adapter.delete_message.assert_not_awaited()
+        assert "could not be retrieved" in adapter.send.await_args.args[1]
+    else:
+        assert adapter.send_image_file.await_args.kwargs["image_path"] == str(image)
+        adapter.delete_message.assert_awaited_once_with("oc_chat", "om_preview")
+
+
+@pytest.mark.asyncio
 async def test_feishu_media_response_uses_inline_caption_path_with_reply_anchor(tmp_path):
     """Natural MEDIA delivery should become one Feishu post with text+inline image.
 

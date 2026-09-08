@@ -17,7 +17,7 @@ Docker Backend in ``website/docs/user-guide/configuration.md``.
 
 import pytest
 
-from tools import terminal_tool
+from tools import terminal_tool, terminal_tool_lifecycle
 
 
 @pytest.fixture(autouse=True)
@@ -84,9 +84,9 @@ def test_get_active_env_reads_shared_container_from_subagent_id():
     sentinel = object()
     terminal_tool._active_environments["default"] = sentinel
     try:
-        assert terminal_tool.get_active_env("subagent-7-cafe") is sentinel
-        assert terminal_tool.get_active_env(None) is sentinel
-        assert terminal_tool.get_active_env("default") is sentinel
+        assert terminal_tool_lifecycle.get_active_env("subagent-7-cafe") is sentinel
+        assert terminal_tool_lifecycle.get_active_env(None) is sentinel
+        assert terminal_tool_lifecycle.get_active_env("default") is sentinel
     finally:
         terminal_tool._active_environments.pop("default", None)
 
@@ -102,7 +102,7 @@ def test_get_active_env_honours_rl_override():
         # the task's own env, not the shared "default" one. If the backend/image
         # override changes after creation, register_task_env_overrides evicts the
         # old env so the next tool call can recreate it with the new runtime.
-        assert terminal_tool.get_active_env("rl-42") is rl_env
+        assert terminal_tool_lifecycle.get_active_env("rl-42") is rl_env
     finally:
         terminal_tool.clear_task_env_overrides("rl-42")
         terminal_tool._active_environments.pop("default", None)
@@ -236,5 +236,154 @@ def test_contextvar_session_key_wins_over_environ(monkeypatch):
             terminal_tool._resolve_container_task_id(None)
             == terminal_tool._session_environment_key_from_raw("sess-CTX")
         )
+    finally:
+        clear_session_vars(tokens)
+
+
+# --- Persistent Docker is PROFILE-scoped, not session-scoped ------------------
+#
+# Product contract: TERMINAL_ENV=docker + container_persistent:true means ONE
+# long-lived container per Hermes profile, shared by every session of that
+# profile (CLI, gateway chats, WebUI). The a270c4ade session-key fallback must
+# NOT fragment persistent Docker into per-session containers; it exists for
+# backends where cross-session reuse is dangerous (SSH).
+
+
+def _persistent_docker(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+
+
+def test_persistent_docker_default_profile_shares_default_container(monkeypatch):
+    # A gateway session of the default profile lands on the SAME container key
+    # CLI mode uses — "default" — not a per-session key.
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    _persistent_docker(monkeypatch)
+    tokens = set_session_vars(session_key="agent:main:telegram:dm:123", profile="")
+    try:
+        assert terminal_tool._resolve_container_task_id(None) == "default"
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_persistent_docker_two_sessions_same_profile_share_container(monkeypatch):
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    _persistent_docker(monkeypatch)
+    tokens = set_session_vars(session_key="agent:main:telegram:dm:123", profile="work")
+    try:
+        a = terminal_tool._resolve_container_task_id(None)
+    finally:
+        clear_session_vars(tokens)
+    tokens = set_session_vars(session_key="agent:main:discord:guild:456", profile="work")
+    try:
+        b = terminal_tool._resolve_container_task_id(None)
+    finally:
+        clear_session_vars(tokens)
+    assert a == b == "profile:work"
+
+
+def test_persistent_docker_distinct_profiles_get_distinct_containers(monkeypatch):
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    _persistent_docker(monkeypatch)
+    tokens = set_session_vars(session_key="sess-X", profile="work")
+    try:
+        a = terminal_tool._resolve_container_task_id(None)
+    finally:
+        clear_session_vars(tokens)
+    tokens = set_session_vars(session_key="sess-X", profile="research")
+    try:
+        b = terminal_tool._resolve_container_task_id(None)
+    finally:
+        clear_session_vars(tokens)
+    assert a == "profile:work"
+    assert b == "profile:research"
+    assert a != b
+
+
+def test_nonpersistent_docker_keeps_session_scoping(monkeypatch):
+    # container_persistent:false is an explicit isolation statement (#82731) —
+    # the profile-scope gate must not fire there.
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "false")
+    tokens = set_session_vars(session_key="sess-A", profile="work")
+    try:
+        assert terminal_tool._resolve_container_task_id(None) == terminal_tool._session_environment_key_from_raw("sess-A")
+        assert terminal_tool._resolve_container_task_id(None) != terminal_tool._session_environment_key_from_raw("sess-B")
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_ssh_backend_keeps_session_scoping(monkeypatch):
+    # The original a270c4ade leak: SSH environments must stay session-scoped
+    # regardless of profile, or profile A's SSHEnvironment leaks into B.
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    tokens = set_session_vars(session_key="sess-A", profile="work")
+    try:
+        assert terminal_tool._resolve_container_task_id(None) == terminal_tool._session_environment_key_from_raw("sess-A")
+        assert terminal_tool._resolve_container_task_id(None) != terminal_tool._session_environment_key_from_raw("sess-B")
+    finally:
+        clear_session_vars(tokens)
+
+
+# --- Trusted-profiles shared container opt-in (#84671) ------------------------
+
+
+def test_shared_key_unifies_profiles(monkeypatch):
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    _persistent_docker(monkeypatch)
+    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "team/workspace")
+    tokens = set_session_vars(session_key="s1", profile="work")
+    try:
+        a = terminal_tool._resolve_container_task_id(None)
+    finally:
+        clear_session_vars(tokens)
+    tokens = set_session_vars(session_key="s2", profile="research")
+    try:
+        b = terminal_tool._resolve_container_task_id(None)
+    finally:
+        clear_session_vars(tokens)
+    assert a == b == "shared:team/workspace"
+
+
+def test_shared_key_applies_to_cli_no_session(monkeypatch):
+    # CLI (no session key) must land in the same shared container as gateway
+    # sessions, or the opt-in splits the container it exists to unify.
+    _persistent_docker(monkeypatch)
+    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "team/workspace")
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    assert terminal_tool._resolve_container_task_id(None) == "shared:team/workspace"
+
+
+def test_empty_shared_key_keeps_profile_scoping(monkeypatch):
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    _persistent_docker(monkeypatch)
+    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "")
+    tokens = set_session_vars(session_key="s1", profile="work")
+    try:
+        assert terminal_tool._resolve_container_task_id(None) == "profile:work"
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_shared_key_ignored_outside_persistent_docker(monkeypatch):
+    # The opt-in is a persistent-Docker concept only: SSH keeps session
+    # scoping even when the key is set.
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "team/workspace")
+    tokens = set_session_vars(session_key="sess-A", profile="work")
+    try:
+        assert terminal_tool._resolve_container_task_id(None) == terminal_tool._session_environment_key_from_raw("sess-A")
+        assert terminal_tool._resolve_container_task_id(None) != terminal_tool._session_environment_key_from_raw("sess-B")
     finally:
         clear_session_vars(tokens)

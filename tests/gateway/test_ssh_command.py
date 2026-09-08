@@ -155,9 +155,10 @@ async def test_ssh_status_reports_current_section_without_binding():
 async def test_ssh_list_renders_local_and_targets_without_starting_agent(monkeypatch):
     from gateway.ssh_targets import SshTarget
     import gateway.run as gateway_run
+    import chatarch_custom.gateway.commands as custom_commands
 
     monkeypatch.setattr(
-        gateway_run,
+        custom_commands,
         "load_ssh_targets",
         lambda: [
             SshTarget(alias="rex.oray", host="rexwzh.oray", user="rexwzh", port=22, identity_file="~/.ssh/id_ed25519"),
@@ -182,11 +183,12 @@ async def test_ssh_list_renders_local_and_targets_without_starting_agent(monkeyp
 @pytest.mark.asyncio
 async def test_ssh_use_binds_current_thread(monkeypatch, tmp_path):
     import gateway.run as gateway_run
+    import chatarch_custom.gateway.commands as custom_commands
     from gateway.ssh_targets import SshTarget
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(
-        gateway_run,
+        custom_commands,
         "load_ssh_targets",
         lambda: [
             SshTarget(
@@ -248,11 +250,12 @@ async def test_ssh_use_binds_current_thread(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_ssh_use_in_parent_chat_defaults_to_new_thread(monkeypatch, tmp_path):
     import gateway.run as gateway_run
+    import chatarch_custom.gateway.commands as custom_commands
     from gateway.ssh_targets import SshTarget
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(
-        gateway_run,
+        custom_commands,
         "load_ssh_targets",
         lambda: [SshTarget(alias="demo.remote", host="example.invalid", user="hermes")],
         raising=False,
@@ -328,12 +331,13 @@ async def test_ssh_off_local_blocks_future_model_return_but_keeps_current_bindin
 @pytest.mark.asyncio
 async def test_ssh_off_can_disable_all_future_auto_switches_while_current_backend_remains(monkeypatch, tmp_path):
     import gateway.run as gateway_run
+    import chatarch_custom.gateway.commands as custom_commands
     from gateway.ssh_bindings import get_backend_auto_policy, get_ssh_binding, set_ssh_binding
     from gateway.ssh_targets import SshTarget
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(
-        gateway_run,
+        custom_commands,
         "load_ssh_targets",
         lambda: [SshTarget(alias="demo.remote", host="example.invalid", user="hermes")],
         raising=False,
@@ -372,12 +376,13 @@ async def test_ssh_on_reenables_model_switch_to_backend(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_ssh_on_all_enables_model_switch_to_every_backend(monkeypatch, tmp_path):
     import gateway.run as gateway_run
+    import chatarch_custom.gateway.commands as custom_commands
     from gateway.ssh_bindings import get_backend_auto_policy, set_backend_auto_enabled
     from gateway.ssh_targets import SshTarget
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(
-        gateway_run,
+        custom_commands,
         "load_ssh_targets",
         lambda: [
             SshTarget(alias="demo.remote", host="example.invalid", user="hermes"),
@@ -405,12 +410,13 @@ async def test_ssh_on_all_enables_model_switch_to_every_backend(monkeypatch, tmp
 @pytest.mark.asyncio
 async def test_ssh_off_all_disables_every_backend_without_clearing_current_binding(monkeypatch, tmp_path):
     import gateway.run as gateway_run
+    import chatarch_custom.gateway.commands as custom_commands
     from gateway.ssh_bindings import get_backend_auto_policy, get_ssh_binding, set_backend_auto_enabled, set_ssh_binding
     from gateway.ssh_targets import SshTarget
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(
-        gateway_run,
+        custom_commands,
         "load_ssh_targets",
         lambda: [
             SshTarget(alias="demo.remote", host="example.invalid", user="hermes"),
@@ -440,12 +446,13 @@ async def test_ssh_off_all_disables_every_backend_without_clearing_current_bindi
 @pytest.mark.asyncio
 async def test_ssh_status_reports_current_thread_binding_and_auto_switch(monkeypatch, tmp_path):
     import gateway.run as gateway_run
+    import chatarch_custom.gateway.commands as custom_commands
     from gateway.ssh_bindings import set_backend_auto_enabled, set_ssh_binding
     from gateway.ssh_targets import SshTarget
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(
-        gateway_run,
+        custom_commands,
         "load_ssh_targets",
         lambda: [SshTarget(alias="rex.oray", host="rexwzh.oray", user="rexwzh", identity_file="/secret/key")],
         raising=False,
@@ -469,10 +476,11 @@ async def test_ssh_status_reports_current_thread_binding_and_auto_switch(monkeyp
 @pytest.mark.asyncio
 async def test_ssh_test_incomplete_target_does_not_pass(monkeypatch):
     import gateway.run as gateway_run
+    import chatarch_custom.gateway.commands as custom_commands
     from gateway.ssh_targets import SshTarget
 
     monkeypatch.setattr(
-        gateway_run,
+        custom_commands,
         "load_ssh_targets",
         lambda: [SshTarget(alias="broken", host=None, user="rex")],
         raising=False,
@@ -490,12 +498,13 @@ async def test_ssh_test_incomplete_target_does_not_pass(monkeypatch):
 @pytest.mark.asyncio
 async def test_ssh_use_incomplete_target_does_not_bind(monkeypatch, tmp_path):
     import gateway.run as gateway_run
+    import chatarch_custom.gateway.commands as custom_commands
     from gateway.ssh_bindings import get_ssh_binding
     from gateway.ssh_targets import SshTarget
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(
-        gateway_run,
+        custom_commands,
         "load_ssh_targets",
         lambda: [SshTarget(alias="broken", host="example.internal", user=None)],
         raising=False,
@@ -514,6 +523,7 @@ async def test_ssh_use_incomplete_target_does_not_bind(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_ssh_test_unknown_backend_does_not_change_binding(monkeypatch):
     import gateway.run as gateway_run
+    import chatarch_custom.gateway.commands as custom_commands
 
     monkeypatch.setattr(gateway_run, "load_ssh_targets", lambda: [], raising=False)
 
@@ -529,11 +539,12 @@ async def test_ssh_test_unknown_backend_does_not_change_binding(monkeypatch):
 @pytest.mark.asyncio
 async def test_ssh_use_explicit_thread_alias_creates_thread_and_binds(monkeypatch, tmp_path):
     import gateway.run as gateway_run
+    import chatarch_custom.gateway.commands as custom_commands
     from gateway.ssh_targets import SshTarget
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(
-        gateway_run,
+        custom_commands,
         "load_ssh_targets",
         lambda: [SshTarget(alias="rex.oray", host="rexwzh.oray", user="rexwzh")],
         raising=False,

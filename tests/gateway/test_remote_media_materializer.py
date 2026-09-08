@@ -2,6 +2,8 @@ import asyncio
 from pathlib import Path
 
 from gateway.run import GatewayRunner
+from tools import terminal_tool_lifecycle
+from chatarch_custom.gateway import commands as custom_commands
 
 
 class _FakeRemoteEnvironment:
@@ -372,7 +374,7 @@ def test_materializer_recreates_bound_ssh_env_when_active_env_was_cleaned(
         created_for.append(task_id)
         return _FileOps(env)
 
-    monkeypatch.setattr(terminal_tool, "get_active_env", lambda task_id: None)
+    monkeypatch.setattr(terminal_tool_lifecycle, "get_active_env", lambda task_id: None)
     monkeypatch.setattr(terminal_tool, "resolve_task_overrides", _resolve_task_overrides)
     monkeypatch.setattr(file_tools, "_get_file_ops", _get_file_ops)
 
@@ -400,7 +402,7 @@ def test_materializer_does_not_create_env_for_unbound_ssh_alias(monkeypatch, tmp
 
     created_for = []
 
-    monkeypatch.setattr(terminal_tool, "get_active_env", lambda task_id: None)
+    monkeypatch.setattr(terminal_tool_lifecycle, "get_active_env", lambda task_id: None)
     monkeypatch.setattr(
         terminal_tool,
         "resolve_task_overrides",
@@ -432,11 +434,11 @@ def test_gateway_materializes_with_current_session_binding(monkeypatch, tmp_path
     env = _FakeRemoteEnvironment()
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setattr(
-        gateway_run,
+        custom_commands,
         "get_ssh_binding",
         lambda session_key: type("Binding", (), {"alias": "build.example"})(),
     )
-    monkeypatch.setattr(terminal_tool, "get_active_env", lambda task_id: env)
+    monkeypatch.setattr(terminal_tool_lifecycle, "get_active_env", lambda task_id: env)
 
     runner = GatewayRunner.__new__(GatewayRunner)
     result = asyncio.run(
@@ -470,11 +472,11 @@ def test_gateway_materializer_falls_back_to_turn_start_session_after_rotation(
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setattr(
-        gateway_run,
+        custom_commands,
         "get_ssh_binding",
         lambda session_key: type("Binding", (), {"alias": "build.example"})(),
     )
-    monkeypatch.setattr(terminal_tool, "get_active_env", _get_active_env)
+    monkeypatch.setattr(terminal_tool_lifecycle, "get_active_env", _get_active_env)
 
     runner = GatewayRunner.__new__(GatewayRunner)
     result = asyncio.run(
@@ -506,11 +508,11 @@ def test_materialized_remote_image_keeps_feishu_inline_reply_contract(monkeypatc
     env = _FakeRemoteEnvironment()
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setattr(
-        gateway_run,
+        custom_commands,
         "get_ssh_binding",
         lambda session_key: type("Binding", (), {"alias": "build.example"})(),
     )
-    monkeypatch.setattr(terminal_tool, "get_active_env", lambda task_id: env)
+    monkeypatch.setattr(terminal_tool_lifecycle, "get_active_env", lambda task_id: env)
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._reply_anchor_for_event = MagicMock(return_value="om_user")

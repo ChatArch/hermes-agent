@@ -10,7 +10,7 @@ import base64
 import json
 from pathlib import Path
 
-from tools.file_operations import PatchResult, ReadResult, SearchMatch, SearchResult, WriteResult
+from tools.file_operations_common import PatchResult, ReadResult, SearchMatch, SearchResult, WriteResult
 
 
 class _RecordingFileOps:
@@ -41,7 +41,7 @@ class _RecordingFileOps:
         )
 
     def search(self, pattern, path=".", target="content", file_glob=None,
-               limit=50, offset=0, output_mode="content", context=0):
+               limit=50, offset=0, output_mode="content", context=0, order=None):
         self.search_calls.append((pattern, path, target, file_glob, limit, offset, output_mode, context))
         return SearchResult(
             matches=[SearchMatch(path=path, line_number=1, content="hello")],
@@ -209,7 +209,8 @@ def test_read_file_ssh_session_repeated_read_does_not_use_host_mtime_dedup(monke
         second = json.loads(file_tools.read_file_tool(requested, offset=1, limit=5, task_id=task_id))
     finally:
         terminal_tool.clear_task_env_overrides(task_id)
-        file_tools.reset_file_dedup(task_id)
+        from tools.file_tools_read_tracking import reset_file_dedup
+        reset_file_dedup(task_id)
         file_tools.clear_file_ops_cache(task_id)
 
     assert not first.get("error"), first

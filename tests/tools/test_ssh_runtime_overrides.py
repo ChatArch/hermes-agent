@@ -1,5 +1,7 @@
 """Tests for section-scoped SSH runtime overrides."""
 
+from tools import terminal_tool_backends
+
 
 def test_task_env_override_selects_ssh_backend(monkeypatch):
     from tools import terminal_tool as tt
@@ -127,7 +129,7 @@ def test_file_tools_create_ssh_environment_from_task_override(monkeypatch):
         captured.update(kwargs)
         return FakeEnv()
 
-    monkeypatch.setattr(tt, "_create_environment", fake_create_environment)
+    monkeypatch.setattr(terminal_tool_backends, "_create_environment", fake_create_environment)
     monkeypatch.setattr(file_tools, "ShellFileOperations", FakeOps)
     try:
         ops = file_tools._get_file_ops("file-session-123")
@@ -175,8 +177,7 @@ def test_execute_code_uses_resolve_task_overrides_for_raw_task_id(monkeypatch):
         captured.update(kwargs)
         return FakeEnv()
 
-    monkeypatch.setattr(code_exec, "_create_environment", fake_create_environment, raising=False)
-    monkeypatch.setattr(tt, "_create_environment", fake_create_environment)
+    monkeypatch.setattr(terminal_tool_backends, "_create_environment", fake_create_environment)
     try:
         env, env_type = code_exec._get_or_create_env("session-123")
     finally:
@@ -215,7 +216,7 @@ def test_execute_code_top_level_dispatch_uses_task_override_backend(monkeypatch)
         },
     )
 
-    def fake_execute_remote(code, remote_task_id, enabled_tools):
+    def fake_execute_remote(code, remote_task_id, enabled_tools, reset=False):
         calls.append((code, remote_task_id, enabled_tools))
         return '{"status":"success","remote":true}'
 
@@ -250,7 +251,7 @@ def test_execute_code_top_level_dispatch_uses_session_context_override(monkeypat
         },
     )
 
-    def fake_execute_remote(code, remote_task_id, enabled_tools):
+    def fake_execute_remote(code, remote_task_id, enabled_tools, reset=False):
         calls.append((code, remote_task_id, enabled_tools))
         return '{"status":"success","remote":true}'
 
