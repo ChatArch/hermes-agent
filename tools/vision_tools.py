@@ -942,7 +942,7 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
     local_path = Path(os.path.expanduser(source))
     lowered = (video_url or "").strip().lower()
     path_like = bool(lowered) and not lowered.startswith(("http://", "https://", "data:"))
-    if not _is_local_terminal_backend() and path_like:
+    if not _is_local_terminal_backend(task_id) and path_like:
         logger.info("Reading video source via terminal backend: %s", video_url)
         suffix = Path(source).suffix.lower()
         if suffix not in _VIDEO_MIME_TYPES:

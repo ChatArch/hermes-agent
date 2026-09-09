@@ -63,22 +63,39 @@ async def resolve_image_source(
         if reason:
             raise SourceUnsafe(reason, src=s)
         return _finalize(await _download_to_bytes(s), "", "http", s, permitted)
+    if s.lower().startswith("ssh://"):
+        from gateway.media_materializer import _parse_resource
+        from tools.terminal_tool import resolve_task_overrides
+        overrides = resolve_task_overrides(ctx.task_id)
+        alias = overrides.get("ssh_alias") if overrides.get("env_type") == "ssh" else None
+        try:
+            ref = _parse_resource(s, ssh_alias=alias)
+        except (ValueError, PermissionError) as exc:
+            raise SourceUnsafe(str(exc), src=s) from exc
+        return await _resolve_container_fallback(Path(ref.path), ctx, s, permitted)
     if _SCHEME_RE.match(s) and not s.lower().startswith("file://"):
         raise UnsupportedScheme(
-            "Unrecognized image source scheme. Use an http(s) URL, a local "
-            "file path, a file:// URI, or a data: URL.",
+            "Unrecognized image source scheme. Use an http(s) URL, a backend "
+            "file path, a file:// URI, an ssh:// URI for the current target, or a data: URL.",
             src=s)
-    # Everything else is a filesystem path — including bare relative names like "pic.png"
-    # (a path-shape gate here regressed them once).
-    candidate = s[len("file://"):] if s.lower().startswith("file://") else s
-    p = Path(os.path.expanduser(candidate))
+    # Resolve backend ownership before expanding '~': the gateway user's home
+    # is not the SSH user's home, and process-global TERMINAL_ENV is only a default.
+    gateway_file = s.lower().startswith("file://")
+    candidate = s
+    if gateway_file:
+        from gateway.media_materializer import _parse_resource
+        try:
+            candidate = _parse_resource(s, ssh_alias=None).path
+        except (ValueError, PermissionError) as exc:
+            raise SourceUnsafe(str(exc), src=s) from exc
+    local = _is_local_terminal_backend(ctx.task_id)
+    p = Path(os.path.expanduser(candidate) if local else candidate)
     host_target = _permitted_host_read_target(p, ctx)
     if host_target is not None and host_target.is_file():
         _guard_credential_read(host_target, s)
         data = await asyncio.to_thread(host_target.read_bytes)
         return _finalize(data, "", "file", s, permitted)
-    if _is_local_terminal_backend():
-        # Any path was host-readable, so a miss means the file doesn't exist.
+    if local or gateway_file:
         raise SourceNotFound(f"media file not found: '{p}'", src=s, origin="file")
     return await _resolve_container_fallback(p, ctx, s, permitted)
 
@@ -143,9 +160,11 @@ async def _download_to_bytes(url: str) -> bytes:
         tmp.unlink(missing_ok=True)
 
 
-def _is_local_terminal_backend() -> bool:
-    """True when the terminal backend runs directly on the host (keys off ``TERMINAL_ENV``)."""
-    return os.getenv("TERMINAL_ENV", "local").strip().lower() in ("local", "")
+def _is_local_terminal_backend(task_id: Optional[str] = None) -> bool:
+    """Resolve the same profile/session/task backend used by terminal and file tools."""
+    from tools.terminal_tool import _get_env_config, apply_task_env_overrides, resolve_task_overrides
+    config = apply_task_env_overrides(_get_env_config(), resolve_task_overrides(task_id))
+    return str(config["env_type"]).strip().lower() in ("local", "")
 
 
 # Host-side media caches: the only host paths vision may read under a non-local backend
@@ -168,11 +187,13 @@ def _permitted_host_read_target(p: Path, ctx: ResolveContext) -> Optional[Path]:
     Local backend: any path. Non-local: only paths inside a media cache root (a
     container-visible cache path is first translated back to its host mount).
     """
-    if _is_local_terminal_backend():
+    if _is_local_terminal_backend(ctx.task_id):
         try:
             return p.resolve()
         except Exception:  # noqa: BLE001 — unresolved path: let is_file() fail downstream
             return p
+    if not p.is_absolute():
+        return None
     from tools.credential_files import from_agent_visible_cache_path
     try:
         real = Path(from_agent_visible_cache_path(str(p))).resolve()
@@ -184,11 +205,9 @@ def _permitted_host_read_target(p: Path, ctx: ResolveContext) -> Optional[Path]:
 
 
 def _get_active_env(task_id: Optional[str]):
-    if not task_id:
-        return None
     try:
         from tools.terminal_tool_lifecycle import get_active_env
-        return get_active_env(task_id)
+        return get_active_env(task_id or "default")
     except Exception:
         return None
 
@@ -201,13 +220,40 @@ def _ensure_container_env(task_id: Optional[str]) -> None:
     is ``vision_analyze`` on a container-only path under a non-local backend found no active env and failed
     — until a terminal command happened to create one (issue #62825).
     """
-    if not task_id:
-        return
     try:
         from tools.terminal_tool import ensure_task_env
-        ensure_task_env(task_id)
+        ensure_task_env(task_id or "default")
     except Exception:
         pass
+
+
+async def _resolve_materialized_source(env, p: Path, src: str, permitted: tuple) -> ResolvedImage:
+    """Reuse the SSH artifact bridge; its checked transfer never changes backend/cwd."""
+    import posixpath
+    import tempfile
+    from hermes_constants import get_hermes_dir
+    from tools.vision_tools import _VISION_DOWNLOAD_TIMEOUT
+    from math import ceil
+
+    source = str(p)
+    if not source.startswith(("/", "~/")) and source != "~":
+        source = posixpath.normpath(posixpath.join(env.cwd, source))
+    cache = get_hermes_dir("cache/vision", "temp_vision_images")
+    cache.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="backend_", dir=cache) as directory:
+        destination = Path(directory) / "media"
+        try:
+            await asyncio.to_thread(
+                env.materialize_file, source, destination,
+                max_bytes=_MAX_INGEST_BYTES, timeout=max(1, ceil(_VISION_DOWNLOAD_TIMEOUT)),
+            )
+        except PermissionError as exc:
+            raise SourceUnsafe(str(exc), src=src, origin="container") from exc
+        except (ValueError, RuntimeError, OSError) as exc:
+            error = SourceTooLarge if "too large" in str(exc).lower() else SourceNotFound
+            raise error(f"could not read media from current backend: {exc}", src=src, origin="container") from exc
+        data = await asyncio.to_thread(destination.read_bytes)
+        return _finalize(data, "", "container", src, permitted)
 
 
 async def _resolve_container_fallback(
@@ -232,6 +278,8 @@ async def _resolve_container_fallback(
             f"'{p}' is not reachable inside the sandbox and no active sandbox "
             f"session is available to read it",
             src=src, origin="container")
+    if getattr(env, "supports_file_materialization", False):
+        return await _resolve_materialized_source(env, p, src, permitted)
     # Bound the read INSIDE the sandbox: head -c caps at ingest-limit+1 (+1 distinguishes "at the
     # cap" from "over") so /dev/zero can't stream unbounded base64 into host memory. The input
     # redirect avoids argv (leading-dash paths); tr -d instead of GNU-only base64 -w0 (BusyBox).
