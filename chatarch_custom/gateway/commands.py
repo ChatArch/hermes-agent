@@ -574,8 +574,8 @@ class ChatArchGatewayMixin:
 
         In a normal Feishu chat this creates a new Feishu thread from the
         command message, then runs the prompt as a thread-scoped Hermes turn. In
-        an existing Feishu thread it resets that thread's Hermes session and
-        runs the prompt in the same thread.
+        an existing Feishu thread it asks for confirmation before resetting the
+        thread's Hermes session and running the prompt in the same thread.
         """
         source = event.source
         if source.platform != Platform.FEISHU:
@@ -585,14 +585,28 @@ class ChatArchGatewayMixin:
         if not prompt:
             return "Usage: /thread <prompt>"
 
-        return await self._dispatch_event_in_feishu_thread(
-            event,
-            prompt,
-            command_name="thread",
-            reply_text=prompt,
-            reset_existing_thread=True,
-            invalidation_reason="thread_command",
-        )
+        async def _dispatch():
+            return await self._dispatch_event_in_feishu_thread(
+                event,
+                prompt,
+                command_name="thread",
+                reply_text=prompt,
+                reset_existing_thread=True,
+                invalidation_reason="thread_command",
+            )
+
+        if source.thread_id:
+            return await self._maybe_confirm_destructive_slash(
+                event=event,
+                command="thread",
+                title="/thread",
+                detail=(
+                    "This resets the current thread's Hermes session, clears its active "
+                    "conversation context, and starts the supplied prompt in a fresh session."
+                ),
+                execute=_dispatch,
+            )
+        return await _dispatch()
 
     async def _busy_interrupt_command(self, event: MessageEvent, quick_key: str, source):
         """Apply ChatArch's explicit one-shot interrupt semantics mid-run."""
