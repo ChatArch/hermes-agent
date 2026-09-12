@@ -110,31 +110,59 @@ async def test_thread_command_in_normal_feishu_chat_creates_thread_and_runs_prom
 
 
 @pytest.mark.asyncio
-async def test_thread_command_inside_existing_feishu_thread_resets_and_runs_prompt():
+async def test_thread_command_inside_existing_feishu_thread_cancel_keeps_session_unchanged():
+    from tools import slash_confirm
+
     runner = _runner()
     event = _event("/thread restart with new plan", thread_id="omt_existing", message_id="om_restart")
+    thread_key = build_session_key(event.source)
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
+    slash_confirm.clear(thread_key)
 
     result = await runner._handle_thread_command(event)
 
-    assert result == "assistant answer"
-    runner.session_store.reset_session.assert_called_once_with(build_session_key(_source(thread_id="omt_existing")))
-    assert event.text == "restart with new plan"
+    assert "Confirm /thread" in result
+    runner.session_store.reset_session.assert_not_called()
+    runner._dispatch_event_to_agent.assert_not_awaited()
+    assert event.text == "/thread restart with new plan"
     assert event.source.thread_id == "omt_existing"
-    assert event.reply_to_message_id == "om_restart"
-    runner._dispatch_event_to_agent.assert_awaited_once()
+
+    pending = slash_confirm.get_pending(thread_key)
+    assert pending is not None
+    resolved = await slash_confirm.resolve(thread_key, pending["confirm_id"], "cancel")
+
+    assert resolved == "🟡 /thread cancelled. Conversation unchanged."
+    runner.session_store.reset_session.assert_not_called()
+    runner._dispatch_event_to_agent.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_thread_command_inside_running_thread_interrupts_before_reset():
+async def test_thread_command_inside_running_thread_waits_for_confirmation_before_reset():
+    from tools import slash_confirm
+
     runner = _runner()
     event = _event("/thread restart", thread_id="omt_existing")
     thread_key = build_session_key(_source(thread_id="omt_existing"))
     runner._running_agents[thread_key] = object()
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
+    slash_confirm.clear(thread_key)
 
-    await runner._handle_thread_command(event)
+    result = await runner._handle_thread_command(event)
 
+    assert "Confirm /thread" in result
+    runner._interrupt_and_clear_session.assert_not_awaited()
+    runner.session_store.reset_session.assert_not_called()
+    runner._dispatch_event_to_agent.assert_not_awaited()
+
+    pending = slash_confirm.get_pending(thread_key)
+    assert pending is not None
+    resolved = await slash_confirm.resolve(thread_key, pending["confirm_id"], "once")
+
+    assert resolved == "assistant answer"
     runner._interrupt_and_clear_session.assert_awaited_once()
     assert runner._interrupt_and_clear_session.await_args.args[:2] == (thread_key, event.source)
+    runner.session_store.reset_session.assert_called_once_with(thread_key)
+    runner._dispatch_event_to_agent.assert_awaited_once()
 
 
 @pytest.mark.asyncio
