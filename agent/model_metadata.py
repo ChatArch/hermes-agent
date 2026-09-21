@@ -1684,8 +1684,11 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> 
     return None
 
 
-# Codex OAuth `context_window` values (what Codex enforces — lower than the direct API for the same
-# slugs). Fallback when the live probe fails; longest-key-first. gpt-5.3-codex-spark is listed so "gpt-5.3-codex" doesn't win.
+# Raw Codex catalogue fallback values, before the fork default policy below.
+# Longest-key-first; keep exact-model entries ahead of broader families.
+# ChatArch policy for unconfigured Codex routes, not a backend-capacity guarantee.
+# Explicit model/config overrides return before this provider resolver.
+CODEX_OAUTH_DEFAULT_CONTEXT_LENGTH = 1_000_000
 _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-6-astra": 272_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
     "gpt-5.1-codex-max": 272_000, "gpt-5.1-codex-mini": 272_000, "gpt-5.3-codex": 272_000,
@@ -1889,19 +1892,19 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
 def _resolve_codex_oauth_context_length_with_source(model: str, access_token: str = "", base_url: str = "") -> Tuple[Optional[int], str]:
     """``(context_length, source)`` for a Codex OAuth slug. source: "live" (fresh authenticated probe —
     the only one eligible for persistent writes), "memory" (same-token in-process hit), "fallback"
-    (static table), or "" when unresolved."""
+    (static table), "policy" (unlisted model), or "" for an empty model."""
     model_bare = _strip_provider_prefix(model).strip()
     if not model_bare:
         return None, ""
     def _apply_verified_bump(ctx: int, source: str, catalog_max: Optional[int] = None) -> Tuple[int, str]:
-        """Lift an EXACT stale 272K advertisement to the verified cap for opted-in ``-900k`` variants only,
-        never above the catalog's own ``max_context_window`` when it publishes one (#105443)."""
+        """Resolve the upstream alias adjustment, then apply ChatArch's 1M default floor.
+        Catalogue hints below that floor cannot lower an unconfigured route."""
         bumped = _verified_codex_ctx_for_slug(model_bare)
         if bumped is not None and ctx == _CODEX_OAUTH_STALE_ADVERTISED_CTX:
             bumped = min(bumped, catalog_max) if catalog_max else bumped
             logger.debug("Codex OAuth context for %s: advertised %d raised to live-verified %d", model_bare, ctx, bumped)
-            return bumped, source
-        return ctx, source
+            return max(bumped, CODEX_OAUTH_DEFAULT_CONTEXT_LENGTH), source
+        return max(ctx, CODEX_OAUTH_DEFAULT_CONTEXT_LENGTH), source
     # The Codex catalog only knows the base slug (no -900k, no vendor/).
     # ``-900k`` variants are Hermes picker aliases — the Codex catalog only knows the base slug, so resolve
     # against the stripped id. Also drop any ``vendor/`` namespace (``openai/gpt-5.6-sol-900k``): the
@@ -1916,7 +1919,7 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
         if slug is not None:
             return _apply_verified_bump(live[slug], "live" if fresh_probe else "memory", live_max.get(slug))
     hit = _longest_key_match(_CODEX_OAUTH_CONTEXT_FALLBACK, lookup_bare.lower())
-    return _apply_verified_bump(hit[1], "fallback") if hit else (None, "")
+    return _apply_verified_bump(hit[1], "fallback") if hit else (CODEX_OAUTH_DEFAULT_CONTEXT_LENGTH, "policy")
 
 
 def _resolve_nous_context_length(model: str, base_url: str = "", api_key: str = "") -> Tuple[Optional[int], str]:
