@@ -62,11 +62,11 @@ PR 预览与 tag 构建均**按设计不签名**，macOS **未公证**。Gatekee
 组织设备策略可能警告或拒绝运行；不要为安装而关闭系统级安全控制。
 
 此工作流**没有启用任何签名 secrets**。`CSC_IDENTITY_AUTO_DISCOVERY=false` 和 macOS
-`identity: null` 防止误用 runner 身份。已有手动构建 hooks 支持 `CSC_LINK`、
+`mac.sign: null` 防止误用 runner 身份。已有手动构建 hooks 支持 `CSC_LINK`、
 `CSC_KEY_PASSWORD`；公证 hook 支持 `APPLE_API_KEY`、`APPLE_API_KEY_ID`、
 `APPLE_API_ISSUER` 或本地 `APPLE_NOTARY_PROFILE`。这些只是已有 hook 的名称，
-**添加同名 repository secrets 不会使本工作流签名**。Windows 保留
-`signAndEditExecutable: false`。签名交付需要另行审查配置，并使用发布方自有证书，
+**添加同名 repository secrets 不会使本工作流签名**。Windows 使用 v27 的
+`win.sign: null` 禁用签名。签名交付需要另行审查配置，并使用发布方自有证书，
 绝不借用 Nous Research 的身份或凭据。
 
 安装包只含 Electron shell/UI 与其原生依赖，不含 Python 后端环境。首次启动需联网访问

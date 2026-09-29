@@ -144,12 +144,13 @@ describe('desktop release contracts', () => {
     const { buildLegacyConfig } = createRequire(import.meta.url)('./legacy-release-config.cjs')
     const config = buildLegacyConfig(base, metadata, 'win32')
     expect(config.win.target).toEqual(['nsis', 'msi'])
-    expect(config.win.signAndEditExecutable).toBe(false)
+    expect(config.win.sign).toBeNull()
     expect(config.msix).toBeUndefined()
     expect(config.nsis.oneClick).toBe(false)
     expect(config.nsis.allowToChangeInstallationDirectory).toBe(true)
     expect(config.beforeBuild).toBe(beforeBuild)
-    expect(config.mac.sign).toBe(signer)
+    expect(config.mac.sign).toBeNull()
+    expect(base.mac.sign).toBe(signer)
     expect(config.extraMetadata.version).toBe(metadata.version)
     expect(config.artifactName).toBe(
       `ChatArch-Hermes-${metadata.version}-${metadata.tag}-win32-\${arch}-unsigned.\${ext}`

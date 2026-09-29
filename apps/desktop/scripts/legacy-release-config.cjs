@@ -20,8 +20,8 @@ function buildLegacyConfig(base, metadata, platform) {
       repository: { type: 'git', url: `https://github.com/${metadata.repository}.git` }
     },
     extraResources: [...(base.extraResources || []), { from: '../../LICENSE', to: 'Hermes-LICENSE.txt' }],
-    mac: { ...base.mac, identity: null },
-    win: { ...base.win, target: ['nsis', 'msi'], signAndEditExecutable: false },
+    mac: { ...base.mac, sign: null },
+    win: { ...base.win, target: ['nsis', 'msi'], sign: null },
     nsis: { oneClick: false, allowToChangeInstallationDirectory: true,
       perMachine: false, shortcutName: 'Hermes', uninstallDisplayName: 'Hermes',
       warningsAsErrors: false },
