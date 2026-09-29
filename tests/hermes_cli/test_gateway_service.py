@@ -748,7 +748,7 @@ class TestLaunchdServiceRecovery:
         monkeypatch.setattr(gateway_cli, "probe_gateway_loop_liveness", lambda pid: gateway_cli.GATEWAY_LOOP_ALIVE)
         monkeypatch.setattr(
             gateway_cli, "_graceful_restart_via_sigusr1",
-            lambda pid, timeout: calls.append(("drain", pid, timeout)) or False,
+            lambda pid, timeout, **kwargs: calls.append(("drain", pid, timeout)) or False,
         )
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
@@ -1724,6 +1724,8 @@ class TestSystemUnitHermesHome:
         )
         monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: [])
         monkeypatch.setenv("LD_LIBRARY_PATH", "/root/cuda/lib:/opt/cuda/lib64")
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/opt/hermes/bin/python")
+        monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda root: None)
 
         unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
 

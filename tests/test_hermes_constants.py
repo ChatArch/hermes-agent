@@ -10,6 +10,7 @@ import pytest
 import hermes_constants
 from hermes_platform.host import runtime as host_runtime
 from hermes_constants import (
+    VALID_REASONING_EFFORTS,
     agent_browser_runnable,
     get_default_hermes_root,
     get_hermes_dir,

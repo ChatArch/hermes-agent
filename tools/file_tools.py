@@ -687,7 +687,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
 
-        result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
+        result = file_ops.read_file(
+            resolved_str if _file_ops_uses_host_paths(file_ops) and not _is_remote_backend_task(task_id) else path,
+            offset, limit)
         result_dict = result.to_dict()
 
         # Failed reads cannot establish whole-file knowledge.
@@ -766,6 +768,8 @@ def _resolve_or_none(filepath: str, task_id: str, *, entry: bool = False) -> str
     """Task-resolved path string, or None when resolution fails for any reason.
     ``entry``: keep a symlink in the last component (``_resolve_entry_for_task``)."""
     try:
+        if _is_remote_backend_task(task_id):
+            return _file_tool_paths_for_task(filepath, task_id)[0]
         return str((_resolve_entry_for_task if entry else _resolve_path_for_task)(filepath, task_id))
     except Exception:
         return None
@@ -902,7 +906,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)
             warnings = _edit_warnings([path], path_to_resolved, task_id)
             rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
-            result = _get_file_ops(task_id).write_file(_resolved or path, content)
+            result = _get_file_ops(task_id).write_file(_file_tool_paths_for_task(path, task_id)[1], content)
             result_dict = result.to_dict()
             if warnings:
                 result_dict["_warning"] = warnings[0]

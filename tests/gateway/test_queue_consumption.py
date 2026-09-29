@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from gateway.config import StreamingConfig
 
 
 from gateway.run import _dequeue_pending_event
@@ -326,7 +327,7 @@ def _make_gateway_runner(adapter):
         thread_sessions_per_user=False,
         group_sessions_per_user=False,
         stt_enabled=False,
-        streaming=SimpleNamespace(enabled=False),
+        streaming=StreamingConfig(enabled=False),
     )
     return runner
 

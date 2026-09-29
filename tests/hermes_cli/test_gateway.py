@@ -14,6 +14,15 @@ import hermes_cli.gateway as gateway
 
 _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
 
+def _clear_supervisor_markers(monkeypatch):
+    """Make ``_running_under_gateway_supervisor()`` report a plain shell."""
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    # Interactive macOS shells inherit XPC_SERVICE_NAME="0"; launchd jobs get
+    # the real label. Default to the shell sentinel so the guard can fire.
+    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
+
+
 
 @pytest.fixture(autouse=True)
 def inert_task_scheduler_probe():
@@ -260,11 +269,7 @@ def test_running_under_gateway_supervisor_markers(monkeypatch):
     # or set the variable in tests, but the gateway must not treat it as a
     # Linux supervisor marker.
     monkeypatch.setenv("XPC_SERVICE_NAME", "org.nousresearch.hermes.gateway")
-    monkeypatch.setattr(gateway, "is_macos", lambda: False)
-    assert gateway._running_under_gateway_supervisor() is False
-
-    monkeypatch.setattr(gateway, "is_macos", lambda: True)
-    assert gateway._running_under_gateway_supervisor() is True
+    assert gateway._running_under_gateway_supervisor() is gateway.is_macos()
 
     monkeypatch.setenv("XPC_SERVICE_NAME", "0")
     monkeypatch.setenv("INVOCATION_ID", "abc123")

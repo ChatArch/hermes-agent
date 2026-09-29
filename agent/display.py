@@ -456,7 +456,7 @@ def _preview_ssh_mode(args: dict, max_len: int) -> str:
             parts.append(backend)
         if cwd:
             parts.append(f"cwd={cwd}")
-    return _truncate_preview(" ".join(parts), max_len)
+    return _tail_trunc(" ".join(parts), max_len)
 
 
 # Tool-specific preview builders: f(args, max_len) -> preview. Tools not listed

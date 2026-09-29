@@ -25,7 +25,7 @@ def _no_codex_backoff(monkeypatch):
 def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(
         "agent.model_metadata._fetch_codex_oauth_context_lengths_with_source",
-        lambda access_token: ({}, False),
+        lambda access_token, **kwargs: ({}, False),
     )
     monkeypatch.setattr(
         "model_tools.get_tool_definitions",
@@ -1676,7 +1676,8 @@ def test_run_conversation_codex_empty_output_cap_returns_bounded_error(monkeypat
     assert calls["count"] == 3
     assert result["failed"] is True
     assert result["completed"] is False
-    assert result["error"] == result["final_response"]
+    assert "empty or broken reply" in result["final_response"]
+    assert "/retry" in result["final_response"]
     assert "Invalid API response after 3 retries" in result["error"]
 
 

@@ -86,7 +86,8 @@ describe('desktop release contracts', () => {
     const root = temp()
     const asar = createRequire(import.meta.url)('@electron/asar')
     const listPackage = asar.listPackage.bind(asar)
-    const listing = vi.spyOn(asar, 'listPackage')
+    const listing = vi.fn(archive => listPackage(archive))
+    const reader = { ...asar, listPackage: listing }
     try {
       for (const privateContent of [false, true]) {
         const source = path.join(root, privateContent ? 'private-source' : 'clean-source')
@@ -110,19 +111,19 @@ describe('desktop release contracts', () => {
             listPackage(archive).map(name => name.replaceAll('\\', '/').replaceAll('/', separator))
           )
           if (privateContent) {
-            expect(() => validateReleasePackage(resources, metadata, source)).toThrow('Private build-host path')
+            expect(() => validateReleasePackage(resources, metadata, source, reader)).toThrow('Private build-host path')
           } else {
-            expect(() => validateReleasePackage(resources, metadata, source)).not.toThrow()
+            expect(() => validateReleasePackage(resources, metadata, source, reader)).not.toThrow()
             listing.mockImplementation(archive => [
               ...listPackage(archive).map(name => name.replaceAll('\\', '/').replaceAll('/', separator)),
               `${separator}dist${separator}assets${separator}missing.js`
             ])
-            expect(() => validateReleasePackage(resources, metadata, source)).toThrow('was not found in this archive')
+            expect(() => validateReleasePackage(resources, metadata, source, reader)).toThrow('was not found in this archive')
           }
         }
       }
     } finally {
-      listing.mockRestore()
+      listing.mockReset()
       rmSync(root, { recursive: true, force: true })
     }
   })

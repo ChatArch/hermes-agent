@@ -18,7 +18,7 @@ import time
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, unquote as _unquote
 
 from utils import normalize_proxy_url
 from agent.retry_utils import jittered_backoff
