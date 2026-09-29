@@ -575,3 +575,25 @@ async def test_legacy_ssh_approval_alias_is_not_user_visible():
     assert "Usage:" in result
     assert "/ssh on <backend|all>" in result
     assert "/ssh yolo" not in result
+
+
+def test_ssh_target_registry_accepts_powershell_utf8_bom(tmp_path):
+    from gateway.ssh_targets import load_ssh_targets
+
+    registry = tmp_path / "targets.yaml"
+    registry.write_text("targets:\n  demo:\n    host: example.test\n    user: alice\n", encoding="utf-8-sig")
+    targets = load_ssh_targets(config_path=registry)
+    assert [(target.alias, target.host, target.user) for target in targets] == [
+        ("demo", "example.test", "alice")
+    ]
+
+
+def test_ssh_bindings_accept_powershell_utf8_bom(tmp_path):
+    from gateway.ssh_bindings import _read_store
+
+    registry = tmp_path / "bindings.json"
+    registry.write_text(
+        '{"bindings":{"session":{"alias":"demo"}},"backend_policy":{}}',
+        encoding="utf-8-sig",
+    )
+    assert _read_store(registry)["bindings"]["session"]["alias"] == "demo"

@@ -221,7 +221,7 @@ def load_ssh_targets(config_path: str | Path | None = None) -> list[SshTarget]:
 
     path = Path(config_path).expanduser() if config_path is not None else default_ssh_targets_path()
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return []
     except OSError:

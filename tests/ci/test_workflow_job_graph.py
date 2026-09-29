@@ -85,3 +85,16 @@ def test_automatic_canary_release_writes_only_in_official_repository():
     for name in ("tag", "prune"):
         job = workflow["jobs"][name]
         assert "github.repository == 'NousResearch/hermes-agent'" in job["if"]
+
+
+def test_scheduled_skills_deploy_is_explicitly_upstream_only():
+    workflow = _loaded()["skills-index.yml"]
+    assert "schedule" in workflow["on"]
+    assert "github.repository == 'NousResearch/hermes-agent'" in workflow["jobs"]["trigger-deploy"]["if"]
+
+
+def test_upstream_autofix_does_not_create_or_auto_merge_fork_prs():
+    workflow = _loaded()["js-autofix.yml"]
+    assert "main" in workflow["on"]["push"]["branches"]
+    for name in ("generate-patch", "apply-patch"):
+        assert "github.repository == 'NousResearch/hermes-agent'" in workflow["jobs"][name]["if"]
