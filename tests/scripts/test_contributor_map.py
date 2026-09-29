@@ -46,9 +46,26 @@ def test_effective_map_merges_legacy_and_directory():
 def test_historical_case_distinct_agent_authors_keep_separate_attribution():
     assert authors.resolve_author("agent", "agent@Agents-Mac-mini.local") == "@teknium1"
     assert authors.resolve_author("agent", "agent@agents-Mac-mini.local") == "@momomojo"
+    assert authors.AUTHOR_MAP["Halldrix@users.noreply.github.com"] == "Halldrix"
 
 
 
+
+
+def test_attribution_gate_accepts_case_distinct_author_without_case_colliding_paths():
+    from scripts import audit_pr_attribution
+
+    assert audit_pr_attribution.is_mapped("agent@Agents-Mac-mini.local")
+    assert audit_pr_attribution.is_mapped("agent@agents-Mac-mini.local")
+    assert audit_pr_attribution.is_mapped("Halldrix@users.noreply.github.com")
+
+
+def test_unlinked_coauthor_keeps_literal_credit_without_fabricated_github_login():
+    from scripts import audit_pr_attribution
+
+    assert audit_pr_attribution.is_mapped("youssef@example.com")
+    assert authors.resolve_author("Youssef", "youssef@example.com") == "Youssef"
+    assert authors.UNLINKED_AUTHOR_CREDITS["youssef@example.com"]["source"].endswith("/pull/108194")
 
 # ── add_contributor.py CLI behavior ───────────────────────────────────
 

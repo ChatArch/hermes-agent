@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 
 SKIP_SUBSTRINGS = (
     "teknium",
@@ -68,13 +69,11 @@ def is_mapped(email: str) -> bool:
         return True
     if (REPO_ROOT / "contributors" / "emails" / email).is_file():
         return True
-    authors_py = REPO_ROOT / "scripts" / "releases" / "authors_legacy.py"
-    try:
-        if f'"{email}"' in authors_py.read_text(encoding="utf-8-sig", errors="replace"):
-            return True
-    except OSError:
-        pass
-    return False
+    # The effective map also carries one exact-case alias that cannot coexist
+    # with its sibling filename on a case-insensitive Windows checkout.
+    from scripts.releases.authors import AUTHOR_MAP, UNLINKED_AUTHOR_CREDITS
+
+    return email in AUTHOR_MAP or email in UNLINKED_AUTHOR_CREDITS
 
 
 def gh_json(*args: str):

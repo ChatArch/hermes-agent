@@ -56,7 +56,7 @@ jobs:
               continue  # mapped via the contributors directory
             fi
 
-            if ! grep -qF "\"${email}\"" scripts/releases/authors_legacy.py 2>/dev/null; then
+            if ! python3 -c 'import sys; from scripts.releases.authors import AUTHOR_MAP, UNLINKED_AUTHOR_CREDITS; sys.exit(0 if sys.argv[1] in AUTHOR_MAP or sys.argv[1] in UNLINKED_AUTHOR_CREDITS else 1)' "$email"; then
               AUTHOR=$(git log --author="$email" --format='%an' -1)
               MISSING="${MISSING}\n  ${email} (${AUTHOR})"
             fi

@@ -46,8 +46,23 @@ def _load_contributor_dir(directory: "Path | None" = None) -> dict:
 
 # One historical fork identity differs from another only by case. NTFS cannot
 # store both as filenames; keep the exact-case exception in data instead.
-_CASE_COLLISION_AUTHORS = {"agent@Agents-Mac-mini.local": "teknium1"}
+_CASE_COLLISION_AUTHORS = {
+    "agent@Agents-Mac-mini.local": "teknium1",
+    # Exact-case commit author (https://github.com/NousResearch/hermes-agent/commit/cc269a7d0adb86dd21208166840cfb4ac068b622).
+    # The lower-case filename already exists and would collide on Windows.
+    "Halldrix@users.noreply.github.com": "Halldrix",
+}
 
+
+# Some salvaged commits carry a literal co-author name but no verifiable GitHub
+# account. Keep the human credit and its public source; never invent an @mention.
+UNLINKED_AUTHOR_CREDITS = {
+    "youssef@example.com": {
+        "name": "Youssef",
+        "source": "https://github.com/NousResearch/hermes-agent/pull/108194",
+        "commit": "360c1ee8369505224008c86b09fcdd03e13a0fb0",
+    },
+}
 # Effective map: frozen legacy, exact-case exception, then directory entries.
 AUTHOR_MAP = {**LEGACY_AUTHOR_MAP, **_CASE_COLLISION_AUTHORS, **_load_contributor_dir()}
 
