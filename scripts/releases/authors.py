@@ -44,8 +44,12 @@ def _load_contributor_dir(directory: "Path | None" = None) -> dict:
     return mapping
 
 
-# Effective map: frozen legacy dict + directory entries (directory wins).
-AUTHOR_MAP = {**LEGACY_AUTHOR_MAP, **_load_contributor_dir()}
+# One historical fork identity differs from another only by case. NTFS cannot
+# store both as filenames; keep the exact-case exception in data instead.
+_CASE_COLLISION_AUTHORS = {"agent@Agents-Mac-mini.local": "teknium1"}
+
+# Effective map: frozen legacy, exact-case exception, then directory entries.
+AUTHOR_MAP = {**LEGACY_AUTHOR_MAP, **_CASE_COLLISION_AUTHORS, **_load_contributor_dir()}
 
 
 def resolve_author(name: str, email: str) -> str:

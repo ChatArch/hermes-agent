@@ -210,6 +210,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-devops',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/bundled/devops/devops-hermes-ssh-mode-operations',
                     'user-guide/skills/bundled/devops/devops-sdlc-review',
                   ],
                 },

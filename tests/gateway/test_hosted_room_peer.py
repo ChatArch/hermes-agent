@@ -277,8 +277,10 @@ def test_room_grant_fails_closed_for_tamper_expiry_and_permission():
             permission="status",
             now=100 + 30 * 24 * 60 * 60,
         )
+    payload, signature = token.split(".", 1)
+    tampered = payload + "." + ("A" if signature[0] != "A" else "B") + signature[1:]
     with pytest.raises(HostedRoomGrantError, match="signature"):
-        verify_room_grant(SECRET, token[:-1] + "A", dispatch, now=105)
+        verify_room_grant(SECRET, tampered, dispatch, now=105)
 
 
 def test_local_catalog_is_honest_for_app_managed_process(monkeypatch):

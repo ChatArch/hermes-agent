@@ -119,11 +119,7 @@ def parse_hermes_ssh_targets(config_text: str, *, source: str = "hermes") -> lis
     """
 
     try:
-        import yaml
-    except Exception:
-        return []
-
-    try:
+        import hermes_yaml as yaml
         data = yaml.safe_load(config_text) or {}
     except Exception:
         return []

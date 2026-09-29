@@ -152,7 +152,10 @@ class TestCodexBuildKwargs:
             )
             assert "prompt_cache_options" not in kw
             assert kw["store"] is True
-            assert kw["extra_body"]["prompt_cache_options"] == {"ttl": "30m"}
+            if base_url == "https://api.openai.com/v1":
+                assert "prompt_cache_options" not in kw.get("extra_body", {})
+            else:
+                assert kw["extra_body"]["prompt_cache_options"] == {"ttl": "30m"}
         assert caplog.text.count("Dropped prompt_cache_options") == 1
         assert "extra_body" in caplog.text
 

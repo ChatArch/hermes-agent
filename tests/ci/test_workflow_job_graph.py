@@ -66,6 +66,12 @@ def test_no_workflow_runs_from_a_tag_push():
         # This nightly canary also gates releases with dedicated spend-capped keys.
         if filename == "live-providers.yml" and push == {"tags": ["v*"]}:
             continue
+        if filename == "desktop-release.yml" and push == {"tags": ["v[0-9][0-9][0-9][0-9].*"]}:
+            # ChatArch's legacy EXE/MSI release is an explicit CalVer-tag pipeline,
+            # separate from upstream PM's workflow_dispatch stable release.
+            assert "github.event_name == 'push'" in workflow["jobs"]["publish"]["if"]
+            assert "github.repository == 'ChatArch/hermes-agent'" in workflow["jobs"]["publish"]["if"]
+            continue
         if not isinstance(push, dict) or not ({"branches", "branches-ignore"} & set(push)):
             violations.append(filename)
         elif {"tags", "tags-ignore"} & set(push):

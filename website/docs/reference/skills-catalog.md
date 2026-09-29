@@ -50,6 +50,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| [`hermes-ssh-mode-operations`](../user-guide/skills/bundled/devops/devops-hermes-ssh-mode-operations.md) | Use when operating Hermes SSH Mode targets and bindings. | `devops/hermes-ssh-mode-operations` |
 | [`sdlc-review`](../user-guide/skills/bundled/devops/devops-sdlc-review.md) | Review Kanban handoffs and route verified outcomes. | `devops/sdlc-review` |
 
 ## email

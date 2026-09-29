@@ -343,11 +343,11 @@ async def test_pending_followup_direct_send_fails_closed_for_remote_media(
     that first response leaked raw `MEDIA:ssh://...` text instead of the normal
     materialization/strip pipeline handling it.
     """
-    import yaml
+    import hermes_yaml as yaml
 
     _PendingFollowupRemoteMediaAgent.calls = []
     (tmp_path / "config.yaml").write_text(
-        yaml.dump(
+        yaml.safe_dump(
             {
                 "display": {"tool_progress": "off"},
                 "streaming": {"enabled": False},
