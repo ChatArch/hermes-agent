@@ -47,6 +47,7 @@ async def test_restart_handler_writes_dedup_marker_with_update_id(tmp_path, monk
     assert isinstance(data["requested_at"], (int, float))
 
 
+@pytest.mark.platforms("macos")
 @pytest.mark.asyncio
 async def test_restart_under_launchd_uses_service_restart_path(tmp_path, monkeypatch):
     """macOS launchd chat /restart should rely on launchd relaunch, not detached helper.
@@ -61,7 +62,6 @@ async def test_restart_under_launchd_uses_service_restart_path(tmp_path, monkeyp
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
-    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)

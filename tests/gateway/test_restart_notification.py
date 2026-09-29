@@ -107,13 +107,13 @@ async def test_restart_command_uses_detached_without_service_manager(tmp_path, m
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
 
 
+@pytest.mark.platforms("macos")
 @pytest.mark.asyncio
 async def test_restart_command_treats_launchd_interactive_xpc_zero_as_unsupervised(tmp_path, monkeypatch):
     """macOS interactive shells expose XPC_SERVICE_NAME=0, not a launchd job label."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     monkeypatch.setenv("XPC_SERVICE_NAME", "0")
-    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
