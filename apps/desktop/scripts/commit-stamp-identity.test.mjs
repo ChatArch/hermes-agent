@@ -15,6 +15,8 @@ test('desktop stamp uses the admitted checkout rather than the dispatch SHA', ()
   const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   try {
     fs.mkdirSync(scripts, { recursive: true })
+    fs.copyFileSync(path.join(root, 'package.json'), path.join(repo, 'package.json'))
+    fs.copyFileSync(path.join(root, 'apps/desktop/package.json'), path.join(repo, 'apps/desktop/package.json'))
     for (const name of ['write-build-stamp.mjs', 'utils.mjs', 'bundle-env.mjs']) fs.copyFileSync(path.join(root, 'apps/desktop/scripts', name), path.join(scripts, name))
     fs.copyFileSync(path.join(root, 'apps/desktop/product-identity.cjs'), path.join(repo, 'apps/desktop/product-identity.cjs'))
     fs.mkdirSync(path.join(repo, 'scripts'), { recursive: true })
