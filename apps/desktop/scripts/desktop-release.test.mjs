@@ -142,7 +142,7 @@ describe('desktop release contracts', () => {
       extraResources: []
     }
     const { buildLegacyConfig } = createRequire(import.meta.url)('./legacy-release-config.cjs')
-    const config = buildLegacyConfig(base, metadata, 'win32')
+    const config = buildLegacyConfig(base, metadata, 'win32', 'x64')
     expect(config.win.target).toEqual(['nsis', 'msi'])
     expect(config.win.sign).toBeNull()
     expect(config.msix).toBeUndefined()
@@ -154,7 +154,7 @@ describe('desktop release contracts', () => {
     expect(base.mac.sign).toBe(signer)
     expect(config.extraMetadata.version).toBe(metadata.version)
     expect(config.artifactName).toBe(
-      `ChatArch-Hermes-${metadata.version}-${metadata.tag}-win32-\${arch}-unsigned.\${ext}`
+      `ChatArch-Hermes-${metadata.version}-${metadata.tag}-win32-x64-unsigned.\${ext}`
     )
     expect(base.win.target).toEqual(['msix'])
     expect(base.msix.minVersion).toBe('10.0.22621.0')
@@ -162,6 +162,22 @@ describe('desktop release contracts', () => {
     expect(() => buildLegacyConfig(base, { ...metadata, version: '../bad' }, 'win32')).toThrow()
   })
 
+
+
+  test('legacy Linux formats share the explicit matrix architecture in artifact names', () => {
+    const base = { files: ['dist/**'], win: { target: ['msix'] }, mac: {}, linux: {} }
+    const metadata = { version: '0.21.1', tag: 'preview-pr-60', repository: 'ChatArch/hermes-agent' }
+    const x64 = createRequire(import.meta.url)('./legacy-release-config.cjs').buildLegacyConfig(base, metadata, 'linux', 'x64')
+    expect(x64.artifactName).toBe('ChatArch-Hermes-0.21.1-preview-pr-60-linux-x64-unsigned.${ext}')
+  })
+
+
+  test('legacy installer naming rejects unsupported architecture aliases', () => {
+    const base = { files: ['dist/**'], win: { target: ['msix'] } }
+    const metadata = { version: '0.21.1', tag: 'preview-pr-60', repository: 'ChatArch/hermes-agent' }
+    const { buildLegacyConfig } = createRequire(import.meta.url)('./legacy-release-config.cjs')
+    expect(() => buildLegacyConfig(base, metadata, 'linux', 'x86_64')).toThrow('Invalid legacy desktop release identity')
+  })
 
   test('legacy builder invokes the pinned native package with one never-publish policy', async () => {
     const { legacyBuilderArgs } = await import('./legacy-release-builder.mjs')

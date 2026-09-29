@@ -2,8 +2,9 @@
 
 // Legacy ChatArch installers share the upstream app but keep a separate,
 // unsigned NSIS/MSI recipe. The default PM/MSIX recipe is never mutated.
-function buildLegacyConfig(base, metadata, platform) {
+function buildLegacyConfig(base, metadata, platform, arch = process.arch) {
   if (!base || !['win32', 'darwin', 'linux'].includes(platform) ||
+      !['x64', 'arm64'].includes(arch) ||
       !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(metadata?.version || '') ||
       !/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(metadata?.repository || '') ||
       !/^(?:v[0-9]{4}\.|preview-pr-)/.test(metadata?.tag || '')) {
@@ -13,7 +14,7 @@ function buildLegacyConfig(base, metadata, platform) {
   return {
     ...config,
     files: [...(base.files || []), '!dist/hermes-build.json'],
-    artifactName: `ChatArch-Hermes-${metadata.version}-${metadata.tag}-${platform}-\${arch}-unsigned.\${ext}`,
+    artifactName: `ChatArch-Hermes-${metadata.version}-${metadata.tag}-${platform}-${arch}-unsigned.\${ext}`,
     extraMetadata: {
       ...base.extraMetadata,
       version: metadata.version,

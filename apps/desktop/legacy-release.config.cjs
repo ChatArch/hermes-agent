@@ -13,4 +13,4 @@ if (metadata.commit !== process.env.DESKTOP_SOURCE_COMMIT ||
   throw new Error('Legacy release identity does not match the verified checkout')
 }
 
-module.exports = buildLegacyConfig(require('./electron-builder.config.cjs'), metadata, process.platform)
+module.exports = buildLegacyConfig(require('./electron-builder.config.cjs'), metadata, process.platform, process.env.TARGET_ARCH || process.arch)
