@@ -8,7 +8,7 @@ import { validateNativeBinary, validateReleasePackage } from './validate-release
 export const targets = [
   { platform: 'darwin', arch: 'arm64', runner: 'macos-15', formats: ['dmg', 'zip'], builder: 'mac' },
   { platform: 'darwin', arch: 'x64', runner: 'macos-15-intel', formats: ['dmg', 'zip'], builder: 'mac' },
-  { platform: 'win32', arch: 'x64', runner: 'windows-2025', formats: ['exe', 'msi'], builder: 'win' },
+  { platform: 'win32', arch: 'x64', runner: 'windows-2022', formats: ['exe', 'msi'], builder: 'win' },
   { platform: 'linux', arch: 'x64', runner: 'ubuntu-24.04', formats: ['AppImage', 'deb', 'rpm'], builder: 'linux' }
 ]
 const readJson = file => JSON.parse(readFileSync(file, 'utf8'))
@@ -45,11 +45,13 @@ export function validateSource(root, { event, tag, commit, repository }) {
   } else {
     requireThat(/^preview-pr-[1-9]\d*$/.test(tag), 'Invalid preview identity')
   }
-  const version = /^version\s*=\s*"([^"]+)"/m.exec(readFileSync(path.join(root, 'pyproject.toml'), 'utf8'))?.[1]
-  const cliVersion = /^__version__\s*=\s*"([^"]+)"/m.exec(
-    readFileSync(path.join(root, 'hermes_cli/__init__.py'), 'utf8')
-  )?.[1]
-  requireThat(/^\d+\.\d+\.\d+$/.test(version) && version === cliVersion, 'Backend SemVer mismatch')
+  const sourceVersion = /^version\s*=\s*"([^"]+)"/m.exec(readFileSync(path.join(root, 'pyproject.toml'), 'utf8'))?.[1]
+  const desktopVersion = readJson(path.join(root, 'apps/desktop/package.json')).version
+  // PM keeps source versions at 0.0.0. The legacy installers have their own
+  // tracked version authority; a release tag still pins this exact commit.
+  requireThat(sourceVersion === '0.0.0' && desktopVersion === '0.0.0', 'Backend SemVer mismatch')
+  const version = readJson(path.join(root, 'apps/desktop/legacy-release-version.json')).version
+  requireThat(/^\d+\.\d+\.\d+$/.test(version), 'Desktop release SemVer mismatch')
   requireThat(git(root, 'status', '--porcelain', '-uno') === '', 'Release source has tracked modifications')
   return { schemaVersion: 1, tag, version, repository, commit, event, signing: 'unsigned' }
 }
@@ -152,7 +154,7 @@ export async function validateBundle(metadata, input, output) {
     'Unexpected artifact files'
   )
   saveJson(path.join(output, 'release-manifest.json'), { ...metadata, assets })
-  const notes = `# ChatArch Hermes ${metadata.tag}\n\nSoftware SemVer: ${metadata.version}\nSource: ${metadata.repository}@${metadata.commit}\n\nCommunity fork build, not an official Nous Research signed distribution. All installers are unsigned and macOS builds are not notarized. Hermes attribution and licenses are preserved.\n\nmacOS: DMG and ZIP for arm64 and x64. Windows x64: EXE (NSIS) and MSI. Linux x64: AppImage, DEB and RPM.\n\nOnly the Electron shell/UI is included. First launch needs network access to install the Python backend from the source commit above, or connect to an existing backend. No user configuration or credentials are included. See docs/desktop-releases.md in the tagged source for verification and first-run details.\n`
+  const notes = `# ChatArch Hermes ${metadata.tag}\n\nSoftware SemVer: ${metadata.version}\nSource: ${metadata.repository}@${metadata.commit}\n\nCommunity fork build, not an official Nous Research signed distribution. All installers are unsigned and macOS builds are not notarized. Hermes attribution and licenses are preserved.\n\nmacOS: DMG and ZIP for arm64 and x64. Windows x64: EXE (NSIS) and MSI. Linux x64: AppImage, DEB and RPM.\n\nOnly the Electron shell/UI is included. First launch needs network access to install the Python backend from the source commit above, or connect to an existing backend. No user configuration or credentials are included. See website/docs/developer-guide/desktop-releases.md in the tagged source for verification and first-run details.\n`
   writeFileSync(path.join(output, 'release-notes.md'), notes)
   const names = [...assets.map(asset => asset.name), 'release-manifest.json', 'release-notes.md'].sort()
   const sums = await Promise.all(names.map(async name => `${await hashFile(path.join(output, name))}  ${name}\n`))
@@ -187,23 +189,7 @@ async function main() {
   const target = targets.find(entry => entry.platform === platform && entry.arch === arch)
   requireThat(target && process.platform === platform && process.arch === arch, 'Native runner architecture mismatch')
   const desktop = path.join(root, 'apps/desktop')
-  if (command === 'configure') {
-    const base = readJson(path.join(desktop, 'package.json')).build
-    const config = {
-      ...base,
-      appId: 'org.chatarch.hermes',
-      extraResources: [...base.extraResources, { from: '../../LICENSE', to: 'Hermes-LICENSE.txt' }],
-      artifactName: assetName(metadata, target, '${ext}'),
-      extraMetadata: {
-        version: metadata.version,
-        homepage: `https://github.com/${metadata.repository}#readme`,
-        repository: { type: 'git', url: `https://github.com/${metadata.repository}.git` }
-      },
-      mac: { ...base.mac, identity: null },
-      linux: { ...base.linux, maintainer: 'ChatArch <noreply@github.com>' }
-    }
-    saveJson(path.join(desktop, 'desktop-release-config.json'), config)
-  } else if (command === 'collect') {
+  if (command === 'collect') {
     const resourceRoot =
       platform === 'darwin'
         ? path.join(desktop, 'release', arch === 'arm64' ? 'mac-arm64' : 'mac', 'Hermes.app/Contents/Resources')

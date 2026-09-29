@@ -128,6 +128,52 @@ describe('desktop release contracts', () => {
     }
   })
 
+
+  test('legacy build config keeps EXE/MSI below the MSIX floor without changing PM builds', () => {
+    const signer = () => true
+    const beforeBuild = () => true
+    const base = {
+      win: { target: ['msix'], signAndEditExecutable: true },
+      msix: { minVersion: '10.0.22621.0' },
+      mac: { target: ['dmg', 'zip'], sign: signer },
+      linux: { target: ['AppImage'] },
+      beforeBuild,
+      extraMetadata: { name: 'Hermes' },
+      extraResources: []
+    }
+    const { buildLegacyConfig } = createRequire(import.meta.url)('./legacy-release-config.cjs')
+    const config = buildLegacyConfig(base, metadata, 'win32')
+    expect(config.win.target).toEqual(['nsis', 'msi'])
+    expect(config.win.signAndEditExecutable).toBe(false)
+    expect(config.msix).toBeUndefined()
+    expect(config.nsis.oneClick).toBe(false)
+    expect(config.nsis.allowToChangeInstallationDirectory).toBe(true)
+    expect(config.beforeBuild).toBe(beforeBuild)
+    expect(config.mac.sign).toBe(signer)
+    expect(config.extraMetadata.version).toBe(metadata.version)
+    expect(config.artifactName).toBe(
+      `ChatArch-Hermes-${metadata.version}-${metadata.tag}-win32-\${arch}-unsigned.\${ext}`
+    )
+    expect(base.win.target).toEqual(['msix'])
+    expect(base.msix.minVersion).toBe('10.0.22621.0')
+    expect(targets.find(entry => entry.platform === 'win32').runner).toBe('windows-2022')
+    expect(() => buildLegacyConfig(base, { ...metadata, version: '../bad' }, 'win32')).toThrow()
+  })
+
+
+  test('legacy builder invokes the pinned native package with one never-publish policy', async () => {
+    const { legacyBuilderArgs } = await import('./legacy-release-builder.mjs')
+    for (const target of targets) {
+      const args = legacyBuilderArgs(target.platform, target.arch)
+      expect(args).toEqual([
+        '--config', 'legacy-release.config.cjs', `--${target.builder}`, `--${target.arch}`,
+        '--publish', 'never'
+      ])
+      expect(args.filter(flag => flag === '--publish')).toHaveLength(1)
+    }
+    expect(() => legacyBuilderArgs('win32', 'ia32')).toThrow()
+  })
+
   test('native executable headers must identify the requested architecture', () => {
     const root = temp()
     const file = path.join(root, 'executable')
@@ -165,8 +211,11 @@ describe('desktop release contracts', () => {
       git('config', 'user.name', 'Release Fixture')
       git('config', 'user.email', 'fixture@example.invalid')
       mkdirSync(path.join(root, 'hermes_cli'))
-      writeFileSync(path.join(root, 'pyproject.toml'), '[project]\nversion = "1.2.3"\n')
-      writeFileSync(path.join(root, 'hermes_cli/__init__.py'), '__version__ = "1.2.3"\n')
+      mkdirSync(path.join(root, 'apps/desktop'), { recursive: true })
+      writeFileSync(path.join(root, 'pyproject.toml'), '[project]\nversion = "0.0.0"\n')
+      writeFileSync(path.join(root, 'apps/desktop/package.json'), JSON.stringify({ version: '0.0.0' }))
+      writeFileSync(path.join(root, 'apps/desktop/legacy-release-version.json'), JSON.stringify({ version: '1.2.3' }))
+      writeFileSync(path.join(root, 'hermes_cli/__init__.py'), '__version__: str\n')
       git('add', '.')
       git('commit', '-m', 'fixture source')
       git('update-ref', 'refs/remotes/origin/main', 'HEAD')

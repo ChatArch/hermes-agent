@@ -9,9 +9,10 @@
 - Tag 沿用 CalVer：`vYYYY.M.D[.N]`。日期必须有效，月、日不得补零；可选 `.N`
   为同日发布的正整数序号。Tag 解引用后的 commit 必须位于远端 `main` 或 `release`
   的历史中；任意独立功能分支上的 tag 会在构建前被拒绝。
-- 软件版本仍用 SemVer。`pyproject.toml` 与 `hermes_cli/__init__.py` 必须一致；
-  工作流通过 electron-builder 的 `extraMetadata.version` 将它写入安装包和 install stamp。
-  不改写桌面工作区的本地开发版本，也不自动提交版本升级。
+- 软件版本仍用 SemVer，由 `apps/desktop/legacy-release-version.json` 单独记录；
+  上游 PM 的 `pyproject.toml` 和桌面 `package.json` 继续保持源码占位版本 `0.0.0`，
+  不修改上游版本机制。旧桌面工作流验证固定 commit 和独立版本文件，构建时通过
+  `extraMetadata.version` 与 install stamp 写入安装包；升级旧桌面版本需先走独立 PR。
 - 四个构建目标使用同一个固定 commit，清单和 stamp 记录 repository、commit、version。
   首次安装从该 repository 的该 commit 下载 `install.sh` 或 `install.ps1`，再将仓库和
   commit 传给安装器。先克隆 `main`，再获取精确 commit，包括 `release` 分支上的 commit。
@@ -31,10 +32,13 @@ ChatArch-Hermes-<SemVer>-<CalVer-or-preview>-<platform>-<arch>-unsigned.<format>
 | --- | --- | --- |
 | `macos-15` | `darwin` / `arm64` | `.dmg`、`.zip` |
 | `macos-15-intel` | `darwin` / `x64` | `.dmg`、`.zip` |
-| `windows-2025` | `win32` / `x64` | `.exe`（NSIS）、`.msi` |
+| `windows-2022` | `win32` / `x64` | `.exe`（NSIS）、`.msi` |
 | `ubuntu-24.04` | `linux` / `x64` | `.AppImage`、`.deb`、`.rpm` |
 
-**九个安装包缺一不可。** 工作流检查 runner 与可执行文件架构，复用现有打包 hooks 和
+**九个安装包缺一不可。** Windows Server 2022 构建机低于 Windows 11 22H2 的系统版本门槛，
+用于拦截误引入 MSIX-only 的构建限制；它不是 Windows 10 19045 的实机安装验收。
+真实发布前仍须在 Windows 10 上分别试装 EXE/MSI，并验证首次启动与卸载。
+工作流检查 runner 与可执行文件架构，复用现有打包 hooks 和
 原生依赖 staging；Linux CI 安装 RPM 工具。任一平台、格式或检查失败都会阻止发布，
 不会缩减矩阵。构建器始终使用 `--publish never`，只有单独的 tag-only job 发布 Release。
 
@@ -86,7 +90,7 @@ environment，不创建 tag 或 Release。使用 `pull_request` 而非 `pull_req
 ## 维护者操作
 
 1. 将审查后的源码合入 `main` 或 `release`，确认原生预览与打包检查结果；如需升级 SemVer，
-   先在经过审查的提交中完成。选择 CalVer tag 和精确 commit。
+   先在独立版本文件中完成。选择 CalVer tag 和精确 commit。
 2. **仅在真实发布另获授权后**创建 annotated tag 并推送该 tag。工作流本身不创建、移动或
    强制更新 Git tag。无需使用旧的 `scripts/release.py --publish`。
 3. 等待来源检查、全部构建和完整 bundle 校验通过。最后的 job 使用作用域内的 GitHub token

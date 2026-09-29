@@ -148,3 +148,15 @@ test('commit builds retain exact provenance without entering an update channel',
   }
 })
 
+
+test('legacy Windows 10 installer stamp keeps its source branch and declared release version', () => {
+  const stamp = buildStampPayload({ ...baseStamp, branch: 'sync/official-candidate' },
+    { DESKTOP_RELEASE_VERSION: '0.21.1' }, 'win32')
+  assert.equal(stamp.payload, 'bootstrap')
+  assert.equal(stamp.updateMechanism, 'self')
+  assert.equal(stamp.version, '0.21.1')
+  assert.equal(stamp.baseVersion, '0.21.1')
+  assert.equal(stamp.branch, 'sync/official-candidate')
+  assert.equal(stamp.tag, null)
+  assert.throws(() => buildStampPayload(baseStamp, { DESKTOP_RELEASE_VERSION: '../bad' }, 'win32'), /version/i)
+})

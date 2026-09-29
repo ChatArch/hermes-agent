@@ -202,7 +202,6 @@ function main() {
   const built = buildStampPayload(stamp, process.env, process.platform, payload)
   built.repository = resolveRepository()
   built.version = process.env.DESKTOP_RELEASE_VERSION || JSON.parse(readFileSync(join(DESKTOP_ROOT, "package.json"), "utf8")).version
-  if (process.env.DESKTOP_RELEASE_VERSION) built.branch = "main"
   writeDesktopStamp(OUT_DIR, built)
   console.log(
     "[write-build-stamp] wrote " +
@@ -220,6 +219,10 @@ function main() {
  */
 export function buildStampPayload(stamp, env = process.env, platform = process.platform, payload = null) {
   const variant = (env.HERMES_DESKTOP_VARIANT || "").trim()
+  const legacyVersion = env.DESKTOP_RELEASE_VERSION || null
+  if (legacyVersion && !/^\d+\.\d+\.\d+$/.test(legacyVersion)) {
+    throw new Error('Invalid desktop release version')
+  }
   const channelBuild = channelBuildRequest(env)
   if (channelBuild && (stamp.commit !== channelBuild.commit || stamp.dirty)) throw new Error('Channel build identity does not match stamp')
   const commitBuild = env.HERMES_BUILD_COMMIT || null
@@ -243,7 +246,7 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
     dirty: stamp.dirty,
     source: channelBuild ? 'channel-build' : commitBuild ? 'commit-build' : stamp.source,
     commitDate: stamp.commitDate ?? null,
-    baseVersion: channelBuild?.sourceVersion ?? stamp.baseVersion ?? version?.split('-')[0] ?? null,
+    baseVersion: legacyVersion ?? channelBuild?.sourceVersion ?? stamp.baseVersion ?? version?.split('-')[0] ?? null,
     displayVersion: channelBuild
       ? `${channelBuild.sourceVersion} (${channelBuild.channel} #${channelBuild.sequence}, ${channelBuild.commit.slice(0, 7)})`
       : stamp.displayVersion ?? version,
@@ -274,6 +277,7 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
   }
   return {
     ...base,
+    ...(legacyVersion ? { version: legacyVersion } : {}),
     payload: variant === "store" ? "bundled" : variant || "bootstrap",
     distribution: "desktop-app",
 
