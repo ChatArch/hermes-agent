@@ -147,6 +147,7 @@ describe('desktop release contracts', () => {
     expect(config.win.sign).toBeNull()
     expect(config.msix).toBeUndefined()
     expect(config.nsis.oneClick).toBe(false)
+    expect(config.files).toContain('!dist/hermes-build.json')
     expect(config.nsis.allowToChangeInstallationDirectory).toBe(true)
     expect(config.beforeBuild).toBe(beforeBuild)
     expect(config.mac.sign).toBeNull()

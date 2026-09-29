@@ -12,6 +12,7 @@ function buildLegacyConfig(base, metadata, platform) {
   const { msix, ...config } = base
   return {
     ...config,
+    files: [...(base.files || []), '!dist/hermes-build.json'],
     artifactName: `ChatArch-Hermes-${metadata.version}-${metadata.tag}-${platform}-\${arch}-unsigned.\${ext}`,
     extraMetadata: {
       ...base.extraMetadata,
