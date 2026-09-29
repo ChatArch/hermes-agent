@@ -62,7 +62,9 @@ jobs:
   detect:
     name: Detect affected areas
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    # Full-history checkout and classifier teardown can exceed one minute on
+    # upstream-sync PRs; keep classification rather than cancelling all lanes.
+    timeout-minutes: 10
     outputs:
       python: ${{ steps.gate-lanes.outputs.python }}
       python_prod: ${{ steps.gate-lanes.outputs.python_prod }}

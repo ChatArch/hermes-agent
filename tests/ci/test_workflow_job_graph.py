@@ -98,3 +98,10 @@ def test_upstream_autofix_does_not_create_or_auto_merge_fork_prs():
     assert "main" in workflow["on"]["push"]["branches"]
     for name in ("generate-patch", "apply-patch"):
         assert "github.repository == 'NousResearch/hermes-agent'" in workflow["jobs"][name]["if"]
+
+
+def test_change_detection_has_headroom_for_large_upstream_sync_prs():
+    workflow = _loaded()["ci.yaml"]
+    # A completed classifier still gets cancelled if checkout + teardown hits
+    # the one-minute job deadline; downstream matrix lanes then never run.
+    assert int(workflow["jobs"]["detect"]["timeout-minutes"]) >= 5
