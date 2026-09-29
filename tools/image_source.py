@@ -278,6 +278,14 @@ async def _resolve_container_fallback(
             f"'{p}' is not reachable inside the sandbox and no active sandbox "
             f"session is available to read it",
             src=src, origin="container")
+    from tools.terminal_tool_config import translate_mounted_host_path
+    translated = translate_mounted_host_path(
+        str(p),
+        getattr(env, "host_cwd", None) or "",
+        getattr(env, "host_cwd_mount", None) or "/workspace",
+    )
+    if translated:
+        p = Path(translated)
     if getattr(env, "supports_file_materialization", False):
         return await _resolve_materialized_source(env, p, src, permitted)
     # Bound the read INSIDE the sandbox: head -c caps at ingest-limit+1 (+1 distinguishes "at the
