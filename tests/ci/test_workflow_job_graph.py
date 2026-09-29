@@ -77,3 +77,11 @@ def test_no_workflow_runs_from_a_tag_push():
         elif {"tags", "tags-ignore"} & set(push):
             violations.append(filename)
     assert not violations, "tag-triggered workflows: " + ", ".join(violations)
+
+
+def test_automatic_canary_release_writes_only_in_official_repository():
+    workflow = _loaded()["canary-release.yml"]
+    assert "schedule" in workflow["on"]
+    for name in ("tag", "prune"):
+        job = workflow["jobs"][name]
+        assert "github.repository == 'NousResearch/hermes-agent'" in job["if"]
