@@ -105,3 +105,50 @@ def test_change_detection_has_headroom_for_large_upstream_sync_prs():
     # A completed classifier still gets cancelled if checkout + teardown hits
     # the one-minute job deadline; downstream matrix lanes then never run.
     assert int(workflow["jobs"]["detect"]["timeout-minutes"]) >= 5
+
+
+def test_required_pr_workflows_use_available_standard_runners():
+    for name in (
+        "tests.yml", "tests-os.yml", "e2e-desktop-core.yml", "e2e-desktop-update.yml",
+        "windows-install-update-e2e.yml", "install-e2e-windows-run.yml",
+        "windows-bundle-sdk.yml", "pm-bundle.yml",
+    ):
+        workflow = _loaded()[name]
+        assert "latest-32-core" not in str(workflow), name
+        assert "latest-32-arm-core" not in str(workflow), name
+
+
+def test_standard_windows_runner_bounds_native_process_tree_parallelism():
+    workflow = _loaded()["tests-os.yml"]
+    windows = next(row for row in workflow["jobs"]["os-tests"]["strategy"]["matrix"]["include"] if row["marker"] == "windows")
+    assert windows["runner"] == "windows-latest"
+    assert int(windows["timeout"]) >= 60
+    workers = workflow["jobs"]["os-tests"]["steps"][-1]["env"]["HERMES_TEST_WORKERS"]
+    assert "'8'" not in workers
+    assert "'2'" in workers
+    e2e = workflow["jobs"]["e2e-windows"]
+    assert int(e2e["timeout-minutes"]) >= 60
+    run = next(step for step in e2e["steps"] if step.get("name") == "Run Windows E2E suite")
+    assert int(run["env"]["HERMES_TEST_WORKERS"]) <= 2
+
+
+def test_standard_windows_bundle_runners_keep_both_native_architectures():
+    sdk = _loaded()["windows-bundle-sdk.yml"]
+    runners = sdk["jobs"]["windows-bundle-tools"]["strategy"]["matrix"]["runner"]
+    assert set(runners) == {"windows-latest", "windows-11-arm"}
+    assert len(runners) == 2
+    pm = _loaded()["pm-bundle.yml"]
+    targets = {row["label"]: row["runner"] for row in pm["jobs"]["bundle"]["strategy"]["matrix"]["target"]}
+    assert targets["win32-x64"] == "windows-latest"
+    assert targets["win32-arm64"] == "windows-11-arm"
+
+
+def test_standard_e2e_runners_bound_process_tree_workers():
+    python = _loaded()["tests.yml"]["jobs"]
+    assert int(python["e2e"]["steps"][-1]["env"]["HERMES_TEST_WORKERS"]) <= 2
+    assert int(python["e2e"]["timeout-minutes"]) >= 60
+    assert int(python["e2e-upgrade"]["timeout-minutes"]) >= 90
+    install = _loaded()["windows-install-update-e2e.yml"]["jobs"]["install-update"]
+    assert int(install["timeout-minutes"]) >= 90
+    run = next(step for step in install["steps"] if step.get("name") == "Run Windows install + update E2E")
+    assert int(run["env"]["HERMES_TEST_WORKERS"]) <= 2

@@ -24,12 +24,12 @@ jobs:
   windows-bundle-tools:
     name: Cold Windows SDK (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
-    # Cold ARM64 npm extraction alone can exceed 15 minutes on the hosted runner.
-    timeout-minutes: 45
+    # Cold ARM64 npm extraction can exceed 15 minutes on the standard runner.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        runner: [windows-latest-32-arm-core, windows-latest-32-arm-core]
+        runner: [windows-latest, windows-11-arm]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
