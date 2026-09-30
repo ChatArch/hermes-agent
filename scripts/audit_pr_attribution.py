@@ -13,7 +13,7 @@ Logic (kept in sync with contributor-check.yml):
   - skips teknium/bot emails and ``<id>+<login>@users.noreply.github.com``
     (CI auto-resolves those)
   - everything else must have ``contributors/emails/<email>`` or a legacy
-    AUTHOR_MAP entry in scripts/release.py
+    AUTHOR_MAP entry in scripts/releases/authors_legacy.py
 
 ``--fix`` resolution order for an unmapped email:
   1. bare ``<login>@users.noreply.github.com`` → ``<login>``, verified via
@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 
 SKIP_SUBSTRINGS = (
     "teknium",
@@ -68,13 +69,11 @@ def is_mapped(email: str) -> bool:
         return True
     if (REPO_ROOT / "contributors" / "emails" / email).is_file():
         return True
-    release_py = REPO_ROOT / "scripts" / "release.py"
-    try:
-        if f'"{email}"' in release_py.read_text(encoding="utf-8", errors="replace"):
-            return True
-    except OSError:
-        pass
-    return False
+    # The effective map also carries one exact-case alias that cannot coexist
+    # with its sibling filename on a case-insensitive Windows checkout.
+    from scripts.releases.authors import AUTHOR_MAP, UNLINKED_AUTHOR_CREDITS
+
+    return email in AUTHOR_MAP or email in UNLINKED_AUTHOR_CREDITS
 
 
 def gh_json(*args: str):

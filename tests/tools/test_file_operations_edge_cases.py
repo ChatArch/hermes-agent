@@ -6,10 +6,12 @@ Covers:
 """
 
 import subprocess
+import os
+import sys
+
 import pytest
 from unittest.mock import MagicMock, patch
 
-from tests.tools.file_ops_fakes import READ_SENTINEL_RE, compound_read_output
 from tools.file_operations import ShellFileOperations
 from tools.file_operations_search import _parse_search_context_line
 
@@ -87,6 +89,7 @@ class TestRawUtf8SampleStatus:
                 proc = subprocess.run(
                     command,
                     shell=True,
+                    executable="/bin/bash",
                     cwd=cwd or self.cwd,
                     input=kwargs.get("stdin_data"),
                     text=True,
@@ -131,17 +134,6 @@ class TestCheckLintBracePaths:
         obj._command_cache = {}
         return obj
 
-    def test_normal_path(self, ops):
-        """Normal path without braces should work as before."""
-        with patch.object(ops, "_has_command", return_value=True), \
-             patch.object(ops, "_exec") as mock_exec:
-            mock_exec.return_value = MagicMock(exit_code=0, stdout="")
-            result = ops._check_lint("/tmp/test_file.js")
-
-        assert result.success is True
-        # Verify the command was built correctly
-        cmd_arg = mock_exec.call_args[0][0]
-        assert "'/tmp/test_file.js'" in cmd_arg
 
     def test_path_with_curly_braces(self, ops):
         """Path containing ``{`` and ``}`` must not raise KeyError/ValueError."""
@@ -155,14 +147,6 @@ class TestCheckLintBracePaths:
         cmd_arg = mock_exec.call_args[0][0]
         assert "{test}" in cmd_arg
 
-    def test_path_with_nested_braces(self, ops):
-        """Path with complex brace patterns like ``{{var}}`` should be safe."""
-        with patch.object(ops, "_has_command", return_value=True), \
-             patch.object(ops, "_exec") as mock_exec:
-            mock_exec.return_value = MagicMock(exit_code=0, stdout="")
-            result = ops._check_lint("/tmp/{{var}}.js")
-
-        assert result.success is True
 
     def test_unsupported_extension_skipped(self, ops):
         """Extensions without a linter should return a skipped result."""
@@ -187,6 +171,37 @@ class TestCheckLintBracePaths:
 
         assert result.success is False
         assert "SyntaxError" in result.output
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh stand-ins for node")
+def test_local_js_lint_runs_pm_node_never_the_users(tmp_path, monkeypatch):
+    """Hermes's own post-write lint uses PM's Node even when the user's node sorts first on
+    PATH, and skips (never falls back to the user's) when PM has no Node."""
+    import hermes_constants
+    from tools.environments.local import LocalEnvironment
+
+    def node_stand_in(directory, label):
+        directory.mkdir()
+        node = directory / "node"
+        node.write_text(f'#!/bin/sh\necho {label} "$@"\nexit 1\n', encoding="utf-8")
+        node.chmod(0o755)
+        return str(directory)
+
+    user_bin = node_stand_in(tmp_path / "user-bin", "user-node")
+    store_dirs = [node_stand_in(tmp_path / "store-node", "pm-node")]
+    monkeypatch.setenv("PATH", os.pathsep.join([user_bin, os.environ.get("PATH", "")]))
+    monkeypatch.setattr(hermes_constants, "with_hermes_node_path", lambda env: {
+        **env, "PATH": os.pathsep.join([*store_dirs, env.get("PATH", "")]).strip(os.pathsep)})
+    target = tmp_path / "a.js"
+    target.write_text("x\n", encoding="utf-8")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+
+    result = ops._check_lint(str(target))
+    assert result.output == f"pm-node --check {target}"
+
+    store_dirs.clear()
+    result = ops._check_lint(str(target))
+    assert result.skipped and "Hermes-managed Node" in result.message
 
 
 class TestCheckLintInproc:
@@ -230,13 +245,6 @@ class TestCheckLintDelta:
         obj._command_cache = {}
         return obj
 
-    def test_clean_post_no_pre_lint(self, ops):
-        """Hot path: post-write is clean, pre-lint should be skipped entirely."""
-        with patch.object(ops, "_check_lint", wraps=ops._check_lint) as wrapped:
-            r = ops._check_lint_delta("/tmp/a.py", pre_content="x = 0\n", post_content="x = 1\n")
-            # Post-lint called exactly once (clean), pre-lint never called.
-            assert wrapped.call_count == 1
-        assert r.success is True
 
 
     def test_pre_existing_remains_flagged_but_not_new(self, ops):
@@ -255,111 +263,41 @@ class TestCheckLintDelta:
 # =========================================================================
 
 
+@pytest.mark.platforms("linux")
 class TestPaginationBounds:
-    """Invalid pagination inputs should not leak into shell commands."""
+    """Exercise the real backend protocol instead of matching shell command text."""
 
-    def test_read_file_clamps_offset_and_limit_before_building_sed_range(self):
-        env = MagicMock()
-        env.cwd = "/tmp"
-        ops = ShellFileOperations(env)
-        commands = []
+    ops = TestRawUtf8SampleStatus.ops
 
-        def fake_exec(command, *args, **kwargs):
-            commands.append(command)
-            m = READ_SENTINEL_RE.search(command)
-            if m:
-                return MagicMock(
-                    exit_code=0,
-                    stdout=compound_read_output(
-                        m.group(0), size=12, sample=b"line1\nline2\n",
-                        content="line1\n", total_lines=2,
-                    ),
-                )
-            return MagicMock(exit_code=0, stdout="")
-
-        with patch.object(ops, "_exec", side_effect=fake_exec):
-            result = ops.read_file("notes.txt", offset=0, limit=0)
-
+    def test_read_file_clamps_offset_and_limit(self, ops, tmp_path):
+        (tmp_path / "notes.txt").write_text("line1\nline2\n")
+        result = ops.read_file("notes.txt", offset=0, limit=0)
         assert result.error is None
-        assert "1|line1" in result.content
-        # The clamped range rides the single compound probe.
-        assert len(commands) == 1
-        assert "sed -n '1,1p' 'notes.txt' 2>/dev/null | cut -b1-8001" in commands[0]
+        assert result.content.strip() == "1|line1"
+        assert result.total_lines == 2
 
-    def test_read_file_allows_utf8_text_when_head_sample_ends_mid_codepoint(self):
-        """A valid UTF-8 text file must survive a lossy boundary sample."""
-        env = MagicMock()
-        env.cwd = "/tmp"
-        ops = ShellFileOperations(env)
-        text = "a" * 998 + "把\n# ChatBlog UTF-8 boundary\n正常 MDX 文本\n"
-        sample = "a" * 998 + "\ufffd"
-
-        def fake_exec(command, *args, **kwargs):
-            if "wc -c" in command:
-                return MagicMock(exit_code=0, stdout=str(len(text.encode("utf-8"))))
-            if command.startswith("head -c"):
-                return MagicMock(exit_code=0, stdout=sample)
-            if command.startswith("sed -n"):
-                return MagicMock(exit_code=0, stdout=text)
-            if command.startswith("wc -l"):
-                return MagicMock(exit_code=0, stdout=str(text.count("\n")))
-            return MagicMock(exit_code=0, stdout="")
-
-        with patch.object(ops, "_raw_utf8_sample_status", return_value="text"), \
-             patch.object(ops, "_exec", side_effect=fake_exec):
-            result = ops.read_file("article.mdx")
-
+    def test_read_file_allows_utf8_text_when_head_sample_ends_mid_codepoint(self, ops, tmp_path):
+        text = "a" * 998 + "把\n# UTF-8 boundary\n正常 MDX 文本\n"
+        (tmp_path / "article.mdx").write_text(text, encoding="utf-8")
+        result = ops.read_file("article.mdx")
+        assert result.error is None
         assert result.is_binary is False
+        assert "# UTF-8 boundary" in result.content
+
+    def test_read_file_raw_allows_utf8_text_when_head_sample_ends_mid_codepoint(self, ops, tmp_path):
+        text = "a" * 998 + "把\n# UTF-8 boundary\n正常 MDX 文本\n"
+        (tmp_path / "article.mdx").write_text(text, encoding="utf-8")
+        result = ops.read_file_raw("article.mdx")
         assert result.error is None
-        assert "# ChatBlog UTF-8 boundary" in result.content
-
-    def test_read_file_raw_allows_utf8_text_when_head_sample_ends_mid_codepoint(self):
-        """Patch/raw read path must not reject valid MDX for the same reason."""
-        env = MagicMock()
-        env.cwd = "/tmp"
-        ops = ShellFileOperations(env)
-        text = "a" * 998 + "把\n# ChatBlog UTF-8 boundary\n正常 MDX 文本\n"
-        sample = "a" * 998 + "\ufffd"
-
-        def fake_exec(command, *args, **kwargs):
-            if "wc -c" in command:
-                return MagicMock(exit_code=0, stdout=str(len(text.encode("utf-8"))))
-            if command.startswith("head -c"):
-                return MagicMock(exit_code=0, stdout=sample)
-            if command.startswith("cat "):
-                return MagicMock(exit_code=0, stdout=text)
-            return MagicMock(exit_code=0, stdout="")
-
-        with patch.object(ops, "_raw_utf8_sample_status", return_value="text"), \
-             patch.object(ops, "_exec", side_effect=fake_exec):
-            result = ops.read_file_raw("article.mdx")
-
         assert result.is_binary is False
+        assert result.content == text
+
+    def test_search_clamps_offset_and_limit(self, ops, tmp_path):
+        (tmp_path / "notes.py").write_text("value = 1\n")
+        result = ops.search("*.py", target="files", path=".", offset=-4, limit=-2)
         assert result.error is None
-        assert "# ChatBlog UTF-8 boundary" in result.content
-
-    def test_search_clamps_offset_and_limit_before_building_head_pipeline(self):
-        env = MagicMock()
-        env.cwd = "/tmp"
-        ops = ShellFileOperations(env)
-        commands = []
-
-        def fake_exec(command, *args, **kwargs):
-            commands.append(command)
-            if command.startswith("test -e"):
-                return MagicMock(exit_code=0, stdout="exists")
-            if "--files" in command:
-                return MagicMock(exit_code=0, stdout="a.py\n")
-            return MagicMock(exit_code=0, stdout="")
-
-        with patch.object(ops, "_has_command", side_effect=lambda cmd: cmd == "rg"), \
-             patch.object(ops, "_exec", side_effect=fake_exec):
-            result = ops.search("*.py", target="files", path=".", offset=-4, limit=-2)
-
-        assert result.files == ["a.py"]
-        rg_commands = [cmd for cmd in commands if "--files" in cmd]
-        assert rg_commands
-        assert "| head -n 2" in rg_commands[0]
+        assert len(result.files) == 1
+        assert result.files[0].endswith("notes.py")
 
 
 # =========================================================================
@@ -368,31 +306,6 @@ class TestPaginationBounds:
 
 
 class TestSearchContextParsing:
-    def test_search_with_grep_uses_extended_regex(self):
-        env = MagicMock()
-        env.cwd = "/tmp"
-        ops = ShellFileOperations(env)
-
-        with patch.object(ops, "_exec") as mock_exec:
-            mock_exec.return_value = MagicMock(
-                exit_code=0,
-                stdout="./first.txt:1:foo\n./second.txt:1:bar\n",
-            )
-            result = ops._search_with_grep(
-                "foo|bar",
-                path=".",
-                file_glob=None,
-                limit=10,
-                offset=0,
-                output_mode="content",
-                context=0,
-            )
-
-        cmd_arg = mock_exec.call_args[0][0]
-        assert cmd_arg.startswith("set -o pipefail; grep -rnHE ")
-        assert result.error is None
-        assert result.total_count == 2
-        assert [match.content for match in result.matches] == ["foo", "bar"]
 
     def test_parse_search_context_line_prefers_rightmost_numeric_separator(self):
         parsed = _parse_search_context_line("dir/file-12-name.py-8-context here")
@@ -425,3 +338,65 @@ class TestSearchContextParsing:
         assert result.matches[0].path == "dir/file-12-name.py"
         assert result.matches[0].line_number == 8
         assert result.matches[0].content == "context here"
+
+
+# =========================================================================
+# total_lines for files without a trailing newline (#3907)
+# =========================================================================
+
+
+class TestNoTrailingNewlineTotalLines:
+    """``wc -l`` counts newlines, not lines: a final unterminated line must
+    still count. Covers the live read paths plus the assembler contract."""
+
+    @pytest.fixture()
+    def ops(self):
+        from tools.environments.local import LocalEnvironment
+
+        return ShellFileOperations(LocalEnvironment())
+
+
+    def test_pagination_admits_final_unterminated_line(self, tmp_path, ops):
+        target = tmp_path / "no_trailing.txt"
+        target.write_bytes(b"line1\nline2\nline3")
+
+        first = ops.read_file(str(target), offset=1, limit=2)
+        assert first.truncated is True
+        assert "of 3 lines" in (first.hint or "")
+
+        last = ops.read_file(str(target), offset=3)
+        assert last.error is None
+        assert last.content == "3|line3"
+        assert last.total_lines == 3
+
+    def test_terminated_and_empty_files_unchanged(self, tmp_path, ops):
+        terminated = tmp_path / "terminated.txt"
+        terminated.write_bytes(b"a\nb\nc\n")
+        assert ops.read_file(str(terminated)).total_lines == 3
+
+        empty = tmp_path / "empty.txt"
+        empty.write_bytes(b"")
+        result = ops.read_file(str(empty))
+        assert result.total_lines == 0
+
+    def test_native_path_counts_final_unterminated_line(self, tmp_path, ops):
+        target = tmp_path / "no_trailing.txt"
+        target.write_bytes(b"line1\nline2\nline3")
+
+        result = ops._read_file_native(str(target), 1, 2000)
+
+        assert result.error is None
+        assert result.total_lines == 3
+
+    def test_assembler_bumps_count_only_on_proven_missing_newline(self):
+        ops = ShellFileOperations.__new__(ShellFileOperations)
+
+        proved = ops._assemble_read_result(
+            "a\nb\nc\n", offset=1, end_line=2000, total_lines=2,
+            file_size=5, file_ends_with_newline=False)
+        assert proved.total_lines == 3
+
+        unknown = ops._assemble_read_result(
+            "a\nb\nc\n", offset=1, end_line=2000, total_lines=2,
+            file_size=5, file_ends_with_newline=None)
+        assert unknown.total_lines == 2

@@ -622,7 +622,7 @@ class ChatArchGatewayMixin:
 
         interrupt_method = getattr(running_agent, "interrupt", None)
         if not running_agent or not callable(interrupt_method):
-            adapter = self._adapter_for_source(source)
+            adapter = self._delivery_adapter_for(source)
             if adapter:
                 queued_event = MessageEvent(
                     text=interrupt_text,

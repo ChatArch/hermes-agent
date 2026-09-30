@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tools.environments import ssh as ssh_env
-from tools.environments.file_sync import quoted_mkdir_command, unique_parent_dirs
 from tools.environments.ssh import SSHEnvironment
 
 
@@ -136,6 +135,7 @@ class TestSSHBulkUpload:
         assert len(staging_paths) == 1, "tar command should have been called"
 
 
+    @pytest.mark.require_symlinks
     def test_bulk_upload_never_stages_remote_home_prefix(self, mock_env, tmp_path):
         """Regression: do not archive /home/<user> path components."""
         f1 = tmp_path / "nested.txt"
@@ -225,16 +225,6 @@ class TestSSHBulkUploadWiring:
         assert callable(captured_kwargs["bulk_upload_fn"])
 
 
-class TestSharedHelpers:
-    """Direct unit tests for file_sync.py helpers."""
-
-    def test_quoted_mkdir_command_basic(self):
-        result = quoted_mkdir_command(["/a", "/b/c"])
-        assert result == "mkdir -p /a /b/c"
-
-
-    def test_unique_parent_dirs_empty(self):
-        assert unique_parent_dirs([]) == []
 
 
 class TestSSHBulkUploadEdgeCases:

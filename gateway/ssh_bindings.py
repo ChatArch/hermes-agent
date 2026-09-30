@@ -86,7 +86,7 @@ def _empty_store() -> dict[str, Any]:
 def _read_store(path: str | Path | None = None) -> dict[str, Any]:
     store_path = Path(path).expanduser() if path is not None else default_ssh_bindings_path()
     try:
-        data = json.loads(store_path.read_text(encoding="utf-8") or "{}")
+        data = json.loads(store_path.read_text(encoding="utf-8-sig") or "{}")
     except FileNotFoundError:
         return _empty_store()
     except Exception:

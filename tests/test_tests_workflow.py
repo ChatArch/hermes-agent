@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pathlib
 
-import yaml
+import hermes_yaml as yaml
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent

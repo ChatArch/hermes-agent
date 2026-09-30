@@ -35,13 +35,16 @@
   "homepage": "https://github.com/ChatArch/hermes-agent#readme",
   "devDependencies": {
     "@eslint/js": "9.39.5",
-    "typescript-eslint": "8.64.0",
     "eslint-plugin-perfectionist": "5.10.0",
     "eslint-plugin-react-hooks": "7.1.1",
     "eslint-plugin-unused-imports": "4.4.1",
-    "globals": "17.7.0"
+    "globals": "17.7.0",
+    "typescript-eslint": "8.64.0"
   },
   "overrides": {
+    "@electron/osx-sign": {
+      "isbinaryfile": "5.0.7"
+    },
     "lodash": "4.18.1",
     "yauzl": "^3.3.1",
     "protobufjs": "^8.7.1",
@@ -78,5 +81,9 @@
   "files": [
     "README.md",
     "LICENSE"
-  ]
+  ],
+  "dependencies": {
+    "js-yaml": "4.3.1",
+    "semver": "7.7.4"
+  }
 }

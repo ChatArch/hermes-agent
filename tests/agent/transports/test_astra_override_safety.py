@@ -29,7 +29,12 @@ def test_astra_normalizes_both_override_layers_without_mutating_config(nested, t
     effective = kwargs["extra_body"] if nested else kwargs
     assert effective["reasoning"] == {"effort": "low", "summary": "auto"}
     assert "prompt_cache_options" not in kwargs  # not an OpenAI SDK keyword
-    assert kwargs["extra_body"]["prompt_cache_options"] == {"future_option": "preserve"}
+    # The generic SDK strips unsupported top-level options; the explicit extra_body
+    # escape hatch remains available for options the backend supports.
+    if nested:
+        assert kwargs["extra_body"]["prompt_cache_options"] == {"future_option": "preserve"}
+    else:
+        assert "prompt_cache_options" not in kwargs.get("extra_body", {})
     assert effective["include"] == ["reasoning.encrypted_content"]
     assert not {"temperature", "top_p", "logprobs", "prompt_cache_retention"} & effective.keys()
     assert overrides == original
@@ -87,7 +92,13 @@ def test_astra_cache_options_cross_real_sdk_boundary_without_unknown_kwargs():
         messages=[{"role": "user", "content": "Hi"}], tools=[],
         request_overrides={"prompt_cache_options": {"ttl": "24h", "future_option": "preserve"}},
     )
-    assert _serialized_sdk_body(kwargs)["prompt_cache_options"] == {"future_option": "preserve"}
+    assert "prompt_cache_options" not in _serialized_sdk_body(kwargs)
+    explicit = ResponsesApiTransport().build_kwargs(
+        model="gpt-6-astra", base_url="https://api.openai.com/v1",
+        messages=[{"role": "user", "content": "Hi"}], tools=[],
+        request_overrides={"extra_body": {"prompt_cache_options": {"ttl": "24h", "future_option": "preserve"}}},
+    )
+    assert _serialized_sdk_body(explicit)["prompt_cache_options"] == {"future_option": "preserve"}
 
 
 @pytest.mark.parametrize("nested_effort,expected", [(None, "max"), ("none", "low")])

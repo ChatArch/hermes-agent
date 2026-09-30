@@ -69,8 +69,7 @@ export function validatePackagedPaths(paths) {
   }
 }
 
-export function validateReleasePackage(resources, metadata, sourceRoot) {
-  const asar = require('@electron/asar')
+export function validateReleasePackage(resources, metadata, sourceRoot, asar = require('@electron/asar')) {
   const archive = path.join(resources, 'app.asar')
   const paths = asar.listPackage(archive).map(normalizeArchivePath)
   validatePackagedPaths(paths)
