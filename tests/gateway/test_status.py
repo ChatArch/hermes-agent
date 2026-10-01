@@ -1355,14 +1355,27 @@ class TestPlannedStopMarker:
 class TestReadProcessCmdlinePsFallback:
     """Tests for _read_process_cmdline falling back to ps on non-Linux."""
 
-    def test_ps_fallback_when_proc_unavailable(self, monkeypatch):
+    @pytest.mark.platforms("posix")
+    def test_ps_fallback_when_proc_and_psutil_unavailable(self, monkeypatch):
+        import psutil
+
+        pid = os.getpid()  # a real process proves the fixture cannot leak host state
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
-        monkeypatch.setattr(
-            status.subprocess, "run",
-            lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="/usr/libexec/bluetoothuserd\n"),
-        )
-        result = status._read_process_cmdline(873)
+
+        def denied_process(requested_pid):
+            raise psutil.AccessDenied(requested_pid)
+
+        calls = []
+
+        def fake_ps(args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout="/usr/libexec/bluetoothuserd\n")
+
+        monkeypatch.setattr(psutil, "Process", denied_process)
+        monkeypatch.setattr(status.subprocess, "run", fake_ps)
+        result = status._read_process_cmdline(pid)
         assert result == "/usr/libexec/bluetoothuserd"
+        assert calls == [["ps", "-p", str(pid), "-o", "command="]]
 
 
     def test_proc_cmdline_takes_priority_over_ps(self, monkeypatch):
