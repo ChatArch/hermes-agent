@@ -48,8 +48,8 @@ def test_explicit_astra_resolves_and_uses_official_responses(monkeypatch, tmp_pa
     assert kwargs["reasoning"]["effort"] == "low"  # Astra has no ``none`` wire level
 
 
-def test_astra_codex_oauth_fallback_uses_backend_context_limit():
-    """OAuth keeps the Codex backend's 272K fallback; direct API metadata remains 1.05M."""
+def test_astra_codex_oauth_fallback_uses_policy_floor():
+    """The fork Codex floor does not change direct-API metadata."""
     from agent.model_metadata import (
         DEFAULT_CONTEXT_LENGTHS,
         _resolve_codex_oauth_context_length_with_source,
@@ -57,12 +57,13 @@ def test_astra_codex_oauth_fallback_uses_backend_context_limit():
 
     codex_ctx, source = _resolve_codex_oauth_context_length_with_source("gpt-6-astra")
     assert source == "fallback"
-    assert codex_ctx < DEFAULT_CONTEXT_LENGTHS["gpt-6-astra"]  # Codex caps below the direct API window
+    assert codex_ctx == 1_000_000
+    assert codex_ctx < DEFAULT_CONTEXT_LENGTHS["gpt-6-astra"]
 
 
 @pytest.mark.parametrize("advertised,expected", [(272_000, 900_000), (200_000, 200_000), (1_050_000, 1_050_000)])
-def test_astra_900k_opt_in_preserves_live_limits_and_wire_contract(monkeypatch, tmp_path, advertised, expected):
-    """Only the known stale advertisement is lifted; the alias never reaches the wire."""
+def test_astra_policy_floor_preserves_larger_windows_and_wire_contract(monkeypatch, tmp_path, advertised, expected):
+    """The client policy preserves wire model IDs and larger windows."""
     from agent import model_metadata as metadata
     from agent.reasoning_effort import CODEX_ASTRA_EFFORTS, codex_supported_efforts
     from agent.transports.codex import ResponsesApiTransport
@@ -75,8 +76,8 @@ def test_astra_900k_opt_in_preserves_live_limits_and_wire_contract(monkeypatch, 
     ))
     route = {"base_url": "https://chatgpt.com/backend-api/codex", "provider": "openai-codex"}
     token = _chatgpt_oauth_token()
-    assert metadata.get_model_context_length("gpt-6-astra-900k", api_key=token, **route) == expected
-    assert metadata.get_model_context_length("gpt-6-astra", api_key=token, **route) == advertised
+    assert metadata.get_model_context_length("gpt-6-astra-900k", api_key=token, **route) == max(1_000_000, expected)
+    assert metadata.get_model_context_length("gpt-6-astra", api_key=token, **route) == max(1_000_000, advertised)
     assert codex_supported_efforts("gpt-6-astra-900k") == CODEX_ASTRA_EFFORTS
 
     for config in ({"effort": "max"}, {"enabled": False}):
