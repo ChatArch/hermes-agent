@@ -4,6 +4,7 @@ Jittered delays (vs. fixed exponential) prevent thundering-herd retry spikes
 when many sessions hit the same rate-limited provider concurrently.
 """
 
+import math
 import random
 import re
 import threading
@@ -62,6 +63,18 @@ def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
     return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
+def retry_after_seconds(error: Any) -> Optional[float]:
+    """Positive finite provider delay from response headers or structured body, shared by
+    model retries and fallback transitions. Invalid/expired hints use ordinary backoff."""
+    value = parse_retry_after_seconds(getattr(getattr(error, "response", None), "headers", None))
+    if value is None:
+        body = getattr(error, "body", None)
+        if isinstance(body, dict):
+            nested = body.get("error")
+            value = parse_retry_after_seconds((nested if isinstance(nested, dict) else body).get("retry_after"))
+    return value if value is not None and math.isfinite(value) and value > 0 else None
 
 
 # Free-text "reset" grammars providers put in error bodies, tried in order. One table so the

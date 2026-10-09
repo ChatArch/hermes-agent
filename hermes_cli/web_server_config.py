@@ -218,7 +218,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "nous": "agent",
     "connections": "agent",
     "auth": "security",
-    # `fallback.min_switch_reset_seconds` is the only schema-surfaced fallback field.
+    # Fold fallback timing settings into the agent tab instead of creating a sparse category.
     "fallback": "agent",
 }
 

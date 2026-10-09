@@ -11,13 +11,13 @@ delivered text is the fragment rows. Both terminal builders are driven through
 """
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from agent.error_classifier import classify_api_error
 from agent.turn_api_error import settle_unrecovered_error
+from agent.turn_retry_state import TurnRetryState
 
 
 class _Agent:
@@ -77,7 +77,7 @@ def test_terminal_error_keeps_partial_and_collapses_this_turns_trail(status, mes
     messages = _messages_with_fragment()
     error = _Http(status, message)
     classified = classify_api_error(error, provider="openrouter", model="m")
-    retry = SimpleNamespace(copilot_stale_cred_retry_attempted=False, primary_recovery_attempted=True)
+    retry = TurnRetryState(primary_recovery_attempted=True)
     with patch("agent.conversation_loop._is_copilot_provider", lambda a: False), \
             patch("agent.turn_recovery_autorecover.auto_recover_after_exhaustion", lambda *a, **k: None):
         verdict = settle_unrecovered_error(
