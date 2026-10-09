@@ -91,6 +91,18 @@ Don't have a subscription yet? Get one at [portal.nousresearch.com/manage-subscr
 
 
 :::info Codex Note
+**Context windows in this ChatArch fork:** unconfigured Codex OAuth routes use a
+minimum context length of **1,000,000 tokens**, including live catalogues, cached
+catalogues, offline fallbacks and newly introduced model IDs. Larger advertised
+windows remain larger. Explicit model/provider context overrides still win,
+and non-Codex provider policies are unchanged. Legacy `-900k` aliases retain
+their model-ID/wire behavior but use the same default floor.
+
+This is a client-side policy, **not a promise that the backend accepts 1M-token
+requests**. A backend can enforce a smaller limit; set an explicit
+`model.context_length` or model/provider override to that supported limit when
+needed. Authentication, request routing and model IDs are not changed.
+
 The OpenAI Codex provider authenticates via device code by default (open a URL, enter a code). Organizations that disable the device-code grant can opt in to the browser authorization-code + PKCE flow instead: `hermes auth add openai-codex --browser` (one login) or `auth.codex_login_flow: browser` in `config.yaml` (every Codex login, including `hermes model`). That flow listens on `http://localhost:1455/auth/callback` — the redirect URI registered for the Codex client, so the port is fixed; if it is already taken (a Codex CLI sign-in in progress) Hermes says so and falls back to device code. Over SSH the listener needs a tunnel (`ssh -N -L 1455:127.0.0.1:1455 user@host`, see [OAuth over SSH](../guides/oauth-over-ssh.md)). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required. Automatic adoption of the Codex CLI login (when Hermes' own refresh fails) is controlled by `auth.adopt_external_logins` — see [Borrowed CLI logins](../user-guide/security.md#borrowed-cli-logins).
 
 If a token refresh fails with a terminal error (HTTP 4xx, `invalid_grant`, revoked grant, etc.), Hermes marks the refresh token as dead and stops replaying it so you don't see a flood of identical auth failures. The next request surfaces a typed re-auth message instead. Run `hermes auth add openai-codex` (or `hermes model` → **ChatGPT or Codex Subscription**) to start a fresh login (device code, or `--browser` for the loopback PKCE flow); the quarantine clears on the next successful exchange.

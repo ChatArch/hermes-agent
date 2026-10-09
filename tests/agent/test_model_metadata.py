@@ -419,10 +419,10 @@ class TestDefaultContextLengths:
 # =========================================================================
 
 class TestCodexOAuthContextLength:
-    """ChatGPT Codex OAuth context windows come from the authenticated
-    /models catalogue and may differ from the static fallback table or the
-    direct OpenAI API allocation. The fallback values below are conservative
-    defaults used only when the live probe is unavailable.
+    """ChatArch defaults unconfigured Codex routes to at least 1M tokens.
+
+    Discovery, credential scoping and wire aliases remain intact; the client
+    policy is not a guarantee of the remote model's input limit.
     """
 
     def setup_method(self):
@@ -443,7 +443,7 @@ class TestCodexOAuthContextLength:
         second_response = MagicMock()
         second_response.status_code = 200
         second_response.json.return_value = {
-            "models": [{"slug": "gpt-5.5", "context_window": 372_000}]
+            "models": [{"slug": "gpt-5.5", "context_window": 1_200_000}]
         }
 
         with patch(
@@ -469,7 +469,7 @@ class TestCodexOAuthContextLength:
                 provider="openai-codex",
             )
 
-        assert (first, first_again, second) == (272_000, 272_000, 372_000)
+        assert (first, first_again, second) == (1_000_000, 1_000_000, 1_200_000)
         assert mock_get.call_count == 2
         assert mock_get.call_args_list[0].kwargs["headers"]["Authorization"] == f"Bearer {_codex_jwt('token-account-a')}"
         assert mock_get.call_args_list[1].kwargs["headers"]["Authorization"] == f"Bearer {_codex_jwt('token-account-b')}"
@@ -479,9 +479,8 @@ class TestCodexOAuthContextLength:
             for key in mm._codex_oauth_context_cache
         )
 
-    def test_probe_failure_falls_back_to_hardcoded(self):
-        """If the probe fails (non-200 / network error), we still return
-        the hardcoded 272k rather than leaking through to models.dev 1.05M."""
+    def test_probe_failure_preserves_the_codex_policy_floor(self):
+        """A failed catalogue probe must not lower an unconfigured Codex route."""
         from agent.model_metadata import get_model_context_length
 
         fake_response = MagicMock()
@@ -497,7 +496,7 @@ class TestCodexOAuthContextLength:
                 api_key=_codex_jwt("expired-token"),
                 provider="openai-codex",
             )
-        assert ctx == 272_000
+        assert ctx == 1_000_000
 
     def test_gateway_key_never_probes_the_direct_catalog(self):
         """A custom base's credential is the gateway's key, not a ChatGPT token: sending it to
@@ -533,19 +532,19 @@ class TestCodexOAuthContextLength:
                 provider="openai-codex",
             )
 
-        assert ctx == 272_000
+        assert ctx == 1_000_000
         assert mock_get.call_args.args[0].startswith(
             "https://codex-gw.example/backend-api/codex/models?client_version=")
 
     @pytest.mark.parametrize(
         "stale_context,live_context",
-        [(272_000, 372_000), (372_000, 272_000)],
+        [(272_000, 1_200_000), (1_200_000, 272_000)],
         ids=("expansion", "rollback"),
     )
     def test_live_codex_context_replaces_stale_cache_in_both_directions(
         self, tmp_path, monkeypatch, stale_context, live_context
     ):
-        """Authenticated metadata must replace stale disk values in either direction."""
+        """Refresh persisted metadata with the policy-applied live value in either direction."""
         from agent import model_metadata as mm
 
         cache_file = tmp_path / "context_length_cache.yaml"
@@ -576,19 +575,18 @@ class TestCodexOAuthContextLength:
                 provider="openai-codex",
             )
 
-        assert ctx == live_context
+        assert ctx == max(1_000_000, live_context)
         mock_get.assert_called_once()
         remaining = _yaml.safe_load(cache_file.read_text(encoding="utf-8")).get(
             "context_lengths", {}
         )
-        assert remaining.get(stale_key) == live_context
+        assert remaining.get(stale_key) == max(1_000_000, live_context)
         assert remaining.get(other_key) == 128_000
 
 
     @pytest.mark.parametrize("slug", ["gpt-5.6-sol"])
-    def test_base_slug_keeps_advertised_272k(self, slug):
-        """Base slugs (no ``-900k`` suffix) keep the advertised 272K — the
-        cheaper default limit. The verified-above bump is opt-in only."""
+    def test_base_slug_uses_the_codex_policy_floor(self, slug):
+        """Base and legacy alias routes share the same unconfigured policy floor."""
         from agent.model_metadata import get_model_context_length
 
         fake_response = MagicMock()
@@ -607,12 +605,10 @@ class TestCodexOAuthContextLength:
                 api_key=_codex_jwt("fake-token"),
                 provider="openai-codex",
             )
-        assert ctx == 272_000
+        assert ctx == 1_000_000
 
-    def test_non_272k_advertisement_is_trusted_verbatim(self):
-        """Any advertised value other than the known-stale 272,000 — higher or
-        lower — is a real server-side change and must NOT be overridden, even
-        for an explicit ``-900k`` opt-in variant."""
+    def test_larger_catalogue_windows_survive_the_policy_floor(self):
+        """Raise smaller hints to the floor while keeping larger advertised windows."""
         from agent.model_metadata import get_model_context_length
 
         for advertised in (372_000, 200_000, 1_050_000):
@@ -632,13 +628,11 @@ class TestCodexOAuthContextLength:
                     api_key=_codex_jwt("fake-token"),
                     provider="openai-codex",
                 )
-            assert ctx == advertised, f"advertised {advertised} must be trusted"
+            assert ctx == max(1_000_000, advertised)
 
     @pytest.mark.parametrize("catalog_max,expected", [(872_000, 872_000), (None, 900_000), (1_050_000, 900_000)])
-    def test_opted_in_variant_capped_at_live_catalog_max(self, catalog_max, expected):
-        """An explicit ``-900k`` opt-in resolves to min(900K, catalog ``max_context_window``):
-        gpt-5.6 advertises 272K with an 872K max (#105443); a catalog without the field or one
-        above the live-verified cap keeps 900K."""
+    def test_catalogue_max_hint_cannot_lower_the_policy_floor(self, catalog_max, expected):
+        """Catalogue max hints do not override client policy; wire acceptance is separate."""
         from agent.model_metadata import get_model_context_length
 
         item = {"slug": "gpt-5.6-luna", "context_window": 272_000}
@@ -656,11 +650,10 @@ class TestCodexOAuthContextLength:
                 api_key=_codex_jwt("fake-token"),
                 provider="openai-codex",
             )
-        assert ctx == expected
+        assert ctx == max(1_000_000, expected)
 
-    def test_base_slug_keeps_advertised_ctx_even_with_catalog_max(self):
-        """The catalogue max never leaks into the base slug: extended context is
-        opt-in via the ``-900k`` alias only (#105443)."""
+    def test_base_slug_has_policy_floor_even_with_catalogue_max(self):
+        """A catalogue max hint cannot lower the default for a base slug."""
         from agent.model_metadata import get_model_context_length
 
         fake_response = MagicMock()
@@ -677,14 +670,12 @@ class TestCodexOAuthContextLength:
                 api_key=_codex_jwt("fake-token"),
                 provider="openai-codex",
             )
-        assert ctx == 272_000
+        assert ctx == 1_000_000
 
 
     @pytest.mark.parametrize("slug", ["gpt-5.6-sol-900k"])
     def test_fallback_table_resolution_also_bumped(self, slug):
-        """When the live probe fails, the 272K fallback-table value for an
-        opted-in ``-900k`` variant is bumped the same way (same enforcement
-        applies — the fallback lookup strips the suffix first)."""
+        """Offline legacy aliases keep their wire contract and receive the provider floor."""
         from agent.model_metadata import get_model_context_length
 
         fake_response = MagicMock()
@@ -699,12 +690,11 @@ class TestCodexOAuthContextLength:
                 api_key=_codex_jwt("expired-token"),
                 provider="openai-codex",
             )
-        assert ctx == 900_000
+        assert ctx == 1_000_000
 
     @pytest.mark.parametrize("slug", ["gpt-5.6-sol"])
-    def test_fallback_table_base_slug_stays_272k(self, slug):
-        """Fallback-table resolution for BASE slugs stays at the advertised
-        272K — the opt-in rule applies on the offline path too."""
+    def test_fallback_table_base_slug_has_policy_floor(self, slug):
+        """Offline fallback metadata also passes through the provider policy."""
         from agent.model_metadata import get_model_context_length
 
         fake_response = MagicMock()
@@ -719,7 +709,7 @@ class TestCodexOAuthContextLength:
                 api_key=_codex_jwt("expired-token"),
                 provider="openai-codex",
             )
-        assert ctx == 272_000
+        assert ctx == 1_000_000
 
     # Table-driven eligibility contract (#92797 review): one predicate
     # (is_codex_900k_base) drives picker synthesis, context resolution,
@@ -772,7 +762,7 @@ class TestCodexOAuthContextLength:
                 api_key=_codex_jwt("fake-token"),
                 provider="openai-codex",
             )
-        assert ctx == expected_ctx
+        assert ctx == max(1_000_000, expected_ctx)
 
 
 # =========================================================================
@@ -1189,7 +1179,7 @@ class TestGetModelContextLength:
                 "gpt-6-astra", base_url="http://127.0.0.1:8317/v1", api_key="proxy-key",
                 provider=provider, custom_providers=custom_providers,
             )
-        assert ctx == mm._CODEX_OAUTH_CONTEXT_FALLBACK["gpt-6-astra"]
+        assert ctx == max(mm.CODEX_OAUTH_DEFAULT_CONTEXT_LENGTH, mm._CODEX_OAUTH_CONTEXT_FALLBACK["gpt-6-astra"])
 
     def test_codex_proxy_route_explicit_context_length_override_still_wins(self):
         """providers.<name>.models[].context_length beats the Codex table on a codex_responses route (#102644)."""
