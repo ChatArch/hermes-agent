@@ -44,11 +44,15 @@ When a rate-limit response names its reset time, the primary is benched until ex
 ```yaml
 fallback:
   min_switch_reset_seconds: 120   # 0 (default) = always switch
+  inter_switch_backoff_seconds: 1 # opt in to 1s, 2s, 4s... between fallback hops
 ```
 
 | Key | Default | Effect |
 |-----|---------|--------|
 | `fallback.min_switch_reset_seconds` | `0` (off) | A rate-limited primary whose declared reset is sooner than this many seconds is not swapped for a fallback; the retry backoff waits out the window instead. |
+| `fallback.inter_switch_backoff_seconds` | `0` (off) | Pace only transient fallback transitions (429, overload, server error, timeout): the first switch waits about 1 s, the second about 2 s, then 4 s, etc. with jitter, capped at 60 s. A provider `Retry-After` wins up to 600 s. Billing/auth failures remain immediate. Existing model retry budgets and waits are unchanged; `/stop` can interrupt a fallback wait. |
+
+Enable it with `hermes config set fallback.inter_switch_backoff_seconds 1`. This spaces attempts within a turn; it does not coordinate QPM across concurrent sessions. A source-code change also requires a gateway restart before the setting has any effect.
 
 Gemini fallback entries accept `gemini`, `google`, `google-gemini`, and
 `google-ai-studio`. On Google's native API endpoint, all use the native Gemini

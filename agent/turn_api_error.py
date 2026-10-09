@@ -367,9 +367,19 @@ def settle_unrecovered_error(
             agent._fallback_index = 0
             agent._fallback_activated = False
             return _verdict("continue")
+        reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
+        from agent.turn_fallback_backoff import wait_before_fallback
+        interrupted = wait_before_fallback(
+            agent, api_error, classified.reason, _retry, messages=messages,
+            conversation_history=conversation_history, api_call_count=api_call_count,
+            reset_at=reset_at,
+        )
+        if interrupted is not None:
+            return _verdict("return", interrupted)
+        if _retry.restart_with_redirected_messages:
+            return _verdict("break")
         if agent._has_pending_fallback():
             agent._buffer_diagnostic_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-        reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
         if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
             # Direct ``return _verdict("break")`` is load-bearing: the restart handler
             # re-runs the pre-API preflight against the fallback's context window.

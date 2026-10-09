@@ -1392,23 +1392,13 @@ def compute_error_backoff(
     buffered; long Z.AI Coding waits surface immediately."""
     # Imported lazily so tests that patch ``agent.retry_utils.jittered_backoff`` /
     # ``adaptive_rate_limit_backoff`` (incl. the run_agent conftest fast-backoff fixture) intercept.
-    from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff, parse_retry_after_seconds
+    from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff, retry_after_seconds
 
     # Respect Retry-After on every retryable provider error, not just 429s. Retryable
     # 5xx responses (e.g. Cloudflare 520/524) also carry the header or a structured
     # ``retry_after`` problem-detail body field; ignoring either turns an origin
     # outage into a retry storm.
-    _retry_after = parse_retry_after_seconds(
-        getattr(getattr(api_error, "response", None), "headers", None)
-    )
-    if _retry_after is None:
-        _error_body = getattr(api_error, "body", None)
-        if isinstance(_error_body, dict):
-            # Some providers nest it as error.retry_after (the same unwrap
-            # extract_api_error_context uses), others put it at the top level.
-            _nested = _error_body.get("error")
-            _payload = _nested if isinstance(_nested, dict) else _error_body
-            _retry_after = parse_retry_after_seconds(_payload.get("retry_after"))
+    _retry_after = retry_after_seconds(api_error)
     if _retry_after is not None:
         # Cap at 10 minutes. Anthropic Tier 1 input-token buckets reset in ~171s, so a 120s cap
         # caused us to retry before the actual reset window and re-trip the limit. 600s covers all
@@ -1888,8 +1878,18 @@ def route_classified_error(
             False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
         )
         if not pool_may_recover:
-            agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
             reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
+            from agent.turn_fallback_backoff import wait_before_fallback
+            interrupted = wait_before_fallback(
+                agent, api_error, classified.reason, _retry, messages=messages,
+                conversation_history=conversation_history, api_call_count=api_call_count,
+                reset_at=reset_at,
+            )
+            if interrupted is not None:
+                return _verdict("return", interrupted)
+            if _retry.restart_with_redirected_messages:
+                return _verdict("break")
+            agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
             if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
                 return _fallback_break()
 
