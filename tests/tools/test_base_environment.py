@@ -11,7 +11,7 @@ import pytest
 
 import pytest
 
-import tools.terminal_tool_sudo as terminal_tool_sudo
+from tools import terminal_tool_sudo
 from tools.environments.base import BaseEnvironment, _load_json_store
 from tools.environments.base_output import _BoundedOutputCollector
 

@@ -14,7 +14,7 @@ from ruamel.yaml import YAML
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github/workflows"
 
-EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
 JOB_REFERENCE = re.compile(r"\bneeds\.([A-Za-z0-9_-]+)")
 
 

@@ -110,7 +110,7 @@ class SSHEnvironment(BaseEnvironment):
                  identities_only: bool = True, known_hosts_path: str | Path = "",
                  host_key_policy: str = "accept-new", persistent: bool = True,
                  sync_back_on_cleanup: bool = False,
-                 sync_hermes_files: bool = False, probe_only: bool = False):
+                 sync_hermes_files: bool = False, probe_only: bool = False, sync_files: bool | None = None):
         super().__init__(cwd=cwd, timeout=timeout)
         self._persistent = bool(persistent)
         self._persist_session_state = self._persistent
@@ -120,7 +120,7 @@ class SSHEnvironment(BaseEnvironment):
         # ~/.hermes resources or pull remote ~/.hermes back.  Terminal and file
         # tools operate directly on the remote target; Hermes control-plane
         # state stays local.
-        self._sync_hermes_files = bool(sync_hermes_files)
+        self._sync_hermes_files = bool(sync_hermes_files if sync_files is None else sync_files)
         self._sync_back_on_cleanup = bool(sync_back_on_cleanup)
         self._cleaned = False
         self.host = host
