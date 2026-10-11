@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from pathlib import Path
 
 from gateway.run import GatewayRunner
@@ -156,21 +157,25 @@ def test_supports_quoted_remote_media_paths_with_spaces(tmp_path):
     assert result.response == f"MEDIA:{result.materialized_paths[0]}"
 
 
-def test_failed_remote_materialization_removes_directive_and_reports_failure(tmp_path):
+def test_failed_remote_materialization_removes_directive_and_reports_failure(tmp_path, caplog):
     from gateway.media_materializer import materialize_response_media
 
-    result = materialize_response_media(
-        "Screenshot\nMEDIA:/srv/captures/missing.png",
-        task_id="session-1",
-        env=_FailingRemoteEnvironment(),
-        cache_dir=tmp_path,
-    )
+    with caplog.at_level(logging.WARNING, logger="gateway.media_materializer"):
+        result = materialize_response_media(
+            "Screenshot\nMEDIA:/srv/captures/missing.png",
+            task_id="session-1",
+            env=_FailingRemoteEnvironment(),
+            cache_dir=tmp_path,
+        )
 
     assert result.response == "Screenshot"
     assert result.materialized_paths == ()
     assert len(result.failures) == 1
     assert result.failures[0].source_path == "/srv/captures/missing.png"
     assert "transfer failed" in result.failures[0].error
+    warnings = [record for record in caplog.records if record.name == "gateway.media_materializer"]
+    assert warnings and warnings[-1].exc_info is not None
+    assert "/srv/captures/missing.png" not in warnings[-1].getMessage()
 
 
 def test_failed_remote_materialization_removes_partial_gateway_file(tmp_path):

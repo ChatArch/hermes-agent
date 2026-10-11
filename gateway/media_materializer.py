@@ -132,12 +132,14 @@ def _active_materialization_env(task_ids: tuple[str, ...]) -> Any | None:
     try:
         from tools.terminal_tool_lifecycle import get_active_env
     except Exception:
+        logger.debug("Remote MEDIA active environment lookup unavailable", exc_info=True)
         return None
 
     for candidate_task_id in task_ids:
         try:
             candidate_env = get_active_env(candidate_task_id)
         except Exception:
+            logger.debug("Remote MEDIA active environment lookup failed", exc_info=True)
             continue
         if candidate_env is not None and getattr(
             candidate_env, "supports_file_materialization", False
@@ -155,6 +157,7 @@ def _task_overrides_match_ssh_alias(task_id: str, ssh_alias: str | None) -> bool
 
         overrides = resolve_task_overrides(task_id)
     except Exception:
+        logger.debug("Remote MEDIA task binding lookup failed", exc_info=True)
         return False
     if str(overrides.get("env_type") or "").strip().lower() != "ssh":
         return False
@@ -190,6 +193,7 @@ def _bound_materialization_env(
             file_ops = _get_file_ops(candidate_task_id)
             candidate_env = getattr(file_ops, "env", None)
         except Exception as exc:
+            logger.debug("Remote MEDIA bound environment creation failed", exc_info=True)
             last_error = exc
             continue
         if candidate_env is not None and getattr(
@@ -269,6 +273,7 @@ def materialize_response_media(
 
             effective_max = get_inbound_media_max_bytes()
         except Exception:
+            logger.debug("Remote MEDIA size limit lookup failed", exc_info=True)
             effective_max = DEFAULT_INBOUND_MEDIA_MAX_BYTES
     if not effective_max or effective_max <= 0:
         effective_max = DEFAULT_INBOUND_MEDIA_MAX_BYTES
@@ -358,7 +363,7 @@ def materialize_response_media(
                 try:
                     destination.unlink()
                 except OSError:
-                    pass
+                    logger.debug("Remote MEDIA rejected destination cleanup failed", exc_info=True)
                 raise RuntimeError("materialized file failed gateway media validation")
             actual_size = destination.stat().st_size
             reported_size = int(metadata.get("size", actual_size))
@@ -373,12 +378,12 @@ def materialize_response_media(
                 try:
                     destination.unlink()
                 except OSError:
-                    pass
+                    logger.debug("Remote MEDIA failed destination cleanup failed", exc_info=True)
             try:
                 parsed = _parse_resource(raw_value, ssh_alias=ssh_alias)
                 resolved_refs[parsed] = exc
             except Exception:
-                pass
+                logger.debug("Remote MEDIA failed reference could not be cached", exc_info=True)
             failures.append(
                 MediaMaterializationFailure(
                     source_path=source_for_error,
@@ -390,6 +395,7 @@ def materialize_response_media(
                 "Remote MEDIA materialization failed: %s: %s",
                 type(exc).__name__,
                 exc,
+                exc_info=True,
             )
 
     if not replacements:
