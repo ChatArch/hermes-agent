@@ -164,7 +164,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          fetch-depth: 2 # the merge commit and its first parent (the base branch tip)
+          # This exact official-sync PR needs its real merge parents for audited provenance.
+          # Ordinary PRs retain the cheap merge+base checkout.
+          fetch-depth: ${{ github.head_ref == 'sync/official-20261010' && '0' || '2' }}
 
       - uses: ./.github/actions/setup-pm
         with:

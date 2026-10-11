@@ -6,7 +6,7 @@ from scripts.code_health.model import Finding
 from scripts.code_health.official_import import reconcile_official_import
 from scripts.code_health import cli
 from scripts.ci import official_import_authors
-from tests.scripts.test_official_import_authors import _git, _history
+from tests.scripts.test_official_import_authors import _commit, _git, _history
 
 
 def _finding(rule, path="source.py", scope="fn", line=8):
@@ -89,3 +89,27 @@ def test_health_finds_verified_import_beneath_github_synthetic_merge(monkeypatch
         ["fork@example.com"], [upstream],
     ))
     assert cli._verified_official_tip(repo, base, synthetic) == upstream
+
+
+def test_shallow_synthetic_history_fails_closed_until_ancestry_is_fetched(monkeypatch, tmp_path):
+    repo, base, upstream = _history(tmp_path)
+    for index in range(3):
+        _commit(repo, f"followup-{index}.txt", "fork@example.com")
+    pr_head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "-b", "synthetic", base)
+    _git(repo, "merge", "--no-ff", "-m", "Merge PR branch into main", pr_head)
+    shallow = tmp_path / "shallow"
+    _git(tmp_path, "clone", "-q", "--depth", "2", repo.as_uri(), str(shallow))
+    assert _git(shallow, "rev-parse", "--is-shallow-repository") == "true"
+
+    original = official_import_authors.fork_authors
+    monkeypatch.setattr(official_import_authors, "fork_authors", lambda path, root, head: original(
+        path, root, head, verify=lambda sha: sha == upstream,
+    ))
+    monkeypatch.setenv("GITHUB_HEAD_REF", "sync/official-20261010")
+    with pytest.raises(RuntimeError, match="shallow"):
+        cli._verified_official_tip(shallow, base, None)
+
+    _git(shallow, "fetch", "-q", "--unshallow")
+    assert _git(shallow, "rev-parse", "--is-shallow-repository") == "false"
+    assert cli._verified_official_tip(shallow, base, None) == upstream

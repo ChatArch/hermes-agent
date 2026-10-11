@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 import subprocess
 import sys
 import time
@@ -89,6 +90,9 @@ def _skipped(why: str, as_json: bool) -> None:
 
 def _verified_official_tip(repo: Path, base: str, head: str | None) -> str | None:
     """Use verified commit history; individual files must still match exact upstream bytes."""
+    if (os.environ.get("GITHUB_HEAD_REF") == "sync/official-20261010"
+            and gitio.git(repo, "rev-parse", "--is-shallow-repository").strip() == "true"):
+        raise RuntimeError("official sync history is shallow; fetch full ancestry before judging health")
     candidate = gitio.commit_or_none(repo, head) if head else gitio.commit_or_none(repo, "HEAD")
     if candidate is None and head and head == gitio.resolve_tree(repo, "HEAD"):
         candidate = gitio.commit_or_none(repo, "HEAD")
