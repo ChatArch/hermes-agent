@@ -734,6 +734,17 @@ class TestEnvironmentHints:
         _pb._BACKEND_PROBE_CACHE.clear()
         assert "Bot Screen" not in _pb.build_environment_hints()
 
+    def test_unavailable_bot_screen_leaves_no_hint_and_records_failure(self, monkeypatch, caplog):
+        import agent.prompt_builder as _pb
+
+        def unavailable():
+            raise RuntimeError("screen probe unavailable")
+
+        monkeypatch.setattr("tools.bot_desktop.runtime.published_env", unavailable)
+        with caplog.at_level(logging.DEBUG, logger=_pb.logger.name):
+            assert _pb._bot_screen_hint() == ""
+        assert any(record.exc_info is not None for record in caplog.records)
+
     def test_remote_backend_never_sees_a_host_bot_screen(self, monkeypatch):
         """A sandboxed terminal cannot open windows on the gateway host, so the hint is local-only."""
         import agent.prompt_builder as _pb

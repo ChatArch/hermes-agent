@@ -1138,6 +1138,7 @@ def _bot_screen_hint() -> str:
         from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
         return bot_screen_note(True, _bd_runtime.published_env().get("DISPLAY"), _bd_lease.get().holder)
     except Exception:
+        logger.debug("Bot Screen hint unavailable", exc_info=True)
         return ""
 
 
@@ -1469,7 +1470,7 @@ def _scan_extra_root(root: Path, skill_files, tier: int, log_fmt: str) -> list[t
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
             rows.append(({**_build_snapshot_entry(skill_file, root, frontmatter, desc), "tier": tier, "root": root}, is_compatible))
         except Exception as e:
-            logger.debug(log_fmt, skill_file, e)
+            logger.debug(log_fmt, skill_file, e, exc_info=True)
     return rows
 
 
