@@ -88,10 +88,8 @@ def _skipped(why: str, as_json: bool) -> None:
 
 
 def _verified_official_tip(repo: Path, base: str, head: str | None) -> str | None:
-    """Only an actual clean commit with a claimed official merge can enter dual-parent review."""
+    """Use verified commit history; individual files must still match exact upstream bytes."""
     candidate = gitio.commit_or_none(repo, head) if head else gitio.commit_or_none(repo, "HEAD")
-    if gitio.git(repo, "status", "--porcelain").strip():
-        return None
     if candidate is None and head and head == gitio.resolve_tree(repo, "HEAD"):
         candidate = gitio.commit_or_none(repo, "HEAD")
     if candidate is None:
@@ -101,7 +99,26 @@ def _verified_official_tip(repo: Path, base: str, head: str | None) -> str | Non
         return None
     from scripts.ci.official_import_authors import fork_authors
     _, tips = fork_authors(repo, base, candidate)
+    if tips:
+        print(f"code health: verified official import parent {tips[0][:12]}", file=sys.stderr)
     return tips[0] if tips else None
+
+
+def _matches_official_blob(repo: Path, tip: str, head: str | None, path: str) -> bool:
+    official = gitio.git(repo, "rev-parse", "--verify", f"{tip}:{path}", check=False).strip()
+    if not official:
+        return False
+    if head is not None:
+        judged = gitio.git(repo, "rev-parse", "--verify", f"{head}:{path}", check=False).strip()
+        return judged == official
+    working = repo / path
+    if working.is_symlink() or not working.is_file():
+        return False
+    proc = subprocess.run(
+        ["git", "hash-object", "--no-filters", "--stdin"], cwd=repo, input=working.read_bytes(),
+        capture_output=True, timeout=60, check=False,
+    )
+    return proc.returncode == 0 and proc.stdout.decode("ascii").strip() == official
 
 
 def _review_official_side(repo: Path, tip: str, head: str | None, ruff: list[str],
@@ -115,14 +132,11 @@ def _review_official_side(repo: Path, tip: str, head: str | None, ruff: list[str
     new = measurer.measure(head, new_paths)
     from_official = compare(old, new, changes)
     apply_allows(from_official, new)
-    judged_tree = head or "HEAD"
     cache: dict[str, bool] = {}
 
     def same_blob(path: str) -> bool:
         if path not in cache:
-            upstream_oid = gitio.git(repo, "rev-parse", "--verify", f"{tip}:{path}", check=False).strip()
-            current_oid = gitio.git(repo, "rev-parse", "--verify", f"{judged_tree}:{path}", check=False).strip()
-            cache[path] = bool(upstream_oid and current_oid and upstream_oid == current_oid)
+            cache[path] = _matches_official_blob(repo, tip, head, path)
         return cache[path]
 
     return reconcile_official_import(fork_findings, from_official, same_blob=same_blob, tip=tip)

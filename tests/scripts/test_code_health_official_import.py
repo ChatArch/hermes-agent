@@ -54,11 +54,21 @@ def test_health_provenance_requires_real_merge_commit_not_only_subject(monkeypat
     tree = _git(repo, "rev-parse", "HEAD^{tree}")
     assert cli._verified_official_tip(repo, base, tree) == upstream
     (repo / "dirty.txt").write_text("not part of the reviewed tree", encoding="utf-8")
-    assert cli._verified_official_tip(repo, base, tree) is None
+    assert cli._verified_official_tip(repo, base, tree) == upstream
     (repo / "dirty.txt").unlink()
     _git(repo, "commit", "--amend", "-qm", "Merge fork-only work")
     assert cli._verified_official_tip(repo, base, _git(repo, "rev-parse", "HEAD")) is None
-    assert len(observed) == 2
+    assert len(observed) == 3
+
+
+def test_only_the_actual_judged_file_bytes_receive_official_credit(tmp_path):
+    repo, _base, upstream = _history(tmp_path)
+    path = "official.txt"
+    assert cli._matches_official_blob(repo, upstream, None, path)
+    (repo / path).write_text("uncommitted fork edit", encoding="utf-8")
+    assert not cli._matches_official_blob(repo, upstream, None, path)
+    # An explicit committed head judges Git objects, not the dirty worktree.
+    assert cli._matches_official_blob(repo, upstream, _git(repo, "rev-parse", "HEAD"), path)
 
 
 def test_unavailable_provenance_fails_before_expensive_health_measurement(monkeypatch, tmp_path):
