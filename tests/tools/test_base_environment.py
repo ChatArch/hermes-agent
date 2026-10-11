@@ -120,7 +120,7 @@ class TestWrapCommand:
             "printf '%s\\n' \"$HERMES_POLICY_PROBE\"; export HERMES_POLICY_PROBE=after",
             str(destination),
         )
-        completed = subprocess.run(["bash", "-c", wrapped], capture_output=True, text=True, timeout=10)
+        completed = subprocess.run(["bash", "-c", wrapped], capture_output=True, text=True, timeout=10, check=False)
         assert completed.returncode == 0
         result = {"output": completed.stdout}
         env._extract_cwd_from_output(result)

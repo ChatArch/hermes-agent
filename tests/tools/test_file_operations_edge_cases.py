@@ -95,6 +95,7 @@ class TestRawUtf8SampleStatus:
                     text=True,
                     capture_output=True,
                     timeout=kwargs.get("timeout"),
+                    check=False,
                 )
                 return {"output": proc.stdout, "returncode": proc.returncode}
 
@@ -102,7 +103,7 @@ class TestRawUtf8SampleStatus:
 
     def test_utf8_sample_ending_mid_codepoint_is_text(self, ops, tmp_path):
         path = tmp_path / "article.mdx"
-        path.write_bytes(b"a" * 998 + "把\n正常 MDX 文本\n".encode("utf-8"))
+        path.write_bytes(b"a" * 998 + "把\n正常 MDX 文本\n".encode())
 
         assert ops._raw_utf8_sample_status(str(path), 1000, path.stat().st_size) == "text"
 

@@ -224,7 +224,7 @@ class TestFeishuBackendGrantApproval:
             )
 
         assert len(adapter._ssh_grant_state) == 1
-        grant_id = list(adapter._ssh_grant_state.keys())[0]
+        grant_id = next(iter(adapter._ssh_grant_state))
         state = adapter._ssh_grant_state[grant_id]
         assert state["session_key"] == "my-session-key"
         assert state["message_id"] == "msg_ssh_002"

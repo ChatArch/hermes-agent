@@ -80,7 +80,7 @@ class CommandDef:
 VALID_BUSY_POLICIES: frozenset[str] = frozenset({"dispatch", "reject", "interrupt_then_dispatch"})
 
 
-from chatarch_custom.gateway.local_features import (  # noqa: E402
+from chatarch_custom.gateway.local_features import (
     active_session_bypass_commands as _chatarch_active_session_bypass_commands,
     command_defs as _chatarch_command_defs,
 )

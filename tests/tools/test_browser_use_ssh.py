@@ -38,9 +38,9 @@ def remote(monkeypatch):
     monkeypatch.setattr(file_tools, "_get_file_ops", lambda task: SimpleNamespace(env=env))
     monkeypatch.setattr(browser, "_blocked_url_in_code", lambda code: None)
     monkeypatch.setattr(browser, "_find_cli", lambda: ["gateway-cli"])
-    monkeypatch.setattr(browser, "_base_subprocess_env", lambda: {})
+    monkeypatch.setattr(browser, "_base_subprocess_env", dict)
     monkeypatch.setattr(browser, "_route_backend", lambda *a, **k: (_ for _ in ()).throw(AssertionError("gateway routing forbidden")))
-    monkeypatch.setattr(browser, "_read_browser_cfg", lambda: {})
+    monkeypatch.setattr(browser, "_read_browser_cfg", dict)
     for key in ("BU_CDP_URL", "BU_CDP_WS", "BROWSER_CDP_URL", "BROWSER_USE_API_KEY"):
         monkeypatch.delenv(key, raising=False)
     return env
@@ -106,7 +106,7 @@ def test_real_remote_wrapper_with_fixture_cli(remote, tmp_path, monkeypatch):
     clean_env = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin", "BU_CDP_URL": "http://127.0.0.1:9222"}
     def execute(command, **kwargs):
         remote.calls.append((command, kwargs))
-        proc = subprocess.run(command, shell=True, input=kwargs.get("stdin_data"), text=True, capture_output=True, env=clean_env, timeout=kwargs["timeout"])
+        proc = subprocess.run(command, shell=True, input=kwargs.get("stdin_data"), text=True, capture_output=True, env=clean_env, timeout=kwargs["timeout"], check=False)
         return {"returncode": proc.returncode, "output": proc.stdout}
     monkeypatch.setattr(remote, "execute", execute)
     monkeypatch.setenv("GATEWAY_TEST_SECRET", "must-not-be-forwarded")

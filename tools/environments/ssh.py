@@ -373,6 +373,7 @@ class SSHEnvironment(BaseEnvironment):
                 text=True,
                 timeout=timeout,
                 stdin=subprocess.DEVNULL,
+                check=False,
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("Remote file metadata check timed out") from exc
@@ -500,6 +501,7 @@ class SSHEnvironment(BaseEnvironment):
                         stderr=subprocess.PIPE,
                         timeout=transfer_timeout,
                         stdin=subprocess.DEVNULL,
+                        check=False,
                     )
                 except subprocess.TimeoutExpired as exc:
                     raise RuntimeError("Remote file transfer timed out") from exc

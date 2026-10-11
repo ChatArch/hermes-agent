@@ -4,7 +4,7 @@ import contextvars
 import json
 import os
 
-import tools.terminal_tool as terminal_tool
+from tools import terminal_tool
 from gateway.session_context import clear_session_vars, set_session_vars
 
 

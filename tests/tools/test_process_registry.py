@@ -956,7 +956,7 @@ class TestSpawnEnvSanitization:
             patch.object(registry, "_write_checkpoint"):
             registry.spawn_via_env(env, "echo hello")
 
-        args, kwargs = env.commands[0]
+        _, kwargs = env.commands[0]
         assert kwargs.get("rewrite_compound_background") is False
 
     def test_spawn_via_env_uses_non_login_shell_for_wrapped_command(self, registry):

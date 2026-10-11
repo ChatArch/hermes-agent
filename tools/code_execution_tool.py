@@ -590,7 +590,7 @@ def _finish_remote_kernel_result(kernel_result: dict[str, Any], *,
     return json.dumps(result, ensure_ascii=False)
 
 
-def _sandbox_tools_for(enabled_tools: Optional[List[str]]) -> frozenset:
+def _sandbox_tools_for(enabled_tools: Optional[list[str]]) -> frozenset:
     """Resolve the session's sandbox tool grant without widening an empty grant."""
     if enabled_tools is None:
         return SANDBOX_ALLOWED_TOOLS

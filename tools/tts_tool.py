@@ -354,7 +354,7 @@ def _resolve_output_base(
     return file_path, None
 
 
-def _media_tag(paths: List[str], voice_compatible: bool, task_id: Optional[str] = None) -> str:
+def _media_tag(paths: list[str], voice_compatible: bool, task_id: Optional[str] = None) -> str:
     """Keep gateway-generated audio distinct from same-named backend files."""
     from tools.image_source import _is_local_terminal_backend
     resources = paths if _is_local_terminal_backend(task_id) else [Path(path).absolute().as_uri() for path in paths]

@@ -475,7 +475,7 @@ def _build_markdown_post_rows(content: str) -> list[list[dict[str, str]]]:
     def _dedent_code_line(raw_line: str) -> str:
         if not code_block_indent:
             return raw_line
-        return raw_line[len(code_block_indent):] if raw_line.startswith(code_block_indent) else raw_line
+        return raw_line.removeprefix(code_block_indent)
 
     for raw_line in content.splitlines():
         stripped_line = raw_line.strip()
@@ -1316,7 +1316,7 @@ class FeishuAdapter(BasePlatformAdapter):
     def prefers_fresh_final_streaming(
         self,
         content: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> bool:
         """Finalize streamed replies as a new bottom message on Feishu.
 
@@ -1331,7 +1331,7 @@ class FeishuAdapter(BasePlatformAdapter):
     def fresh_final_preview_replacement_text(
         self,
         content: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> Optional[str]:
         """Replace the old Feishu streaming preview with a compact marker."""
         return "撤回"
@@ -1387,10 +1387,10 @@ class FeishuAdapter(BasePlatformAdapter):
         self._approval_state: dict[int, dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
         # SSH grant button state (grant_id → {session_key, message_id, chat_id, alias})
-        self._ssh_grant_state: Dict[int, Dict[str, str]] = {}
+        self._ssh_grant_state: dict[int, dict[str, str]] = {}
         self._ssh_grant_counter = itertools.count(1)
         # Update prompt button state (prompt_id → {session_key, message_id, chat_id})
-        self._update_prompt_state: Dict[int, Dict[str, str]] = {}
+        self._update_prompt_state: dict[int, dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
         # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
         self._pending_processing_reactions: OrderedDict[str, str] = OrderedDict()
@@ -1706,10 +1706,10 @@ class FeishuAdapter(BasePlatformAdapter):
     async def send_card(
         self,
         chat_id: str,
-        card: Dict[str, Any],
+        card: dict[str, Any],
         *,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a rendered Feishu interactive card payload."""
         if not self._client:
@@ -1785,7 +1785,7 @@ class FeishuAdapter(BasePlatformAdapter):
         content: str,
         *,
         reply_to: Optional[str],
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Create a Feishu thread by replying to ``reply_to`` with ``reply_in_thread``.
 
@@ -1937,7 +1937,7 @@ class FeishuAdapter(BasePlatformAdapter):
         alias: str,
         reason: str = "",
         cwd: str | None = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an interactive card asking for model-initiated backend authorization."""
         if not self._client:
@@ -2043,7 +2043,7 @@ class FeishuAdapter(BasePlatformAdapter):
                      t("platform.feishu.approval.resolved_by_user", icon=icon, label=label, user=user_name))
 
     @staticmethod
-    def _build_resolved_ssh_grant_card(*, choice: str, user_name: str, alias: str = "") -> Dict[str, Any]:
+    def _build_resolved_ssh_grant_card(*, choice: str, user_name: str, alias: str = "") -> dict[str, Any]:
         denied = choice == "deny"
         if choice == "allow_all":
             label = "SSH access allowed for all targets"
@@ -2461,7 +2461,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self,
         *,
         event: Any,
-        action_value: Dict[str, Any],
+        action_value: dict[str, Any],
         action: str,
         loop: Any,
     ) -> Any:
@@ -2510,7 +2510,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             if running_loop is loop:
-                result_box: Dict[str, Any] = {}
+                result_box: dict[str, Any] = {}
 
                 def _run_dispatch() -> None:
                     try:
@@ -2563,8 +2563,8 @@ class FeishuAdapter(BasePlatformAdapter):
         return True
 
     async def _send_interactive_card(
-        self, chat_id: str, card: Dict[str, Any], metadata: Optional[Dict[str, Any]], failure_message: str, *,
-        state_map: Dict[int, Dict[str, str]], state_id: int, session_key: str,
+        self, chat_id: str, card: dict[str, Any], metadata: Optional[dict[str, Any]], failure_message: str, *,
+        state_map: dict[int, dict[str, str]], state_id: int, session_key: str,
     ) -> SendResult:
         """Send a button card and, on success, remember where it went so a click can be validated."""
         response = await self._feishu_send_with_retry(
@@ -2611,7 +2611,7 @@ class FeishuAdapter(BasePlatformAdapter):
         allowed_ids = self._admins | self._allowed_group_users
         return not allowed_ids or bool(sender_ids & allowed_ids)
 
-    def _is_prompt_operator_authorized(self, sender_id: Any, state: Dict[str, str], *, default_chat_type: str = "") -> bool:
+    def _is_prompt_operator_authorized(self, sender_id: Any, state: dict[str, str], *, default_chat_type: str = "") -> bool:
         sender_ids = {getattr(sender_id, "open_id", ""), getattr(sender_id, "user_id", "")} - {"", None}
         allowed_ids = self._admins | self._allowed_group_users
         if allowed_ids and "*" not in allowed_ids and not sender_ids & allowed_ids:
@@ -2620,7 +2620,7 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_type = parts[3] if len(parts) >= 4 and parts[2] == "feishu" else default_chat_type
         return self._is_interactive_operator_authorized(sender_id, state.get("chat_id", ""), chat_type=chat_type)
 
-    def _handle_ssh_grant_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
+    def _handle_ssh_grant_card_action(self, *, event: Any, action_value: dict[str, Any], loop: Any) -> Any:
         """Schedule SSH grant resolution and build the synchronous callback response."""
         grant_id = action_value.get("ssh_grant_id")
         if grant_id is None:
@@ -2691,7 +2691,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return response
 
     def _validate_card_action(
-        self, *, event: Any, state: Dict[str, str], label: str, ident: Any,
+        self, *, event: Any, state: dict[str, str], label: str, ident: Any,
     ) -> Optional[tuple[str, str, str, str]]:
         """Shared operator/chat checks for approval + update-prompt clicks.
 
@@ -2801,9 +2801,9 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("Failed to resolve SSH grant from Feishu button: %s", exc)
 
     def _pop_validated_prompt_state(
-        self, *, states: Dict[int, Dict[str, str]], ident: Any, label: str, open_id: str, chat_id: str,
+        self, *, states: dict[int, dict[str, str]], ident: Any, label: str, open_id: str, chat_id: str,
         unauthorized_fmt: str, operator_repr: str, user_id: str = "",
-    ) -> Optional[Dict[str, str]]:
+    ) -> Optional[dict[str, str]]:
         """Re-validate on the loop thread (state may have changed since the callback) and pop."""
         state = states.get(ident)
         if not state:

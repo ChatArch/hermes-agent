@@ -688,7 +688,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     return "default" if profile == "default" else f"profile:{profile}"
 
 
-def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
+def resolve_task_overrides(task_id: Optional[str]) -> dict[str, Any]:
     """Return the env overrides for *task_id*, raw key first then resolved key.
 
     ``register_task_env_overrides`` writes under the *raw* task/session id.  The
@@ -970,7 +970,7 @@ def _get_env_config() -> dict[str, Any]:
     }
 
 
-def apply_task_env_overrides(config: Dict[str, Any], overrides: Dict[str, Any] | None) -> Dict[str, Any]:
+def apply_task_env_overrides(config: dict[str, Any], overrides: dict[str, Any] | None) -> dict[str, Any]:
     """Return terminal config with per-task backend overrides applied.
 
     This is the narrow bridge used by section-scoped `/ssh` bindings: global

@@ -217,7 +217,7 @@ class TestSSHBulkUploadWiring:
 
         monkeypatch.setattr(ssh_env, "FileSyncManager", FakeSyncManager)
 
-        env = SSHEnvironment(host="h", user="u", sync_hermes_files=True)
+        SSHEnvironment(host="h", user="u", sync_hermes_files=True)
 
         assert "bulk_upload_fn" in captured_kwargs
         assert captured_kwargs["bulk_upload_fn"] is not None

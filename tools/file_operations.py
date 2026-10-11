@@ -476,7 +476,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def _is_likely_binary(
         self,
         path: str,
-        content_sample: str = None,
+        content_sample: str | None = None,
         *,
         raw_utf8_status: str | None = None,
     ) -> bool:

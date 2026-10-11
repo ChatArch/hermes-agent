@@ -107,7 +107,7 @@ async def test_draining_gateway_rejects_new_non_active_session_turn():
     assert isinstance(result, str)
     assert "Gateway is restarting" in result
     runner._handle_thread_command.assert_not_awaited()
-    assert not getattr(adapter, "sent_messages")
+    assert not adapter.sent_messages
 
 
 @pytest.mark.asyncio

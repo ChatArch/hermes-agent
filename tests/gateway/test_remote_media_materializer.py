@@ -235,7 +235,7 @@ def test_remote_materializer_caps_unique_files_per_response(tmp_path):
 
 
 def test_remote_materializer_uses_one_response_deadline(monkeypatch, tmp_path):
-    import gateway.media_materializer as media_materializer
+    from gateway import media_materializer
 
     ticks = iter([0.0, 1.0, 11.0])
     monkeypatch.setattr(

@@ -2148,7 +2148,7 @@ class BasePlatformAdapter(ABC):
     def fresh_final_preview_replacement_text(
         self,
         content: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> Optional[str]:
         """Optional text used to replace a stale streaming preview.
 
@@ -3874,7 +3874,7 @@ class BasePlatformAdapter(ABC):
         reply: CardReply,
         *,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Deliver a structured gateway card with text fallback.
 

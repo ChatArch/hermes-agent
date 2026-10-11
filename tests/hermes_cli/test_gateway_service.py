@@ -976,10 +976,6 @@ class TestLaunchdServiceRecovery:
 
     def test_launchd_stop_tolerates_already_unloaded(self, monkeypatch, capsys):
         """launchd_stop silently handles exit codes 3/113 (job not loaded)."""
-        label = gateway_cli.get_launchd_label()
-        domain = gateway_cli._launchd_domain()
-        target = f"{domain}/{label}"
-
         def fake_run(cmd, check=False, **kwargs):
             if "bootout" in cmd:
                 raise gateway_cli.subprocess.CalledProcessError(3, cmd, stderr="Could not find service")
