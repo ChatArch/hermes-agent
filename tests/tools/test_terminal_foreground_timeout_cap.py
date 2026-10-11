@@ -8,6 +8,8 @@ import json
 from unittest.mock import patch, MagicMock
 from tools.environments.local import LocalEnvironment
 
+from tools.environments.local import LocalEnvironment
+
 # ---------------------------------------------------------------------------
 # Shared test config dict — mirrors _get_env_config() return shape.
 # ---------------------------------------------------------------------------
