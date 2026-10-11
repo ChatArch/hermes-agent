@@ -277,14 +277,17 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
         _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides,
         apply_task_env_overrides)
 
-    config = apply_task_env_overrides(_get_env_config(), resolve_task_overrides(raw_task_id))
-    env_type = config["env_type"]
+    from gateway.ssh_switch_state import runtime_config_snapshot
     overrides = resolve_task_overrides(raw_task_id)
+    config, snapshot = runtime_config_snapshot(raw_task_id, overrides, _get_env_config())
+    env_type = config["env_type"]
     try:
         recorded_cwd = get_session_cwd(raw_task_id)
     except Exception:
         recorded_cwd = None
     cwd = coerce_ssh_remote_cwd(overrides.get("cwd") or recorded_cwd or config["cwd"], env_type)
+    if snapshot is not None:
+        cwd = config["cwd"]
     # Re-apply the container cwd guard: a gateway/TUI/ACP override is a raw HOST
     # path and ``docker run -w <host-path>`` makes search_files & co silently
     # return nothing. Valid in-container overrides (/workspace, /root) pass.
@@ -327,12 +330,24 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         get_session_cwd, record_session_cwd)
 
     raw_task_id = task_id or "default"
+    from tools.terminal_tool import resolve_task_overrides
+    from gateway.ssh_switch_state import runtime_config_snapshot, assert_snapshot
+    from gateway.ssh_switch_env import cached_env, publish_env
+    from tools.terminal_tool import _get_env_config
+    _config, snapshot = runtime_config_snapshot(raw_task_id, resolve_task_overrides(raw_task_id), _get_env_config())
     task_id = _resolve_container_task_id(raw_task_id)
 
     # Fast path: cached AND the environment is still alive (cleanup thread may have killed it).
     with _file_ops_lock:
         cached = _file_ops_cache.get(task_id)
+    if snapshot is not None:
+        current = cached_env(snapshot, _active_environments, _last_activity, _env_lock, (task_id,))
+        if cached is not None and (getattr(cached, "_hermes_ssh_snapshot", None) != snapshot
+                                   or getattr(cached, "_hermes_ssh_env", None) is not current):
+            clear_file_ops_cache(task_id)
+            cached = None
     if cached is not None:
+        assert_snapshot(snapshot)
         with _env_lock:
             if task_id in _active_environments:
                 _last_activity[task_id] = time.time()
@@ -360,19 +375,18 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
 
     with task_lock:
         # Double-check: another thread may have created it while we waited.
-        with _env_lock:
-            terminal_env = _active_environments.get(task_id)
-            if terminal_env is not None:
-                _last_activity[task_id] = time.time()
+        terminal_env = cached_env(snapshot, _active_environments, _last_activity, _env_lock, (task_id,))
         if terminal_env is None:
             env_type, terminal_env = _create_terminal_env_for_file_ops(raw_task_id, task_id)
-            with _env_lock:
-                _active_environments[task_id] = terminal_env
-                _last_activity[task_id] = time.time()
+            publish_env(snapshot, terminal_env, _active_environments, _last_activity, _env_lock, task_id)
             _start_cleanup_thread()
             logger.info("%s environment ready for task %s", env_type, task_id[:8])
 
     file_ops = ShellFileOperations(terminal_env)
+    assert_snapshot(snapshot)
+    if snapshot is not None:
+        file_ops._hermes_ssh_snapshot = snapshot
+        file_ops._hermes_ssh_env = terminal_env
     with _file_ops_lock:
         _file_ops_cache[task_id] = file_ops
     return file_ops

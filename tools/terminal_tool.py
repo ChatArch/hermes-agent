@@ -252,6 +252,13 @@ _container_aliases: dict[str, str] = {}
 _container_alias_lock = threading.Lock()
 
 
+def _cwd_record_key(session_key: Optional[str]) -> str:
+    raw = str(session_key or "default")
+    direct = _task_env_overrides.get(_qualify_task_key(raw)) or {}
+    # Only projections explicitly owned by SSH Mode alias their raw/session cwd.
+    return _qualify_task_key(str(direct.get("_ssh_switch_scope") or raw))
+
+
 def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
     """Record *cwd* as *session_key*'s working directory (after a completed
     command, or on workspace-override registration). None/empty keys collapse
@@ -259,7 +266,7 @@ def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
     qualified (:func:`_qualify_task_key`); the read/clear side qualifies identically."""
     if not isinstance(cwd, str) or not cwd.strip():
         return
-    key = _qualify_task_key(str(session_key or "default"))
+    key = _cwd_record_key(session_key)
     with _session_cwd_lock:
         if _session_cwd.get(key) != cwd:
             _session_cwd[key] = cwd
@@ -269,13 +276,13 @@ def get_session_cwd(session_key: Optional[str]) -> Optional[str]:
     """Recorded cwd for *session_key*, or None. No fallback chain on purpose:
     callers decide what an absent record means. None/empty keys read ``"default"``."""
     with _session_cwd_lock:
-        return _session_cwd.get(_qualify_task_key(str(session_key or "default")))
+        return _session_cwd.get(_cwd_record_key(session_key))
 
 
 def clear_session_cwd(session_key: str) -> None:
     """Drop a session's cwd record (session teardown)."""
     with _session_cwd_lock:
-        _session_cwd.pop(_qualify_task_key(session_key), None)
+        _session_cwd.pop(_cwd_record_key(session_key), None)
 
 
 def _sanitize_cwd_for_live_env(env: Any, new_cwd: str) -> Optional[str]:
@@ -373,6 +380,10 @@ def evict_task_environment(
     except Exception:
         pass
     for env in evicted:
+        from gateway.ssh_switch_env import projection_update_active, retire_env
+        if projection_update_active():
+            retire_env(env)
+            continue
         try:
             if hasattr(env, "cleanup"):
                 env.cleanup()
@@ -418,11 +429,16 @@ def register_task_env_overrides(task_id: str, overrides: dict[str, Any]):
         previous_backend = {key: previous.get(key) for key in _BACKEND_OVERRIDE_KEYS}
         next_backend = {key: next_overrides.get(key) for key in _BACKEND_OVERRIDE_KEYS}
         if previous_backend != next_backend:
+            from gateway.ssh_switch_env import projection_update_active
+            if projection_update_active():
+                clear_session_cwd(task_id)
+                if next_overrides.get("cwd"):
+                    record_session_cwd(task_id, next_overrides["cwd"])
             evict_task_environment(
                 task_id,
                 environment_keys={
-                    task_id,
-                    _session_environment_key_from_raw(task_id),
+                    _qualify_task_key(task_id),
+                    _qualify_task_key(_session_environment_key_from_raw(task_id)),
                 },
             )
             return
@@ -702,6 +718,10 @@ def resolve_task_overrides(task_id: Optional[str]) -> dict[str, Any]:
     drift apart.
     """
     raw = task_id or "default"
+    from gateway.ssh_switch_state import route_from_context
+    selected = route_from_context(raw, _task_env_overrides.get(_qualify_task_key(raw)))
+    if selected is not None:
+        return selected
     keys = [_qualify_task_key(raw), _resolve_container_task_id(raw),
             _qualify_task_key(_session_environment_key_from_raw(raw))]
     try:
@@ -1291,6 +1311,7 @@ class _ExecPlan:
     # Set when a foreground call asked for more than FOREGROUND_MAX_TIMEOUT and was promoted to a
     # tracked background process instead of being refused (the requested seconds, for the note).
     promoted_from_foreground_timeout: Optional[int] = None
+    ssh_route_snapshot: Any = None
 
 
 _PROMOTED_NOTE = (
@@ -1317,7 +1338,9 @@ def _plan_execution(
             f"Invalid command: expected string, got {type(command).__name__}", status="error",
         ))
 
-    config = apply_task_env_overrides(_get_env_config(), resolve_task_overrides(task_id))
+    from gateway.ssh_switch_state import runtime_config_snapshot
+    overrides = {} if _host_local else resolve_task_overrides(task_id)
+    config, route_snapshot = runtime_config_snapshot(task_id, overrides, _get_env_config())
     env_type = "local" if _host_local else config["env_type"]
 
     # Fail closed under a refusal scope: the routed profile's terminal
@@ -1338,11 +1361,12 @@ def _plan_execution(
     # Per-task overrides (RL/benchmark envs, ACP workspace cwd) win over
     # the global env-var config; ``resolve_task_overrides`` reads the raw
     # task id first, then the collapsed container id.
-    overrides = resolve_task_overrides(task_id)
     image = _select_image(env_type, overrides, config)
 
     cwd = coerce_ssh_remote_cwd(
         overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"], env_type)
+    if route_snapshot is not None:
+        cwd = config["cwd"]
     host_cwd = _resolve_task_host_cwd(config, task_id)
     # config["cwd"] was sanitized for container backends in _get_env_config
     # but an override / session record is raw: a host path would reach
@@ -1383,6 +1407,7 @@ def _plan_execution(
         config=config, env_type=env_type, effective_task_id=effective_task_id,
         image=image, cwd=cwd, host_cwd=host_cwd, effective_timeout=timeout or config["timeout"],
         promoted_from_foreground_timeout=promoted,
+        ssh_route_snapshot=route_snapshot,
     )
 
 
@@ -1418,9 +1443,16 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
     """
     _start_cleanup_thread()
     env_type, eff = plan.env_type, plan.effective_task_id
+    from gateway.ssh_switch_env import cached_env, publish_env
+    snapshot = plan.ssh_route_snapshot
 
-    with _env_lock:
-        env: Any = _lookup_active_env(eff, task_id)
+    def current_env():
+        if snapshot is not None:
+            return cached_env(snapshot, _active_environments, _last_activity, _env_lock, (eff, task_id))
+        with _env_lock:
+            return _lookup_active_env(eff, task_id)
+
+    env: Any = current_env()
     if env is not None:
         return env
 
@@ -1428,8 +1460,7 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
         task_lock = _creation_locks.setdefault(eff, threading.Lock())
 
     with task_lock:
-        with _env_lock:
-            env = _lookup_active_env(eff, task_id)
+        env = current_env()
         if env is not None:
             return env
 
@@ -1451,9 +1482,7 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
                 status="disabled",
             ))
 
-        with _env_lock:
-            _active_environments[eff] = new_env
-            _last_activity[eff] = time.time()
+        publish_env(snapshot, new_env, _active_environments, _last_activity, _env_lock, eff)
         logger.info("%s environment ready for task %s", env_type, eff[:8])
         return new_env
 
@@ -1529,6 +1558,7 @@ def _run_foreground(
         command=command, result=result, env=env, env_type=env_type, effective_task_id=eff,
         task_id=task_id, session_id=session_id, session_key=session_key, workdir=workdir,
         command_cwd=command_cwd, approval_note=approval_note,
+        route_snapshot=plan.ssh_route_snapshot,
     )
 
 
@@ -1682,12 +1712,15 @@ def terminal_tool(
         verdict = _run_approval_guards(command, env_type, plan.config, force=force)
 
         pty_disabled = pty and _command_requires_pipe_stdin(command)
+        from gateway.ssh_switch_state import assert_snapshot
+        assert_snapshot(plan.ssh_route_snapshot)
+        from gateway.ssh_switch_env import run_admitted
         if plan.promoted_from_foreground_timeout is not None:
             # Promotion implies notify_on_complete; watch_patterns is a background-only flag the
             # caller could not have meant for a foreground call, and the two are exclusive anyway.
             background, notify_on_complete, watch_patterns = True, True, None
         if background:
-            result = spawn_background_process(
+            result = run_admitted(plan.ssh_route_snapshot, env, spawn_background_process,
                 command=command, env=env, env_type=env_type, effective_task_id=effective_task_id,
                 task_id=task_id, session_key=session_key, workdir=workdir, cwd=cwd,
                 mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
@@ -1701,7 +1734,7 @@ def terminal_tool(
             if plan.promoted_from_foreground_timeout is not None:
                 result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
             return _metered(None if _host_local else plan, result)
-        return _metered(None if _host_local else plan, _run_foreground(
+        return _metered(None if _host_local else plan, run_admitted(plan.ssh_route_snapshot, env, _run_foreground,
             command, env, plan,
             task_id=task_id, session_id=session_id, session_key=session_key,
             workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,

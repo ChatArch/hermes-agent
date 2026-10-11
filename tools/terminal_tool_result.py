@@ -207,9 +207,10 @@ def finalize_foreground_result(
     *, command: str, result: dict, env: Any, env_type: str, effective_task_id: str,
     task_id: Optional[str], session_id: Optional[str], session_key: str,
     workdir: Optional[str], command_cwd: Optional[str], approval_note: Optional[str],
+    route_snapshot=None,
 ) -> str:
     """Turn a raw ``env.execute`` result into the tool's JSON result string."""
-    from tools.terminal_tool import record_session_cwd
+    from gateway.ssh_switch_state import record_admitted_cwd
 
     # Record the cwd this command finished in as THIS session's durable cwd —
     # only when the command actually reported it (an interrupted/killed command
@@ -221,7 +222,7 @@ def finalize_foreground_result(
     if (result or {}).get("cwd_observed"):
         observed_cwd = (result or {}).get("cwd") or getattr(env, "cwd", None)
     if not workdir and observed_cwd:
-        record_session_cwd(session_key, observed_cwd)
+        record_admitted_cwd(route_snapshot, session_key, observed_cwd)
 
     output = result.get("output", "")
     returncode = result.get("returncode", 0)

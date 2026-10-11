@@ -1,4 +1,5 @@
 import json
+import pytest
 
 from gateway.session_context import clear_session_vars, set_session_vars
 from gateway.ssh_bindings import (
@@ -11,6 +12,14 @@ from gateway.ssh_targets import SshTarget
 
 
 SESSION_KEY = "agent:main:feishu:group:oc_chat:omt_thread"
+
+
+@pytest.fixture(autouse=True)
+def _use_the_same_registry_for_committed_routing(monkeypatch):
+    """The tool and durable routing reader consume one target registry in production."""
+    from gateway import ssh_bindings
+    from tools import ssh_mode_tool
+    monkeypatch.setattr(ssh_bindings, "load_ssh_targets", lambda: ssh_mode_tool.load_ssh_targets())
 
 
 def _call(args):

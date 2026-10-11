@@ -414,25 +414,23 @@ def _get_or_create_env(task_id: str):
         _resolve_container_task_id, _resolve_task_host_cwd, _is_container_backend, _select_image,
         resolve_task_overrides, apply_task_env_overrides,
     )
+    from gateway.ssh_switch_state import runtime_config_snapshot
+    from gateway.ssh_switch_env import cached_env, publish_env
+    selected_overrides = resolve_task_overrides(task_id)
+    config, snapshot = runtime_config_snapshot(task_id, selected_overrides, _get_env_config())
     effective_task_id = _resolve_container_task_id(task_id)
     def _cached():
-        with _env_lock:
-            env = _active_environments.get(effective_task_id)
-            if env is not None:
-                _last_activity[effective_task_id] = time.time()
-        return env
+        return cached_env(snapshot, _active_environments, _last_activity, _env_lock, (effective_task_id,))
     env = _cached()
     if env is not None:
-        return env, apply_task_env_overrides(_get_env_config(), resolve_task_overrides(task_id))["env_type"]
+        return env, config["env_type"]
     with _creation_locks_lock:
         task_lock = _creation_locks.setdefault(effective_task_id, threading.Lock())
     with task_lock:
         env = _cached()
         if env is not None:
-            return env, apply_task_env_overrides(_get_env_config(), resolve_task_overrides(task_id))["env_type"]
-        config = _get_env_config()
-        overrides = resolve_task_overrides(task_id)
-        config = apply_task_env_overrides(config, overrides)
+            return env, config["env_type"]
+        overrides = selected_overrides
         env_type = config["env_type"]
         container_config = None
         if _is_container_backend(env_type):
@@ -443,15 +441,13 @@ def _get_or_create_env(task_id: str):
                      env_type, effective_task_id[:8])
         env = _create_environment(
             env_type=env_type, image=_select_image(env_type, overrides, config),
-            cwd=overrides.get("cwd") or config["cwd"], timeout=config["timeout"],
+            cwd=config["cwd"], timeout=config["timeout"],
             ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
             container_config=container_config,
             local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
             task_id=effective_task_id, host_cwd=_resolve_task_host_cwd(config, task_id),
         )
-        with _env_lock:
-            _active_environments[effective_task_id] = env
-            _last_activity[effective_task_id] = time.time()
+        publish_env(snapshot, env, _active_environments, _last_activity, _env_lock, effective_task_id)
         _start_cleanup_thread()
         logger.info("%s environment ready for execute_code task %s",
                      env_type, effective_task_id[:8])
