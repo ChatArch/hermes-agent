@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -14,7 +17,7 @@ from gateway.platforms.qqbot.constants import (
     MEDIA_TYPE_VOICE,
     MSG_TYPE_MEDIA,
 )
-from tools.send_message_senders import _qqbot_media_file_type
+from tools.send_message_senders import _qqbot_media_file_type, _qqbot_upload_local_file
 from tools.send_message_tool import _send_qqbot, _send_to_platform
 
 
@@ -133,6 +136,38 @@ def _token_ok():
 
 
 class TestSendQqbotMedia:
+    def test_local_file_checks_do_not_block_event_loop(self, tmp_path):
+        img = tmp_path / "safe.png"
+        img.write_bytes(b"png")
+        caller_thread = threading.get_ident()
+        probed_threads = []
+        real_exists, real_is_file = Path.exists, Path.is_file
+
+        def checked_exists(path):
+            probed_threads.append(threading.get_ident())
+            return real_exists(path)
+
+        def checked_is_file(path):
+            probed_threads.append(threading.get_ident())
+            return real_is_file(path)
+
+        class Upload:
+            def __init__(self, **kwargs):
+                pass
+
+            async def upload(self, **kwargs):
+                assert kwargs["file_path"] == str(img)
+                return {"file_info": "FI"}
+
+        with patch.object(Path, "exists", checked_exists), patch.object(Path, "is_file", checked_is_file), patch(
+            "gateway.platforms.qqbot.chunked_upload.ChunkedUploader", Upload,
+        ):
+            result = asyncio.run(_qqbot_upload_local_file(
+                SimpleNamespace(put=None), {}, "c2c", "u1", str(img), MEDIA_TYPE_IMAGE,
+            ))
+        assert result == {"file_info": "FI"}
+        assert probed_threads and caller_thread not in probed_threads
+
     def test_media_path_calls_deliver_after_token(self, tmp_path):
         img = tmp_path / "logo.png"
         img.write_bytes(b"png-data")
@@ -246,6 +281,14 @@ class TestQqbotMediaFailureFallsBackToText:
     def test_missing_media_file_still_delivers_caption_as_text(self, tmp_path):
         missing = tmp_path / "gone.png"  # never written: stale path
         posted = []
+        probed_threads = []
+        caller_thread = threading.get_ident()
+        real_exists = os.path.exists
+
+        def checked_exists(path):
+            if str(path) == str(missing):
+                probed_threads.append(threading.get_ident())
+            return real_exists(path)
 
         def _post(url, json):
             if "getAppAccessToken" in url:
@@ -253,7 +296,9 @@ class TestQqbotMediaFailureFallsBackToText:
             posted.append((url, json))
             return SimpleNamespace(status_code=200, json=lambda: {"id": "text-mid"})
 
-        with patch.dict("sys.modules", {"httpx": _token_client(_post)}):
+        with patch.dict("sys.modules", {"httpx": _token_client(_post)}), patch(
+            "tools.send_message_senders.os.path.exists", side_effect=checked_exists,
+        ):
             result = asyncio.run(
                 _send_qqbot(
                     _pconfig(),
@@ -265,6 +310,7 @@ class TestQqbotMediaFailureFallsBackToText:
             )
 
         assert result.get("success") is True, result
+        assert probed_threads and caller_thread not in probed_threads
         assert any(json and json.get("content") == "the caption text" for _, json in posted), posted
         assert any("omitted" in w or "skipping" in w for w in result.get("warnings", [])), result
 

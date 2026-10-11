@@ -651,17 +651,24 @@ async def _qqbot_api_json(client, headers: dict, method: str, path: str,
     return data if isinstance(data, dict) else {}
 
 
-async def _qqbot_upload_local_file(client, headers, chat_type, chat_id, media_path, file_type) -> dict:
-    """Chunked-upload a local file; returns the ``/files`` complete response."""
+def _qqbot_existing_media_path(media_path):
+    """Resolve and validate a local upload path off the event-loop thread."""
     from pathlib import Path as _Path
-    from gateway.platforms.qqbot.chunked_upload import ChunkedUploader
-    from gateway.platforms.qqbot.constants import FILE_UPLOAD_TIMEOUT
 
     local_path = _Path(media_path).expanduser()
     if not local_path.is_absolute():
         local_path = (_Path.cwd() / local_path).resolve()
     if not local_path.exists() or not local_path.is_file():
         raise FileNotFoundError(f"Media file not found: {local_path}")
+    return local_path
+
+
+async def _qqbot_upload_local_file(client, headers, chat_type, chat_id, media_path, file_type) -> dict:
+    """Chunked-upload a local file; returns the ``/files`` complete response."""
+    from gateway.platforms.qqbot.chunked_upload import ChunkedUploader
+    from gateway.platforms.qqbot.constants import FILE_UPLOAD_TIMEOUT
+
+    local_path = await asyncio.to_thread(_qqbot_existing_media_path, media_path)
 
     async def _api_request(method, path, body=None, timeout=FILE_UPLOAD_TIMEOUT):
         return await _qqbot_api_json(client, headers, method, path, body, timeout=timeout)
@@ -811,12 +818,12 @@ async def _send_qqbot(pconfig, chat_id, message, media_files=None, caption=None)
                     # Caption applies to the first bubble only (single-file
                     # caption split already enforced by the caller).
                     media_caption = caption if index == 0 else None
-                    if not os.path.exists(media_path):
-                        from urllib.parse import urlparse as _urlparse
-                        if _urlparse(str(media_path)).scheme not in {"http", "https"}:
-                            warnings.append(f"QQBot media file not found, skipping: {media_path}")
-                            logger.warning(warnings[-1])
-                            continue
+                    from urllib.parse import urlparse as _urlparse
+                    if (_urlparse(str(media_path)).scheme not in {"http", "https"}
+                            and not await asyncio.to_thread(os.path.exists, media_path)):
+                        warnings.append(f"QQBot media file not found, skipping: {media_path}")
+                        logger.warning(warnings[-1])
+                        continue
                     result = await _qqbot_deliver_one_media(
                         client, headers, chat_id, media_path, bool(is_voice), caption=media_caption)
                     if isinstance(result, dict) and result.get("error"):
