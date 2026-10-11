@@ -6,7 +6,6 @@ re-sent lower/split/background, 251 of them test suites).
 """
 import json
 from unittest.mock import patch, MagicMock
-from tools.environments.local import LocalEnvironment
 
 from tools.environments.local import LocalEnvironment
 
