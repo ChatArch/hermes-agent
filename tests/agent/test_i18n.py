@@ -101,6 +101,19 @@ def test_default_when_nothing_set(monkeypatch):
     assert i18n.get_language() == "en"
 
 
+def test_unscoped_language_does_not_fall_back_to_launch_profile_environment(monkeypatch, tmp_path):
+    from agent import secret_scope
+
+    home = tmp_path / "served"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_LANGUAGE", "zh")
+    monkeypatch.setattr(secret_scope, "get_secret", lambda name: (_ for _ in ()).throw(
+        secret_scope.UnscopedSecretError("profile scope missing")))
+    monkeypatch.setattr(i18n, "_config_language_cached", lambda path: "de")
+
+    assert i18n._resolve_language(str(home)) == "de"
+
+
 def test_language_is_per_profile_under_multiplex(monkeypatch, tmp_path):
     """HERMES_LANGUAGE in the DEFAULT profile's environ must not leak into a secondary profile's
     turn, and the config-language cache must not freeze one profile's ``display.language`` for all."""

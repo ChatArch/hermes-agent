@@ -209,7 +209,7 @@ def _resolve_language(home: str) -> str:
     try:
         env_lang = get_secret("HERMES_LANGUAGE")
     except UnscopedSecretError:
-        env_lang = os.environ.get("HERMES_LANGUAGE")  # unscoped default-profile path: environ IS its own value
+        env_lang = None  # A routed profile must not inherit the launch profile's environment.
     return _normalize_lang(env_lang, home) if env_lang else _config_language_cached(home) or DEFAULT_LANGUAGE
 
 
