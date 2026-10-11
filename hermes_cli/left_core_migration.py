@@ -41,6 +41,7 @@ def _read_config(home: Path) -> dict:
     try:
         data = utils.fast_safe_load((home / "config.yaml").read_text(encoding="utf-8-sig"))
     except Exception:  # missing/unreadable/invalid YAML: nothing we can see is in use
+        logger.debug("left-core config unreadable for %s", home, exc_info=True)
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -58,6 +59,7 @@ def platform_configured_on(home: Path, name: str) -> bool:
     try:
         yaml_cfg = config_loader.read_yaml_layers(home)
     except Exception:  # malformed config.yaml: the gateway falls back to gateway.json alone too
+        logger.debug("left-core gateway YAML unreadable for %s", home, exc_info=True)
         yaml_cfg = {}
     yaml_cfg = yaml_cfg if isinstance(yaml_cfg, dict) else {}
     block = config_loader.merge_platform_sections(
@@ -91,7 +93,7 @@ def homeassistant_in_use(home: Path, *, process_env: bool = False) -> bool:
             if (get_secret("HASS_TOKEN", "") or "").strip():
                 return True
         except Exception:
-            pass
+            logger.debug("left-core process secret unavailable for %s", home, exc_info=True)
     if platform_configured_on(home, "homeassistant"):
         return True
     return _toolset_listed(_read_config(home), frozenset({"homeassistant", "hermes-homeassistant"}))
@@ -297,6 +299,7 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
         try:
             _record_migration(home, feature)
         except Exception as exc:
+            logger.warning("left-core toolset scope could not be kept for %s", home, exc_info=True)
             say(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin: its per-platform "
                 f"toolset selection could not be kept ({exc}). Check `hermes tools`"
                 + ("." if present else f" and run `{_install_command(feature.plugin, home)}`."))
@@ -343,12 +346,13 @@ def _install_one(home: Path, feature: LeftCoreFeature, *, install: Callable[[str
     try:
         result = install(feature.plugin)
     except Exception as exc:  # network, uv, kill list — report, do not raise
+        logger.debug("left-core plugin install failed for %s", feature.plugin, exc_info=True)
         result = {"ok": False, "error": str(exc)}
     if result.get("ok"):
         try:
             _record_migration(home, feature)
         except Exception as exc:  # the next run sees the plugin dir and records it then
-            logger.debug("left-core install marker not written for %s: %s", home, exc)
+            logger.debug("left-core install marker not written for %s: %s", home, exc, exc_info=True)
         say(f"  ✓ {feature.label} moved out of core — installed the '{feature.plugin}' plugin from the "
             f"catalog ({feature.unchanged}).")
         return True
@@ -385,7 +389,7 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
             features = _pending(home, say=labelled(home))
             consent = bool(features) and _home_consent(home)
         except Exception as exc:
-            logger.debug("left-core migration skipped for %s: %s", home, exc)
+            logger.debug("left-core migration skipped for %s: %s", home, exc, exc_info=True)
             continue
         for feature in features:
             pending.setdefault((feature.plugin, consent), (feature, []))[1].append(home)
@@ -420,6 +424,7 @@ def _gateway_serves(home: Path) -> bool:
         from gateway.status import resolve_gateway_liveness
         return resolve_gateway_liveness(profile_dir=home, use_cache=False).running
     except Exception:
+        logger.debug("left-core gateway liveness unavailable for %s", home, exc_info=True)
         return False
 
 

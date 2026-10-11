@@ -6,6 +6,7 @@ Real config/.env files under a temp home; the catalog lookup and the network ins
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,13 @@ def test_homeassistant_in_use_matches_what_core_activated(tmp_path, env, config)
 ])
 def test_homeassistant_not_in_use(tmp_path, env, config):
     assert lcm.homeassistant_in_use(_home(tmp_path, env=env, config=config)) is False
+
+
+def test_malformed_migration_config_fails_closed_and_records_its_cause(tmp_path, caplog):
+    home = _home(tmp_path, config="platforms: [unterminated\n")
+    with caplog.at_level(logging.DEBUG, logger=lcm.logger.name):
+        assert lcm._read_config(home) == {}
+    assert any(record.exc_info is not None for record in caplog.records)
 
 
 _JSON_ON = '{"platforms": {"homeassistant": {"enabled": true, "token": "t"}}}'
