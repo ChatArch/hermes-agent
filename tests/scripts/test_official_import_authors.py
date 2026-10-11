@@ -60,6 +60,19 @@ def test_fork_commit_using_official_authors_email_still_requires_mapping(tmp_pat
     assert emails == ["official@example.com"]
 
 
+def test_github_synthetic_merge_audits_its_second_parent_history(tmp_path):
+    repo, base, upstream = _history(tmp_path)
+    pr_head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "-b", "synthetic", base)
+    _git(repo, "merge", "--no-ff", "-m", "Merge PR branch into main", pr_head)
+    synthetic = _git(repo, "rev-parse", "HEAD")
+    assert _git(repo, "rev-list", "--parents", "-n", "1", synthetic).split()[1:] == [base, pr_head]
+
+    emails, tips = fork_authors(repo, base, synthetic, verify=lambda sha: sha == upstream)
+    assert tips == [upstream]
+    assert emails == ["fork@example.com"]
+
+
 def test_claimed_official_merge_fails_closed_if_parent_cannot_be_verified(tmp_path):
     repo, base, _ = _history(tmp_path)
     with pytest.raises(RuntimeError, match="provenance unverified"):

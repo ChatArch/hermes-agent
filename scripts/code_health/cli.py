@@ -90,9 +90,13 @@ def _skipped(why: str, as_json: bool) -> None:
 def _verified_official_tip(repo: Path, base: str, head: str | None) -> str | None:
     """Only an actual clean commit with a claimed official merge can enter dual-parent review."""
     candidate = gitio.commit_or_none(repo, head) if head else gitio.commit_or_none(repo, "HEAD")
-    if candidate is None or (head is None and gitio.git(repo, "status", "--porcelain").strip()):
+    if gitio.git(repo, "status", "--porcelain").strip():
         return None
-    subjects = gitio.git(repo, "log", "--first-parent", "--merges", "--format=%s", f"{base}..{candidate}")
+    if candidate is None and head and head == gitio.resolve_tree(repo, "HEAD"):
+        candidate = gitio.commit_or_none(repo, "HEAD")
+    if candidate is None:
+        return None
+    subjects = gitio.git(repo, "log", "--merges", "--format=%s", f"{base}..{candidate}")
     if not any(line.startswith("Merge official Hermes main ") for line in subjects.splitlines()):
         return None
     from scripts.ci.official_import_authors import fork_authors
@@ -134,6 +138,9 @@ def run(repo: Path, base: str, head: str | None, as_json: bool = False,
     if mode == "off":
         _skipped(f"code health: off (ENFORCEMENT in {_SWITCH_FILE} on {switch_rev[:12]})", as_json)
         return 0
+    # An unreachable official origin is a provenance failure, not a late error after
+    # several minutes of measurement or a reason to silently credit its contents.
+    official_tip = _verified_official_tip(repo, base, head)
     changes = gitio.changed_files(repo, base, head)
     head_paths = sorted({c.new for c in changes if c.new and in_scope(c.new)})
     base_paths = sorted({c.old for c in changes if c.old and in_scope(c.old)})
@@ -148,8 +155,8 @@ def run(repo: Path, base: str, head: str | None, as_json: bool = False,
     head_m = measurer.measure(head, head_paths)
     findings = compare(base_m, head_m, changes)
     apply_allows(findings, head_m)
-    if tip := _verified_official_tip(repo, base, head):
-        findings = _review_official_side(repo, tip, head, ruff, findings)
+    if official_tip:
+        findings = _review_official_side(repo, official_tip, head, ruff, findings)
     blocking, advisory = verdict(findings)
     failed = bool(blocking) and mode == "blocking"
     if as_json:

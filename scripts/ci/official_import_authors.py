@@ -70,7 +70,12 @@ def fork_authors(repo: Path, base: str, head: str = "HEAD", *, verify=verify_off
     base = _git(repo, "rev-parse", "--verify", f"{base}^{{commit}}")
     head = _git(repo, "rev-parse", "--verify", f"{head}^{{commit}}")
     _git(repo, "merge-base", "--is-ancestor", base, head)
-    candidates = _git(repo, "rev-list", "--first-parent", "--merges", f"{base}..{head}").splitlines()
+    # GitHub checks out a synthetic merge with the target base as parent one and
+    # the PR branch as parent two. Its first-parent walk would see only the base.
+    # Unwrap only that exact shape; fork-authored non-merge commits remain in base..head.
+    head_parents = _git(repo, "rev-list", "--parents", "-n", "1", head).split()
+    history_head = head_parents[2] if len(head_parents) == 3 and head_parents[1] == base else head
+    candidates = _git(repo, "rev-list", "--first-parent", "--merges", f"{base}..{history_head}").splitlines()
     tips = []
     for merge in candidates:
         subject = _git(repo, "show", "-s", "--format=%s", merge)

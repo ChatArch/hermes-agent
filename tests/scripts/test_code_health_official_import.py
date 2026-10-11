@@ -1,5 +1,7 @@
 """Official import accounting only changes unchanged structural debt, not safety gates."""
 
+import pytest
+
 from scripts.code_health.model import Finding
 from scripts.code_health.official_import import reconcile_official_import
 from scripts.code_health import cli
@@ -49,6 +51,31 @@ def test_health_provenance_requires_real_merge_commit_not_only_subject(monkeypat
     head = _git(repo, "rev-parse", "HEAD")
     assert cli._verified_official_tip(repo, base, head) == upstream
     assert observed == [(repo, base, head)]
+    tree = _git(repo, "rev-parse", "HEAD^{tree}")
+    assert cli._verified_official_tip(repo, base, tree) == upstream
+    (repo / "dirty.txt").write_text("not part of the reviewed tree", encoding="utf-8")
+    assert cli._verified_official_tip(repo, base, tree) is None
+    (repo / "dirty.txt").unlink()
     _git(repo, "commit", "--amend", "-qm", "Merge fork-only work")
     assert cli._verified_official_tip(repo, base, _git(repo, "rev-parse", "HEAD")) is None
-    assert len(observed) == 1
+    assert len(observed) == 2
+
+
+def test_unavailable_provenance_fails_before_expensive_health_measurement(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_verified_official_tip", lambda *args: (_ for _ in ()).throw(
+        RuntimeError("official provenance unavailable")))
+    monkeypatch.setattr(cli.gitio, "changed_files", lambda *args: pytest.fail("measured before verification"))
+    with pytest.raises(RuntimeError, match="official provenance unavailable"):
+        cli.run(tmp_path, "missing-base", None, as_json=True)
+
+
+def test_health_finds_verified_import_beneath_github_synthetic_merge(monkeypatch, tmp_path):
+    repo, base, upstream = _history(tmp_path)
+    pr_head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "-b", "synthetic", base)
+    _git(repo, "merge", "--no-ff", "-m", "Merge PR branch into main", pr_head)
+    synthetic = _git(repo, "rev-parse", "HEAD")
+    monkeypatch.setattr(official_import_authors, "fork_authors", lambda path, root, head: (
+        ["fork@example.com"], [upstream],
+    ))
+    assert cli._verified_official_tip(repo, base, synthetic) == upstream
