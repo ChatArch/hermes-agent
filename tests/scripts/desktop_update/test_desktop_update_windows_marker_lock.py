@@ -5,6 +5,7 @@ delegate before it runs a single instruction.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -14,7 +15,6 @@ import pytest
 from tests.installation_launcher_fixture import publish_fixture_launcher
 from tests.scripts.desktop_update.windows_handoff_support import (
     MARKER,
-    POWERSHELL,
     HOLD_CLI,
     _creation_time,
     _alive,
@@ -24,6 +24,7 @@ from tests.scripts.desktop_update.windows_handoff_support import (
     _op,
     _HeldLock,
     _custodian,
+    _log,
 )
 
 
@@ -97,18 +98,6 @@ def test_a7_concurrent_claimants_over_a_dead_marker_yield_one_owner(tmp_path: Pa
 
 # -- the update child is the delegate before it runs anything ------------------
 
-FIND_UPDATE_CHILD = r"""
-param([int]$Parent, [int]$Seconds)
-$deadline = (Get-Date).AddSeconds($Seconds)
-while ((Get-Date) -lt $deadline) {
-    $row = Get-CimInstance Win32_Process -Filter "ParentProcessId=$Parent" |
-        Where-Object { $_.CommandLine -match '--yes' } | Select-Object -First 1
-    if ($row) { [Console]::Out.Write($row.ProcessId); exit 0 }
-    Start-Sleep -Milliseconds 100
-}
-exit 1
-"""
-
 
 @pytest.mark.platforms('windows')
 def test_script_killed_before_publishing_the_delegate_runs_no_update(tmp_path: Path) -> None:
@@ -122,8 +111,7 @@ def test_script_killed_before_publishing_the_delegate_runs_no_update(tmp_path: P
     hold = tmp_path / 'release-update'
     ran = Path(str(hold) + '.pid')
     marker = home / MARKER
-    finder = tmp_path / 'find_child.ps1'
-    finder.write_text(FIND_UPDATE_CHILD, encoding='utf-8')
+
     script = _script(home, install=install, HANDOFF_HOLD=str(hold))
     lock = None
     try:
@@ -133,11 +121,15 @@ def test_script_killed_before_publishing_the_delegate_runs_no_update(tmp_path: P
             assert time.monotonic() < deadline and script.poll() is None, 'script never claimed'
             time.sleep(0.02)
         lock = _HeldLock(home)   # after the claim, before the delegate publication
-        child = subprocess.run([POWERSHELL, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(finder),
-                                '-Parent', str(script.pid), '-Seconds', '60'],
-                               capture_output=True, text=True, timeout=90, check=False)
-        assert child.returncode == 0, 'the update child never appeared'
-        child_pid = int(child.stdout)
+        deadline = time.monotonic() + 60
+        while not (child := re.search(r'update child created suspended pid (\d+)', _log(home))):
+            assert time.monotonic() < deadline and script.poll() is None, 'the suspended update child never appeared'
+            time.sleep(0.02)
+        child_pid = int(child.group(1))
+        before = marker.read_bytes().decode().split('\n')
+        assert before[0] == _custodian(home, script.pid), before
+        assert not any(line.startswith('delegate:') for line in before), before
+        assert not ran.exists(), 'the update child ran while publication was locked'
         subprocess.run(['taskkill', '/F', '/PID', str(script.pid)], capture_output=True, check=True)
         script.wait(timeout=30)
         time.sleep(3)

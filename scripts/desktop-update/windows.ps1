@@ -1047,6 +1047,7 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     # this script dies first), so no update work can run before the delegate
     # line is published under the marker lock -- and none runs when it can't be.
     if ($Tag -eq 'update') {
+        Write-HandoffLog "update child created suspended pid $($proc.Id)"
         $delegate = Add-MarkerDelegate @($proc.Id)
         if ($delegate -notin @('published', 'kept')) {
             [void][HermesUpdateJob]::TerminateAndWait($started.Job, 1, 5000)
