@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -76,6 +76,32 @@ _LARK_SDK_IMPORTS = (
     ("lark_oapi.event.callback.model.p2_card_action_trigger", ("CallBackCard", "P2CardActionTriggerResponse")),
     ("lark_oapi.event.dispatcher_handler", ("EventDispatcherHandler",)),
 )
+# The runtime loader owns these bindings; static analyzers need explicit names without eager SDK imports.
+if TYPE_CHECKING:
+    AccessTokenType = Any
+    BaseRequest = Any
+    CallBackCard = Any
+    CreateFileRequest = Any
+    CreateFileRequestBody = Any
+    CreateImageRequest = Any
+    CreateImageRequestBody = Any
+    CreateMessageRequest = Any
+    CreateMessageRequestBody = Any
+    DeleteMessageRequest = Any
+    EventDispatcherHandler = Any
+    FEISHU_DOMAIN = Any
+    GetApplicationRequest = Any
+    GetChatRequest = Any
+    GetMessageRequest = Any
+    GetMessageResourceRequest = Any
+    HttpMethod = Any
+    LARK_DOMAIN = Any
+    P2CardActionTriggerResponse = Any
+    P2ImMessageMessageReadV1 = Any
+    ReplyMessageRequest = Any
+    ReplyMessageRequestBody = Any
+    UpdateMessageRequest = Any
+    UpdateMessageRequestBody = Any
 lark = FeishuWSClient = None  # type: ignore[assignment]
 globals().update({name: None for _, names in _LARK_SDK_IMPORTS for name in names})
 FEISHU_AVAILABLE = False
