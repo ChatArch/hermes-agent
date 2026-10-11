@@ -23,6 +23,7 @@ import threading
 from dataclasses import dataclass, field
 from itertools import count
 from pathlib import Path
+from types import TracebackType
 from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,12 @@ def non_text_leaves(node: Any, prefix: str = "") -> list[str]:
             found.extend(non_text_leaves(value, f"{prefix}.{key}" if prefix else str(key)))
         return found
     return [] if isinstance(node, str) else [prefix or "<root>"]
+
+
+def locale_failure_info(exc: Exception) -> tuple[type[RuntimeError], RuntimeError, TracebackType | None]:
+    """Retain real traceback frames and error type, not parser-rendered private input."""
+    diagnostic = RuntimeError(f"Locale parser failed ({type(exc).__name__})")
+    return RuntimeError, diagnostic, exc.__traceback__
 
 
 def parse_locale_file(path: Path) -> dict[str, str]:
@@ -223,7 +230,8 @@ def overlay_layer(home: Path | str, lang: str, surface: str = CORE_SURFACE) -> d
         try:
             flat = parse_locale_file(path)
         except Exception as exc:
-            logger.warning("Failed to load i18n overlay %s: %s", path, exc)
+            logger.warning("Failed to load i18n overlay %s (%s)", path, type(exc).__name__,
+                           exc_info=locale_failure_info(exc))
             flat = {}
     with _lock:
         _overlay_cache[key] = flat

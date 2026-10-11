@@ -136,7 +136,8 @@ def _load_bundled(lang: str) -> dict[str, str]:
     try:
         return i18n_layers.parse_locale_file(path)
     except Exception as exc:
-        logger.warning("Failed to load i18n catalog %s: %s", path, exc)
+        logger.warning("Failed to load i18n catalog %s (%s)", path, type(exc).__name__,
+                       exc_info=i18n_layers.locale_failure_info(exc))
         return {}
 
 
