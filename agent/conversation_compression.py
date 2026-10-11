@@ -32,6 +32,7 @@ from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_compressor_summary import _accepts_keyword_argument
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
 from agent.conversation_compression_codex import _compress_context_via_codex_app_server
+from agent.conversation_compression_kwargs import _supported_compression_kwargs
 from agent.conversation_compression_telemetry import (
     _emit_aborted_attempt_telemetry, _emit_blocked_attempt_telemetry, _emit_bypassed_attempt_telemetry,
     _emit_compression_attempt_telemetry, _record_committed_attempt_effect, _snapshot_compression_effect_input,
@@ -1739,41 +1740,6 @@ def _compression_lock_holder(agent: Any) -> str:
     """Build a unique lock holder id: ``pid[:pidns]:tid:agent-instance:uuid`` (pidns: see ``hermes_state_pidns``).
     pid+tid tell crashed holders apart; instance id and per-acquire uuid disambiguate co-resident/pooled agents."""
     return f"pid={os.getpid()}{holder_namespace_token()}:tid={threading.get_ident()}:agent={id(agent):x}:nonce={uuid.uuid4().hex[:8]}"
-
-
-def _supported_compression_kwargs(
-    compress_fn: Any, *, current_tokens: Optional[int], focus_topic: Optional[str], force: bool,
-    memory_context: str, bypass_cooldown: bool = False, local_fallback_only: bool = False,
-) -> dict:
-    """Return only compression kwargs accepted by an engine callable.
-    Inspecting first keeps older plugin signatures compatible without catching ``TypeError`` and running a
-    stateful compressor twice."""
-    candidates = {"current_tokens": current_tokens, "focus_topic": focus_topic, "force": force}
-    if bypass_cooldown:
-        candidates["bypass_cooldown"] = True
-    if memory_context:
-        candidates["memory_context"] = memory_context
-    if local_fallback_only:
-        candidates["local_fallback_only"] = True
-    try:
-        parameters = inspect.signature(compress_fn).parameters
-    except (TypeError, ValueError):
-        # current_tokens has always been in the ContextEngine ABC; use the oldest call
-        # shape when the callable has no inspectable signature.
-        return {"current_tokens": current_tokens}
-
-    accepts_kwargs = any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters.values()
-    )
-    if accepts_kwargs:
-        supported = dict(candidates)
-        if "local_fallback_only" not in parameters:
-            # A **kwargs plugin may silently ignore this flag and still call its
-            # own summarizer. Require an explicit parameter for the no-LLM rescue path.
-            supported.pop("local_fallback_only", None)
-        return supported
-    return {name: value for name, value in candidates.items() if name in parameters}
 
 
 class _CompressionActivityHeartbeat:
@@ -4071,6 +4037,12 @@ def _begin_compression_attempt(
     return _Attempt(snapshot, generation, started_at, seed)
 
 
+def _check_codex_local_fallback_support(local_fallback_only: bool) -> None:
+    """Refuse local-only rescue before routing to Codex's remote compact operation."""
+    if local_fallback_only:
+        raise TypeError("codex_app_server does not support local_fallback_only")
+
+
 def _route_codex_compaction(
     agent: Any, messages: list, system_message: str, *, commit_fence: Optional[CompressionCommitFence],
     attempt: _Attempt, approx_tokens: Optional[int], task_id: str, force: bool,
@@ -4169,8 +4141,7 @@ def compress_context(
     # summary prompt to inject into. `is True`: MagicMock attributes are truthy.
     checkpoint_required = getattr(agent, "compression_checkpoint_required", False) is True
     if getattr(agent, "api_mode", None) == "codex_app_server":
-        if local_fallback_only:
-            raise TypeError("codex_app_server does not support local_fallback_only")
+        _check_codex_local_fallback_support(local_fallback_only)
         if checkpoint_required:
             blocked = _checkpoint_blocked(
                 "codex_app_server owns the authoritative thread and does not expose a truthful pre-compaction transcript boundary"
