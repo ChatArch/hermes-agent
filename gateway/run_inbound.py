@@ -1350,7 +1350,6 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
 
     async def _dispatch_event_to_agent(self, event, source, _quick_key):
         from gateway.run import _AGENT_PENDING_SENTINEL
-        from gateway.turn_lease import TurnLeaseTimeoutError
         is_internal = bool(getattr(event, "internal", False))
         _active_session_lease, _limit_message = self._claim_active_session_slot(_quick_key, source)
         if _limit_message is not None:

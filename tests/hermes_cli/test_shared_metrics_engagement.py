@@ -15,8 +15,9 @@ from hermes_cli.observability import shared_metrics_engagement as engagement
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from tests.hermes_cli.test_relay_shared_metrics_runtime import (
     _stored_values,
-    direct_runtime,
 )
+
+pytest_plugins = ("tests.hermes_cli.test_relay_shared_metrics_runtime",)
 
 PUBLIC = "anthropic/claude-sonnet-4"
 OTHER = "openai/gpt-5"

@@ -16,8 +16,9 @@ from hermes_cli.observability import shared_metrics_efficiency as eff
 from hermes_cli.observability.shared_metrics_model import record_model_friction
 from tests.hermes_cli.test_relay_shared_metrics_runtime import (
     _stored_values,
-    direct_runtime,
 )
+
+pytest_plugins = ("tests.hermes_cli.test_relay_shared_metrics_runtime",)
 
 
 def _flush() -> None:

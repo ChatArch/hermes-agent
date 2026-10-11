@@ -10,7 +10,9 @@ from unittest.mock import patch
 
 import pytest
 
-from tests.tools._child_env_fixtures import child_env, observe_child, observe_terminal
+from tests.tools._child_env_fixtures import observe_child, observe_terminal
+
+pytest_plugins = ("tests.tools._child_env_fixtures",)
 from tools.environments import local
 from tools.environments import local_pythonpath as pp
 from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST

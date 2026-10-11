@@ -11,8 +11,6 @@ from tools.approval_context import _get_cron_approval_mode
 
 @pytest.fixture(autouse=True)
 def _clear_approval_state():
-    from gateway.session_context import reset_session_vars
-
     reset_session_vars()
     approval_module._permanent_approved.clear()
     approval_module.clear_session("default")

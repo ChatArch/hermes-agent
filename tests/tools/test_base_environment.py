@@ -9,8 +9,6 @@ import subprocess
 
 import pytest
 
-import pytest
-
 from tools import terminal_tool_sudo
 from tools.environments.base import BaseEnvironment, _load_json_store
 from tools.environments.base_output import _BoundedOutputCollector

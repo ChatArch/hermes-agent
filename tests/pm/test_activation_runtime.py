@@ -8,7 +8,7 @@ import textwrap
 
 import pytest
 
-from tests.pm.activation_support import bash, fake_store, posix, powershell, sync_checkout
+from tests.pm.activation_support import bash, posix, powershell, sync_checkout
 
 # Spawns children with a home it builds itself; the parent's must stay real.
 pytestmark = pytest.mark.real_machine_home

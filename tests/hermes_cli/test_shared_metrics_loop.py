@@ -12,7 +12,7 @@ from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.observability import shared_metrics_loop as loop
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from tests.hermes_cli.test_relay_shared_metrics_runtime import direct_runtime
+pytest_plugins = ("tests.hermes_cli.test_relay_shared_metrics_runtime",)
 
 _LOOP_METRICS = {
     "hermes.memory.op.count", "hermes.curator.run.count", "hermes.delegation.run.count",
