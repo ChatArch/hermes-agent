@@ -60,6 +60,27 @@ def test_attribution_gate_accepts_case_distinct_author_without_case_colliding_pa
     assert audit_pr_attribution.is_mapped("Halldrix@users.noreply.github.com")
 
 
+def test_only_standard_numeric_noreply_auto_resolves():
+    from scripts import audit_pr_attribution
+
+    assert audit_pr_attribution.is_mapped("12345+verified-user@users.noreply.github.com")
+    assert not audit_pr_attribution.is_mapped("12345+extra+user@users.noreply.github.com")
+    assert not audit_pr_attribution.is_mapped("dmetcalfe+hermes@users.noreply.github.com")
+
+
+def test_local_author_audit_uses_the_verified_official_import_scope(monkeypatch):
+    from scripts import audit_pr_attribution
+    from scripts.ci import official_import_authors
+
+    observed = []
+    monkeypatch.setattr(audit_pr_attribution, "run", lambda *args: "base-commit")
+    monkeypatch.setattr(official_import_authors, "fork_authors", lambda repo, base: (
+        observed.append((repo, base)) or ["fork@example.com"], ["official-tip"],
+    ))
+    assert audit_pr_attribution.new_emails() == ["fork@example.com"]
+    assert observed == [(audit_pr_attribution.REPO_ROOT, "base-commit")]
+
+
 def test_unlinked_coauthor_keeps_literal_credit_without_fabricated_github_login():
     from scripts import audit_pr_attribution
 
