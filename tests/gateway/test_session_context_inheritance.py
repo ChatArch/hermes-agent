@@ -148,6 +148,16 @@ def test_reset_session_vars_closes_inheritance_leak():
     assert captured["bound"]["HERMES_SESSION_KEY"] == FOREIGN["session_key"]
 
 
+def test_bound_only_session_reader_never_uses_process_environment(monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_ID", "launch-session")
+    assert sc.get_bound_session_env("HERMES_SESSION_ID") == ""
+    tokens = set_session_vars(session_id="served-session")
+    try:
+        assert sc.get_bound_session_env("HERMES_SESSION_ID") == "served-session"
+    finally:
+        sc.clear_session_vars(tokens)
+
+
 # ---------------------------------------------------------------------------
 # Async-delivery capability inheritance (the sibling var outside _VAR_MAP)
 # ---------------------------------------------------------------------------

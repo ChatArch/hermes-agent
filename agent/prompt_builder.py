@@ -1031,14 +1031,22 @@ def _clear_backend_probe_cache() -> None:
     _BACKEND_PROBE_CACHE.clear()
 
 
+def _task_session_id() -> str:
+    from agent.secret_scope import serves_routed_profile
+    from gateway.session_context import get_bound_session_env, get_session_env
+
+    reader = get_bound_session_env if serves_routed_profile() else get_session_env
+    return reader("HERMES_SESSION_ID", "")
+
+
 def _current_task_backend(default: str) -> str:
     """Resolve backend for the current prompt build, honoring task overrides."""
 
     try:
-        from gateway.session_context import get_session_env
-        task_id = get_session_env("HERMES_SESSION_ID", "") or os.getenv("HERMES_SESSION_ID", "")
+        task_id = _task_session_id()
     except Exception:
-        task_id = os.getenv("HERMES_SESSION_ID", "")
+        logger.debug("Task session lookup failed for backend hint", exc_info=True)
+        return default
     if not task_id:
         return default
     try:
@@ -1047,18 +1055,17 @@ def _current_task_backend(default: str) -> str:
         if overrides.get("env_type"):
             return str(overrides["env_type"]).strip().lower() or default
     except Exception:
-        pass
+        logger.debug("Backend override lookup failed", exc_info=True)
     return default
 
 
 def _current_task_ssh_alias() -> str:
     """Return the safe registry alias for the current task's SSH binding."""
     try:
-        from gateway.session_context import get_session_env
-
-        task_id = get_session_env("HERMES_SESSION_ID", "") or os.getenv("HERMES_SESSION_ID", "")
+        task_id = _task_session_id()
     except Exception:
-        task_id = os.getenv("HERMES_SESSION_ID", "")
+        logger.debug("Task session lookup failed for SSH alias hint", exc_info=True)
+        return ""
     if not task_id:
         return ""
     try:
@@ -1066,6 +1073,7 @@ def _current_task_ssh_alias() -> str:
 
         raw_alias = str(resolve_task_overrides(task_id).get("ssh_alias") or "").strip()
     except Exception:
+        logger.debug("SSH alias override lookup failed", exc_info=True)
         return ""
     # Only URI-safe registry aliases are rendered into the system prompt.
     if not re.fullmatch(r"[A-Za-z0-9._-]+", raw_alias):

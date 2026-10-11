@@ -745,6 +745,31 @@ class TestEnvironmentHints:
             assert _pb._bot_screen_hint() == ""
         assert any(record.exc_info is not None for record in caplog.records)
 
+    def test_routed_prompt_cannot_borrow_launch_session_ssh_binding(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        from gateway import session_context
+
+        observed = []
+        monkeypatch.setenv("HERMES_SESSION_ID", "launch-session")
+        monkeypatch.setattr("agent.secret_scope.serves_routed_profile", lambda: True)
+        monkeypatch.setattr("tools.terminal_tool.resolve_task_overrides", lambda task_id: (
+            observed.append(task_id) or {"env_type": "ssh", "ssh_alias": "served-host"}))
+        token = session_context._SESSION_ID.set(session_context._UNSET)
+        try:
+            assert _pb._current_task_backend("local") == "local"
+            assert _pb._current_task_ssh_alias() == ""
+            assert observed == []
+            session_context._SESSION_ID.set("served-session")
+            assert _pb._current_task_backend("local") == "ssh"
+            assert _pb._current_task_ssh_alias() == "served-host"
+            assert observed == ["served-session", "served-session"]
+            monkeypatch.setattr("agent.secret_scope.serves_routed_profile", lambda: False)
+            session_context._SESSION_ID.set(session_context._UNSET)
+            assert _pb._current_task_backend("local") == "ssh"
+            assert observed[-1] == "launch-session"
+        finally:
+            session_context._SESSION_ID.reset(token)
+
     def test_remote_backend_never_sees_a_host_bot_screen(self, monkeypatch):
         """A sandboxed terminal cannot open windows on the gateway host, so the hint is local-only."""
         import agent.prompt_builder as _pb
