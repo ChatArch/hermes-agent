@@ -109,11 +109,29 @@ def test_migration_keeps_a_toolset_off_where_core_had_it_off(tmp_path):
         "  slack: [web, homeassistant]\n"))
     lcm.migrate_home(home, install=lambda n: {"ok": True}, say=lambda m: None)
     config = lcm._read_config(home)
-    enabled = {p: bool(_enabled_plugin_toolsets(config, p, sel, {"homeassistant"})) for p, sel in {
+    # Resolve the persisted post-migration selection, as the real tools loader does.
+    enabled = {p: bool(_enabled_plugin_toolsets(
+        config, p, config.get("platform_toolsets", {}).get(p, sel), {"homeassistant"}
+    )) for p, sel in {
         "telegram": ["web", "terminal", "file"], "discord": ["hermes-discord"], "slack": ["web", "homeassistant"],
         "cli": ["hermes-cli"], "webhook": ["hermes-webhook"], "acp": ["hermes-acp"]}.items()}
     assert enabled == {"telegram": False, "discord": True, "slack": True, "cli": True,
                        "webhook": False, "acp": False}
+
+
+def test_migration_explicit_composite_keeps_only_the_moved_plugin(tmp_path):
+    """Preserve inherited core tools without opening an explicit list to other plugins."""
+    from hermes_cli.tools_config import _enabled_plugin_toolsets
+
+    home = _home(tmp_path, env="HASS_TOKEN=abc\n", config=(
+        "platform_toolsets:\n  discord: [hermes-discord]\n"))
+    lcm.migrate_home(home, install=lambda name: {"ok": True}, say=lambda message: None)
+    config = lcm._read_config(home)
+    selected = config["platform_toolsets"]["discord"]
+    assert selected == ["hermes-discord", "homeassistant"]
+    assert _enabled_plugin_toolsets(
+        config, "discord", selected, {"homeassistant", "unrelated-plugin"}
+    ) == {"homeassistant"}
 
 
 def test_migrate_home_reports_a_failed_install_with_the_command(tmp_path):

@@ -264,6 +264,11 @@ def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
             if selection is None and platform not in feature.off_platforms:
                 continue  # no (valid) saved list: core's default composite carried the toolsets
             if selection is not None and _core_carried(feature, selection):
+                # ChatArch treats saved lists as explicit plugin allowlists. Preserve only the
+                # moved tools that the old core composite carried, not every new plugin.
+                if carried := [ts for ts in feature.toolsets if ts not in selection]:
+                    saved[platform] = [*selection, *carried]
+                    config["platform_toolsets"] = saved
                 continue
             current = known.get(platform) if isinstance(known.get(platform), list) else []
             if missing := [ts for ts in feature.toolsets if ts not in current]:
