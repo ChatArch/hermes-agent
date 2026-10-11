@@ -15,6 +15,7 @@ from scripts.code_health import gitio
 from scripts.code_health.compare import compare
 from scripts.code_health.config import in_scope
 from scripts.code_health.measure import Measurer
+from scripts.code_health.official_import import reconcile_official_import
 from scripts.code_health.report import (
     apply_allows,
     format_findings,
@@ -86,6 +87,43 @@ def _skipped(why: str, as_json: bool) -> None:
     print(why, file=sys.stderr if as_json else sys.stdout)
 
 
+def _verified_official_tip(repo: Path, base: str, head: str | None) -> str | None:
+    """Only an actual clean commit with a claimed official merge can enter dual-parent review."""
+    candidate = gitio.commit_or_none(repo, head) if head else gitio.commit_or_none(repo, "HEAD")
+    if candidate is None or (head is None and gitio.git(repo, "status", "--porcelain").strip()):
+        return None
+    subjects = gitio.git(repo, "log", "--first-parent", "--merges", "--format=%s", f"{base}..{candidate}")
+    if not any(line.startswith("Merge official Hermes main ") for line in subjects.splitlines()):
+        return None
+    from scripts.ci.official_import_authors import fork_authors
+    _, tips = fork_authors(repo, base, candidate)
+    return tips[0] if tips else None
+
+
+def _review_official_side(repo: Path, tip: str, head: str | None, ruff: list[str],
+                          fork_findings: list) -> list:
+    """Keep official-parent-to-head findings blocking; credit exact official structure only."""
+    changes = gitio.changed_files(repo, tip, head)
+    old_paths = sorted({c.old for c in changes if c.old and in_scope(c.old)})
+    new_paths = sorted({c.new for c in changes if c.new and in_scope(c.new)})
+    measurer = Measurer(repo, ruff, known_env=gitio.known_env_names(repo, tip))
+    old = measurer.measure(tip, old_paths)
+    new = measurer.measure(head, new_paths)
+    from_official = compare(old, new, changes)
+    apply_allows(from_official, new)
+    judged_tree = head or "HEAD"
+    cache: dict[str, bool] = {}
+
+    def same_blob(path: str) -> bool:
+        if path not in cache:
+            upstream_oid = gitio.git(repo, "rev-parse", "--verify", f"{tip}:{path}", check=False).strip()
+            current_oid = gitio.git(repo, "rev-parse", "--verify", f"{judged_tree}:{path}", check=False).strip()
+            cache[path] = bool(upstream_oid and current_oid and upstream_oid == current_oid)
+        return cache[path]
+
+    return reconcile_official_import(fork_findings, from_official, same_blob=same_blob, tip=tip)
+
+
 def run(repo: Path, base: str, head: str | None, as_json: bool = False,
         switch_rev: str | None = None) -> int:
     """Judge ``head`` against ``base``; the ENFORCEMENT switch is read from ``switch_rev``
@@ -110,6 +148,8 @@ def run(repo: Path, base: str, head: str | None, as_json: bool = False,
     head_m = measurer.measure(head, head_paths)
     findings = compare(base_m, head_m, changes)
     apply_allows(findings, head_m)
+    if tip := _verified_official_tip(repo, base, head):
+        findings = _review_official_side(repo, tip, head, ruff, findings)
     blocking, advisory = verdict(findings)
     failed = bool(blocking) and mode == "blocking"
     if as_json:

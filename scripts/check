@@ -123,9 +123,12 @@ class _Job:
 
 
 def _run(job: _Job) -> tuple[int, str]:
+    # Verified official syncs measure both fork-main and upstream-parent deltas.
+    # Other guards retain the old bound.
+    budget = 1200 if "scripts.code_health" in job.argv else 900
     proc = subprocess.run(
         job.argv, cwd=job.cwd, env=job.env, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", stdin=subprocess.DEVNULL, timeout=900, check=False,
+        errors="replace", stdin=subprocess.DEVNULL, timeout=budget, check=False,
     )
     return proc.returncode, (proc.stdout + proc.stderr).strip()
 

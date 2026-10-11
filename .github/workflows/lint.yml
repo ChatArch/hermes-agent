@@ -159,7 +159,7 @@ jobs:
     name: code health ratchet (blocking)
     if: inputs.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
@@ -177,6 +177,8 @@ jobs:
           command: python -m scripts.ci.python_packages "$(python -m scripts.code_health --print-pins)"
 
       - name: Ratchet the PR against the base branch tip
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: python scripts/check --only health --base HEAD^1
 
   windows-footguns:
