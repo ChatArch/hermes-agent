@@ -17,6 +17,7 @@ import threading
 import time
 from contextlib import suppress
 from datetime import datetime
+from importlib import import_module
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.i18n import t
@@ -1965,6 +1966,9 @@ class TurnRunner:
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
         from gateway.ssh_bindings import resolve_binding_task_overrides
         from tools.terminal_tool import register_task_env_overrides, clear_task_env_overrides
+        # The approval callback imports this tool later; register it before the cache signature
+        # so a cold first turn does not spuriously invalidate the next turn's agent.
+        import_module("tools.ssh_mode_tool")
         backend_overrides = resolve_binding_task_overrides(ctx.session_key)
         if backend_overrides:
             register_task_env_overrides(ctx.session_id, backend_overrides)

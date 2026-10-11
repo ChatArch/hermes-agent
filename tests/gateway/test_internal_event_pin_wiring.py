@@ -94,6 +94,9 @@ def _make_runner(
     )
     store.load_transcript.return_value = []
     store.has_platform_message_id.return_value = False
+    # A real store returns None without a persisted /model override. A default
+    # truthy MagicMock would invent a provider/model and re-key the agent cache.
+    store.get_model_override.return_value = None
     if durable_prompt_pin is not None:
         def _get_prompt_pin(_key, *, expected_session_id=None):
             if expected_session_id is not None:
