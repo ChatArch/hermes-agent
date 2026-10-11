@@ -17,7 +17,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import {
   DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,
@@ -344,20 +344,39 @@ test('a completion banner re-arms the deadline past the original timeout', async
 test(
   'a stalled completion banner is capped, not waited out forever',
   async () => {
-    // The banner says a repair is in progress but nothing ever resolves: the
-    // wait must still fail (bounded), and the message must carry that the
-    // completion was in progress — truthful and actionable instead of a bare
-    // 90s timeout that hides a multi-minute repair. The 5-minute grace is
-    // wall-clock, so this holds the wait past it with a long test budget.
-    const child = makeFakeChild()
-    const wait = waitForDashboardPort(child, 20)
-    wait.catch(() => {}) // mark handled; the assertion below re-awaits
+    // Advance timers and the monotonic clock together: the unchanged real
+    // five-minute grace must expire without spending five minutes in CI.
+    const graceMs = 5 * 60_000
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'hrtime'] })
+    try {
+      const child = makeFakeChild()
+      const startedAt = process.hrtime.bigint()
+      let settled = false
+      const wait = waitForDashboardPort(child, 20)
+      wait.then(() => { settled = true }, () => { settled = true })
+      const failure = assert.rejects(
+        wait,
+        /Timed out waiting for Hermes backend port announcement .* while an update completion was in progress/
+      )
+      failure.catch(() => {}) // keep an early boundary assertion from orphaning a rejection
 
-    child.stdout.emit('data', 'hermes: finishing an interrupted source update...\n')
-    await assert.rejects(
-      wait,
-      /Timed out waiting for Hermes backend port announcement .* while an update completion was in progress/
-    )
+      child.stdout.emit('data', 'hermes: finishing an interrupted source update...\n')
+      await vi.advanceTimersByTimeAsync(graceMs - 1)
+      assert.equal(process.hrtime.bigint() - startedAt, BigInt(graceMs - 1) * 1_000_000n)
+      assert.equal(settled, false, 'the completion grace must not expire early')
+      assert.equal(child.stdout.listenerCount('data'), 1)
+
+      await vi.advanceTimersByTimeAsync(1)
+      await failure
+      assert.equal(settled, true)
+      assert.equal(child.stdout.listenerCount('data'), 0)
+      assert.equal(child.listenerCount('exit'), 0)
+      assert.equal(child.listenerCount('error'), 0)
+      assert.equal(vi.getTimerCount(), 0)
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
   },
   6 * 60_000
 )
