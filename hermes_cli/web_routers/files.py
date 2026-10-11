@@ -396,8 +396,8 @@ async def proxy_remote_media(url: str, request: Request):
     try:
         async with httpx.AsyncClient(timeout=_MEDIA_PROXY_TIMEOUT_S, follow_redirects=True) as client:
             response = await client.get(url)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Image fetch failed: {exc}")
+    except httpx.RequestError:
+        raise HTTPException(status_code=502, detail="Image fetch failed") from None
 
     if response.status_code != 200:
         raise HTTPException(status_code=502, detail=f"Image fetch returned HTTP {response.status_code}")
