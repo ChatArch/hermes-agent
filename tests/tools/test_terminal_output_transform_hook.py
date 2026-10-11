@@ -39,7 +39,7 @@ def _run_terminal(
     approval=None,
     command="echo hello",
 ):
-    mock_env = MagicMock()
+    mock_env = MagicMock(spec=LocalEnvironment)
     mock_env.execute.return_value = {"output": output, "returncode": returncode}
 
     monkeypatch.setattr(

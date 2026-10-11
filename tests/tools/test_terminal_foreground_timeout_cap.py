@@ -6,6 +6,7 @@ re-sent lower/split/background, 251 of them test suites).
 """
 import json
 from unittest.mock import patch, MagicMock
+from tools.environments.local import LocalEnvironment
 
 # ---------------------------------------------------------------------------
 # Shared test config dict — mirrors _get_env_config() return shape.
@@ -81,7 +82,7 @@ class TestForegroundTimeoutCap:
         with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
              patch("tools.terminal_tool._start_cleanup_thread"):
 
-            mock_env = MagicMock()
+            mock_env = MagicMock(spec=LocalEnvironment)
             mock_env.execute.return_value = {"output": "usage", "returncode": 0}
 
             with patch("tools.terminal_tool._active_environments", {"default": mock_env}), \
@@ -106,7 +107,7 @@ class TestForegroundTimeoutCap:
                     return_value=_make_env_config(timeout=900)), \
              patch("tools.terminal_tool._start_cleanup_thread"):
 
-            mock_env = MagicMock()
+            mock_env = MagicMock(spec=LocalEnvironment)
             mock_env.execute.return_value = {"output": "done", "returncode": 0}
 
             with patch("tools.terminal_tool._active_environments", {"default": mock_env}), \
@@ -126,7 +127,7 @@ class TestForegroundTimeoutCap:
         with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
              patch("tools.terminal_tool._start_cleanup_thread"):
 
-            mock_env = MagicMock()
+            mock_env = MagicMock(spec=LocalEnvironment)
             mock_env.execute.return_value = {"output": "done", "returncode": 0}
 
             with patch("tools.terminal_tool._active_environments", {"default": mock_env}), \

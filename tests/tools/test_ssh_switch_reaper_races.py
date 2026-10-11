@@ -109,6 +109,32 @@ def test_owner_handoff_stays_leased_until_registry_publish(isolated_lifetime):
     assert env.closed == 1
 
 
+def test_legacy_backend_without_lifetime_metadata_still_executes(isolated_lifetime):
+    """A protocol-constrained legacy backend has no fabricated private state."""
+    from unittest.mock import MagicMock
+    from tools.environments.local import LocalEnvironment
+    env = MagicMock(spec=LocalEnvironment)
+    assert not hasattr(env, "_hermes_ssh_lifetime")
+    env.execute.return_value = {"output": "original-output", "returncode": 7}
+    assert lifetime.run_admitted(None, env, env.execute) == {
+        "output": "original-output", "returncode": 7,
+    }
+    env.execute.assert_called_once_with()
+    assert lifetime._busy == {}
+
+
+@pytest.mark.parametrize("state", ["reaping", "closed", "quarantined", "unknown"])
+def test_explicit_nonadmissible_lifetime_still_blocks_dynamic_backend(isolated_lifetime, state):
+    from unittest.mock import MagicMock
+    from tools.environments.local import LocalEnvironment
+    env = MagicMock(spec=LocalEnvironment)
+    env._hermes_ssh_lifetime = state
+    with pytest.raises(SshStateUnavailable, match="reap|closed"):
+        lifetime.run_admitted(None, env, env.execute)
+    env.execute.assert_not_called()
+    assert lifetime._busy == {}
+
+
 def test_idle_cache_cleanup_obeys_the_same_activity_lease(isolated_lifetime, monkeypatch):
     from tools import terminal_tool, terminal_tool_lifecycle
     env = HeldEnvironment()
