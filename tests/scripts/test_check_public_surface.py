@@ -8,6 +8,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "check_public_surface.py"
 
 
@@ -89,3 +91,19 @@ def test_unresolvable_refs_are_an_error_not_a_clean_report(tmp_path, monkeypatch
     mod = _load()
     assert mod.main(["--base", "origin/does-not-exist", "--head", "HEAD", "--strict"]) == 2
     assert mod.main(["--base", "origin/does-not-exist", "--head", "HEAD"]) == 2
+
+
+@pytest.mark.parametrize("operation", ["diff", "show"])
+def test_git_measurement_failure_never_looks_like_an_empty_diff(monkeypatch, operation):
+    mod = _load()
+
+    def failing_git(args, **kwargs):
+        assert args[1] == operation
+        return subprocess.CompletedProcess(args, 2, stdout="", stderr="fatal: unavailable")
+
+    monkeypatch.setattr(mod.subprocess, "run", failing_git)
+    with pytest.raises(RuntimeError, match=operation):
+        if operation == "diff":
+            mod._changed_py("base", "head")
+        else:
+            mod._show("base", "agent/mod.py")
