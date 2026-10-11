@@ -157,6 +157,30 @@ def test_fs_routes_workspace_reads_to_ssh_backend(client, monkeypatch):
     ]
 
 
+def test_fs_backend_error_preserves_sanitized_status(client, monkeypatch):
+    from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
+
+    class DeniedBackend:
+        def list_dir(self, path, hidden_names):
+            raise SshWorkspaceFsError("EACCES", "private backend detail")
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: DeniedBackend())
+    response = client.get("/api/fs/list", params={"path": "/remote/private"})
+    assert response.status_code == 403
+    assert response.json()["detail"] == "File is not readable"
+    assert "private backend detail" not in response.text
+
+
+def test_fs_backend_unexpected_exception_is_not_suppressed(client, monkeypatch):
+    class BrokenBackend:
+        def list_dir(self, path, hidden_names):
+            raise RuntimeError("unexpected backend bug")
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: BrokenBackend())
+    with pytest.raises(RuntimeError, match="unexpected backend bug"):
+        client.get("/api/fs/list", params={"path": "/remote/file"})
+
+
 def test_fs_backend_resolves_ssh_connection_from_profile_env(monkeypatch):
     captured = {}
     expected = object()

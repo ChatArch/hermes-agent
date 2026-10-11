@@ -763,9 +763,10 @@ _FS_LIST_ERRNO = (
 async def fs_list(path: str, request: Request, profile: Optional[str] = None):
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:
+        from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
         try:
             return await asyncio.to_thread(backend.list_dir, path, _FS_READDIR_HIDDEN)
-        except Exception as exc:
+        except SshWorkspaceFsError as exc:
             _raise_fs_backend_error(exc)
     target = _fs_path(path)
     _hosted_fs_read_guard(target, request)
@@ -793,6 +794,7 @@ async def fs_list(path: str, request: Request, profile: Optional[str] = None):
 async def fs_read_text(path: str, request: Request = None, profile: Optional[str] = None):
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:
+        from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
         try:
             data, size, target = await asyncio.to_thread(
                 backend.read_bytes,
@@ -800,7 +802,7 @@ async def fs_read_text(path: str, request: Request = None, profile: Optional[str
                 max_bytes=_FS_TEXT_SOURCE_MAX_BYTES,
                 read_limit=_FS_TEXT_PREVIEW_MAX_BYTES,
             )
-        except Exception as exc:
+        except SshWorkspaceFsError as exc:
             _raise_fs_backend_error(exc)
         target_path = Path(target)
         return {
@@ -844,6 +846,7 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     text = payload.content or ""
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:
+        from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
         try:
             target, byte_size = await asyncio.to_thread(
                 backend.write_text,
@@ -851,7 +854,7 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
                 text,
                 max_bytes=_FS_TEXT_WRITE_MAX_BYTES,
             )
-        except Exception as exc:
+        except SshWorkspaceFsError as exc:
             _raise_fs_backend_error(exc)
         return {"ok": True, "path": target, "byteSize": byte_size}
 
@@ -911,11 +914,12 @@ async def fs_read_data_url(
     from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:
+        from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
         try:
             data, _size, target = await asyncio.to_thread(
                 backend.read_bytes, path, max_bytes=_FS_DATA_URL_MAX_BYTES
             )
-        except Exception as exc:
+        except SshWorkspaceFsError as exc:
             _raise_fs_backend_error(exc)
         encoded = base64.b64encode(data).decode("ascii")
         return {"dataUrl": f"data:{_fs_mime_type(Path(target))};base64,{encoded}"}
@@ -936,9 +940,10 @@ async def fs_download(
 ):
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:
+        from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
         try:
             target, _size = await asyncio.to_thread(backend.inspect_file, path)
-        except Exception as exc:
+        except SshWorkspaceFsError as exc:
             _raise_fs_backend_error(exc)
         target_path = Path(target)
         if _is_sensitive_path(target_path):
@@ -965,9 +970,10 @@ async def fs_download(
 async def fs_git_root(path: str, profile: Optional[str] = None):
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:
+        from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
         try:
             return {"root": await asyncio.to_thread(backend.git_root, path)}
-        except Exception as exc:
+        except SshWorkspaceFsError as exc:
             _raise_fs_backend_error(exc)
     target = _fs_path(path)
     try:
@@ -982,10 +988,11 @@ async def fs_git_root(path: str, profile: Optional[str] = None):
 async def fs_default_cwd(profile: Optional[str] = None):
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:
+        from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
         cwd = backend.cwd
         try:
             branch = await asyncio.to_thread(backend.git_branch, cwd)
-        except Exception as exc:
+        except SshWorkspaceFsError as exc:
             _raise_fs_backend_error(exc)
         return {"cwd": cwd, "branch": branch}
     cwd = _fs_default_cwd()
