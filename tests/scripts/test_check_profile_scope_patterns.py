@@ -5,9 +5,12 @@ built from ``os.environ`` is the shape that leaked the launch profile's secrets 
 children; the same spawn through ``served_profile_child_env`` is the fix and must not be flagged.
 """
 import importlib.util
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
+
+import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check_profile_scope_patterns.py"
 
@@ -90,3 +93,19 @@ def test_lint_is_advisory_and_exits_zero_with_findings(tmp_path, capsys):
     assert mod.main(["--files", str(bad)]) == 0
     out = capsys.readouterr().out
     assert "P05/C2" in out and ":2 " in out and "ADVISORY" in out
+
+
+@pytest.mark.parametrize("operation", ["diff", "show"])
+def test_failed_git_read_cannot_report_zero_findings(monkeypatch, operation):
+    mod = _load()
+
+    def failed_run(args, **kwargs):
+        assert args[1] == operation
+        return subprocess.CompletedProcess(args, 2, stdout="", stderr="fatal: unreadable")
+
+    monkeypatch.setattr(mod.subprocess, "run", failed_run)
+    with pytest.raises(RuntimeError, match=operation):
+        if operation == "diff":
+            mod.added_lines_vs_base("base", "HEAD")
+        else:
+            mod._read("agent/example.py", "HEAD")

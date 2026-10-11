@@ -78,7 +78,12 @@ def scan_text(rel: str, text: str, patterns: list[dict], lines: set[int] | None 
 
 
 def _git(*args: str) -> str:
-    proc = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
+    proc = subprocess.run(
+        ["git", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=120, check=False,
+    )
+    if proc.returncode:
+        raise RuntimeError(f"git {args[0]} failed: {proc.stderr.strip()[:240]}")
     return proc.stdout
 
 
@@ -108,8 +113,13 @@ def added_lines_vs_base(base: str, head: str | None) -> dict[str, set[int]]:
 def _read(rel: str, head: str | None) -> str | None:
     if head:
         cmd = ["git", "show", f"{head}:{rel}"]
-        r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
-        return r.stdout if r.returncode == 0 else None
+        r = subprocess.run(
+            cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=120, check=False,
+        )
+        if r.returncode:
+            raise RuntimeError(f"git show failed: {r.stderr.strip()[:240]}")
+        return r.stdout
     path = ROOT / rel
     return path.read_text(encoding="utf-8-sig", errors="replace") if path.is_file() else None
 
