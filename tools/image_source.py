@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import os
 import re
 from dataclasses import dataclass
@@ -136,8 +137,8 @@ def _resolve_data_url(s: str) -> tuple[bytes, str]:
         raise SourceTooLarge("data: URL exceeds size limit", src=s[:64])
     try:
         data = base64.b64decode(payload, validate=True)
-    except Exception as exc:
-        raise NotAnImage(f"invalid base64 in data: URL: {exc}", src=s[:64])
+    except (binascii.Error, ValueError) as exc:
+        raise NotAnImage(f"invalid base64 in data: URL: {exc}", src=s[:64]) from exc
     return data, declared  # real mime verified in _finalize via magic bytes
 
 
