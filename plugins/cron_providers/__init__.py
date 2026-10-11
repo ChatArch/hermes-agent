@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from cron.scheduler_provider import CronScheduler
 
 from plugins import plugin_loader as _loader
 
