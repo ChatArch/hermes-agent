@@ -302,5 +302,3 @@ public static class HermesUpdateJob {
 }
 '@
 }
-
-Initialize-HermesUpdateJob

@@ -996,6 +996,7 @@ function Step-PipeDrain($Reader, [ref]$Task, $Buffer, $Sink, [ref]$Moved) {
 }
 
 function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
+    Initialize-HermesUpdateJob
     # The window does not stream child output, so no line-pump: both pipes
     # drain asynchronously (no deadlock however chatty the child) while a small
     # DoEvents loop keeps the marquee animating through long silent
