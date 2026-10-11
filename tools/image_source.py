@@ -89,15 +89,23 @@ async def resolve_image_source(
         except (ValueError, PermissionError) as exc:
             raise SourceUnsafe(str(exc), src=s) from exc
     local = _is_local_terminal_backend(ctx.task_id)
-    p = Path(os.path.expanduser(candidate) if local else candidate)
-    host_target = _permitted_host_read_target(p, ctx)
-    if host_target is not None and host_target.is_file():
-        _guard_credential_read(host_target, s)
-        data = await asyncio.to_thread(host_target.read_bytes)
+    p, data = await asyncio.to_thread(_read_host_source, candidate, ctx, local, s)
+    if data is not None:
         return _finalize(data, "", "file", s, permitted)
     if local or gateway_file:
         raise SourceNotFound(f"media file not found: '{p}'", src=s, origin="file")
     return await _resolve_container_fallback(p, ctx, s, permitted)
+
+
+def _read_host_source(candidate: str, ctx: ResolveContext, local: bool,
+                      src: str) -> tuple[Path, Optional[bytes]]:
+    """Probe and read off-loop; carry task context and check credentials before I/O."""
+    p = Path(os.path.expanduser(candidate) if local else candidate)
+    host_target = _permitted_host_read_target(p, ctx)
+    if host_target is not None and host_target.is_file():
+        _guard_credential_read(host_target, src)
+        return p, host_target.read_bytes()
+    return p, None
 
 
 def _guard_credential_read(host_target: Path, src: str) -> None:
