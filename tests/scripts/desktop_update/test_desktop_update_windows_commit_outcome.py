@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -92,8 +93,19 @@ def _handoff(tmp_path: Path, *args: str, verify: str = 'pass\n', timeout: int = 
     try:
         out, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True, check=False)
-        out, _ = proc.communicate()
+        try:
+            subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)],
+                           capture_output=True, check=False, timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()  # Only the Popen owned by this test; no unrelated PID discovery.
+        try:
+            out, _ = proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                out, _ = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pytest.fail('hand-off process output did not close after bounded cleanup')
         pytest.fail(f'hand-off did not finish within {timeout}s: {out}')
     argv = [json.loads(line) for line in calls.read_text(encoding='utf-8-sig').splitlines()] if calls.exists() else []
     result_path = home / '.hermes-update-result.json'
@@ -152,12 +164,15 @@ def test_nonzero_exit_after_the_commit_point_is_installed_with_a_followup(tmp_pa
         assert (result['ok'], result['exit_code']) == (False, 130), result
 
 
-_TIMED_CHECKOUT_HOLDER = """
+_CHECKOUT_HOLDER = """
 import msvcrt, os, sys, time
 fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT | os.O_BINARY, 0o644)
 os.lseek(fd, 1 << 20, os.SEEK_SET)
 msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)   # hermes_cli/update_lock.py::_try_lock's byte
-time.sleep(float(sys.argv[2]))
+from pathlib import Path
+Path(sys.argv[2]).touch()  # the parent may launch the hand-off only after the lock is held
+while not Path(sys.argv[3]).exists():
+    time.sleep(0.05)
 """
 
 
@@ -166,19 +181,72 @@ def test_result_finished_at_is_stamped_after_the_r6_release_wait(tmp_path: Path)
     # The relaunched Desktop drops a non-manual result whose finished_at is 30 minutes old; the
     # R6 wait lasts up to 2 h. The result must carry the time the hand-off actually finished.
     holders = []
+    release = tmp_path / 'release-checkout-lock'
+    ready = tmp_path / 'checkout-lock-held'
+    release_at = []
+    observers = []
+    stop_observer = threading.Event()
 
-    def hold_checkout(_home: Path, install: Path) -> None:
-        holders.append((subprocess.Popen([sys.executable, '-c', _TIMED_CHECKOUT_HOLDER,
-                                          str(install / '.hermes-update.lock'), '25']), time.time() + 25))
+    def publish_release_once() -> bool:
+        try:
+            release.touch(exist_ok=False)
+        except FileExistsError:
+            return False
+        return True
+
+    def hold_checkout(home: Path, install: Path) -> None:
+        holder = subprocess.Popen([sys.executable, '-c', _CHECKOUT_HOLDER,
+                                   str(install / '.hermes-update.lock'), str(ready), str(release)],
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        holders.append(holder)
+        deadline = time.monotonic() + 15
+        while not ready.exists():
+            assert holder.poll() is None and time.monotonic() < deadline, 'checkout holder never acquired its lock'
+            time.sleep(0.05)
+
+        def release_after_wait():
+            log = home / 'logs/desktop-update-handoff.log'
+            try:
+                # _handoff owns the 150s deadline; do not expire before it enters R6.
+                while not stop_observer.is_set():
+                    try:
+                        if log.exists() and 'keeping the update marker' in log.read_text(encoding='utf-8-sig'):
+                            # Distinguish the initial result stamp from the stamp after R6 releases.
+                            if stop_observer.wait(2):
+                                return  # cleanup won the race; this was not an R6 release
+                            if publish_release_once():
+                                release_at.append(release.stat().st_mtime_ns)
+                            return
+                    except PermissionError:  # Add-Content briefly owns the file without read sharing.
+                        pass
+                    time.sleep(0.1)
+            finally:
+                publish_release_once()
+
+        observer = threading.Thread(target=release_after_wait, daemon=True)
+        observers.append(observer)
+        observer.start()
     try:
         code, out, _, result, home = _handoff(tmp_path, '-NoGateway', prepare=hold_checkout)
+        handoff_done_at = time.time_ns()
     finally:
-        for proc, _ in holders:
-            proc.kill(); proc.wait()
+        stop_observer.set()
+        publish_release_once()
+        for observer in observers:
+            observer.join(timeout=5)
+        for proc in holders:
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        assert all(not observer.is_alive() for observer in observers), 'checkout-lock observer did not stop'
+    assert len(release_at) == 1, 'hand-off never entered the checkout-lock release wait'
+    assert handoff_done_at >= release_at[0], 'hand-off returned before the observer released the lock'
     assert code == 0, out
     log = (home / 'logs/desktop-update-handoff.log').read_text(encoding='utf-8-sig')
     assert 'keeping the update marker' in log, log
-    assert result['ok'] is True and result['finished_at'] >= int(holders[0][1]) - 1, result
+    assert result['ok'] is True and result['finished_at'] >= release_at[0] // 1_000_000_000 - 1, result
 
 
 @pytest.mark.platforms('windows')
