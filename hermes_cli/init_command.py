@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
+
+from hermes_cli.plugin_host_diagnostics import private_exc_info
+
+logger = logging.getLogger(__name__)
 
 # Embedded in every prompt so the generated file reads like a maintainer wrote it.
 _QUALITY_BAR = """\
@@ -102,13 +107,18 @@ def _resolve_session_cwd(session_key: str | None) -> str:
         recorded = get_session_cwd(key)
         if recorded and os.path.isdir(recorded):
             return recorded
-    except Exception:
-        pass
+    except Exception as exc:
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Session cwd lookup failed; using runtime cwd", exc_info=info)
     try:
         from agent.runtime_cwd import resolve_agent_cwd
 
         return str(resolve_agent_cwd())
-    except Exception:
+    except Exception as exc:
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Runtime cwd lookup failed; using process cwd", exc_info=info)
         return os.getcwd()
 
 
