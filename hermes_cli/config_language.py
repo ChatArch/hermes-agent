@@ -8,9 +8,13 @@ otherwise ``hermes config set display.language pl`` would refuse the very pack t
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
+from hermes_cli.plugin_host_diagnostics import private_exc_info
+
 DISPLAY_LANGUAGE_KEY = "display.language"
+logger = logging.getLogger(__name__)
 
 
 def resolve_display_language(value: str) -> Optional[str]:
@@ -19,8 +23,10 @@ def resolve_display_language(value: str) -> Optional[str]:
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()
-    except Exception:
-        pass  # a broken plugin tree must not block setting a bundled language
+    except Exception as exc:
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Plugin discovery failed; bundled language lookup continues", exc_info=info)
     reset_language_cache()  # packs registered during discovery must be visible to this check
     return resolve_language_id(value)
 
