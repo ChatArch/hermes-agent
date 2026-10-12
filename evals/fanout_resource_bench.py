@@ -104,8 +104,14 @@ def _count_live(cls_name: str) -> int:
 def _snap(pid: int, db_path: str) -> dict:
     st = open(f"/proc/{pid}/status", encoding="utf-8").read()
     g = lambda k: int(st.split(k + ":")[1].split()[0])
-    tcp = subprocess.run(f"ss -tanp 2>/dev/null | grep -c 'pid={pid},'", shell=True, capture_output=True, text=True, check=False).stdout.strip()
-    kids = subprocess.run(["ps", "-o", "args=", "--ppid", str(pid)], capture_output=True, text=True, check=False).stdout
+    try:
+        sockets = subprocess.run(["ss", "-tanp"], capture_output=True, text=True,
+                                 check=False, timeout=5).stdout
+    except FileNotFoundError:
+        sockets = ""  # The old shell probe reported zero when ss was unavailable.
+    tcp = sum(f"pid={pid}," in line for line in sockets.splitlines())
+    kids = subprocess.run(["ps", "-o", "args=", "--ppid", str(pid)],
+                          capture_output=True, text=True, check=False, timeout=5).stdout
     return {
         "threads": g("Threads"), "rss_mb": g("VmRSS") // 1024, "fds": len(os.listdir(f"/proc/{pid}/fd")),
         "tcp": int(tcp or 0), "pyright": kids.count("pyright"), "kernels": kids.count("hermes_kernel_runner"),
