@@ -188,6 +188,77 @@ def test_fallback_does_not_need_audit_permission_to_request_a_caller_frame():
     assert done.returncode == 0, done.stderr
 
 
+@pytest.mark.parametrize("boundary", ["dump", "repr", "fingerprint"])
+@pytest.mark.parametrize("denied_attr", ["tb_frame", "f_code"])
+@pytest.mark.parametrize("error_kind", ["RuntimeError", "PermissionError"])
+@pytest.mark.parametrize("warnings_enabled", [True, False])
+def test_frame_metadata_audit_denial_preserves_fallback(
+    tmp_path, boundary, denied_attr, error_kind, warnings_enabled
+):
+    # This tests real object.__getattr__ audit events without installing hooks in pytest.
+    script = textwrap.dedent('''
+        import builtins
+        import hashlib
+        import logging
+        import sys
+        from pathlib import Path
+        from hermes_cli import plugin_host_profiles as profiles
+        from hermes_cli import plugin_host_wire as wire
+
+        boundary, denied_attr, error_kind, warnings_enabled, plugin_dir = sys.argv[1:]
+        error_type = getattr(builtins, error_kind)
+        logging.disable(logging.NOTSET if warnings_enabled == "1" else logging.CRITICAL)
+        hits = []
+
+        class BrokenModel:
+            def model_dump(self):
+                raise RuntimeError("private metadata probe")
+            def __repr__(self):
+                return "<audit opaque>"
+
+        class BrokenRepr:
+            def __repr__(self):
+                raise RuntimeError("private metadata probe")
+
+        if boundary == "fingerprint":
+            original_import = builtins.__import__
+            def version_failure(name, globals=None, locals=None, fromlist=(), level=0):
+                if name == "hermes_cli" and "__version__" in fromlist:
+                    raise RuntimeError("private metadata probe")
+                return original_import(name, globals, locals, fromlist, level)
+            builtins.__import__ = version_failure
+            operation = lambda: profiles._fingerprint(Path(plugin_dir))
+            expected = hashlib.sha256(f"{profiles._CACHE_VERSION}|{sys.executable}".encode()).hexdigest()
+        else:
+            value = BrokenModel() if boundary == "dump" else BrokenRepr()
+            operation = lambda: wire.encode(value)
+            expected = {"__opaque__": type(value).__name__, "repr": "<audit opaque>" if boundary == "dump" else ""}
+
+        def deny_metadata(event, args):
+            if event == "object.__getattr__" and args[1] == denied_attr:
+                hits.append(denied_attr)
+                raise error_type("metadata observation denied")
+
+        sys.addaudithook(deny_metadata)
+        try:
+            result = operation()
+        except (RuntimeError, PermissionError):
+            result = None
+        if result != expected:
+            sys.exit(17)
+        if not hits:
+            sys.exit(18)
+    ''')
+    plugin_dir = tmp_path / "provider"
+    plugin_dir.mkdir()
+    done = subprocess.run(
+        [sys.executable, "-c", script, boundary, denied_attr, error_kind,
+         "1" if warnings_enabled else "0", str(plugin_dir)],
+        capture_output=True, text=True, timeout=20, check=False,
+    )
+    assert done.returncode == 0, (done.returncode, done.stderr)
+
+
 def test_reference_resolver_failure_still_propagates():
     def refs(_value):
         raise RuntimeError("reference resolution failed")

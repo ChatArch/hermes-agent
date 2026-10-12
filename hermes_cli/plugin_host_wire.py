@@ -126,11 +126,15 @@ def encode(value: Any, refs: Optional[Callable[[Any], Optional[dict]]] = None, _
         try:
             return {"__record__": type(value).__name__, "fields": encode(dump(), refs, _depth + 1)}
         except Exception as exc:
-            logger.warning("Plugin value export failed; using opaque fallback", exc_info=private_exc_info(exc))
+            info = private_exc_info(exc)
+            if info is not None:
+                logger.warning("Plugin value export failed; using opaque fallback", exc_info=info)
     try:
         text = repr(value)[:200]
     except Exception as exc:
-        logger.warning("Plugin value representation failed; using empty text", exc_info=private_exc_info(exc))
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Plugin value representation failed; using empty text", exc_info=info)
         text = ""
     return {"__opaque__": type(value).__name__, "repr": text}
 

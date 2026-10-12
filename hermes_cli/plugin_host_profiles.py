@@ -46,7 +46,9 @@ def _fingerprint(plugin_dir: Path) -> str:
         from hermes_cli import __version__
         digest.update(str(__version__).encode())
     except Exception as exc:
-        logger.warning("Plugin version probe failed; retaining file fingerprint", exc_info=private_exc_info(exc))
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Plugin version probe failed; retaining file fingerprint", exc_info=info)
     for path in sorted(plugin_dir.rglob("*")):
         if not path.is_file() or "__pycache__" in path.parts or ".git" in path.parts:
             continue
