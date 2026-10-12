@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from agent.i18n_layers import CORE_SURFACE, flatten, non_text_leaves, scan_locale_dir
+from hermes_cli.plugin_host_diagnostics import private_exc_info
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,9 @@ def reference_keys(surface: str) -> Optional[set[str]]:
         keys = data.get("keys") if isinstance(data, dict) else data
         return {str(k) for k in keys} if isinstance(keys, list) else None
     except Exception as exc:  # a broken reference is a Hermes bug, not the pack's
-        logger.debug("i18n reference keys for %s unavailable: %s", surface, exc)
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Locale reference unavailable; skipping reference key check", exc_info=info)
         return None
 
 
@@ -86,6 +89,9 @@ def _check_locale_file(report, lang_id: str, surface: str, path: Path) -> None:
     try:
         document = _load_document(path)
     except Exception as exc:
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Locale document could not be parsed; rejecting locale", exc_info=info)
         report.add(label, False, f"{path.name} failed to parse: {exc}")
         return
     if document is None:

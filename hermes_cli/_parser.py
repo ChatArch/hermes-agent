@@ -7,8 +7,13 @@ gateway, sessions, …) is built by ``hermes_cli/subcommands/<group>.py`` and wi
 
 import argparse
 import difflib
+import logging
 import re
 from functools import lru_cache
+
+from hermes_cli.plugin_host_diagnostics import private_exc_info
+
+logger = logging.getLogger(__name__)
 
 # `--profile` / `-p` is consumed by ``main._apply_profile_override`` before argparse runs
 # (it sets ``HERMES_HOME`` and strips itself from ``sys.argv``), so it isn't on the parser.
@@ -330,7 +335,10 @@ def _plugin_command_install_hint(prog: str, value: str):
             return None
         from hermes_cli.memory_provider_migration import catalog_install_hint
         return catalog_install_hint(value, category="memory")
-    except Exception:
+    except Exception as exc:
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Plugin install hint unavailable; retaining command error", exc_info=info)
         return None
 
 
