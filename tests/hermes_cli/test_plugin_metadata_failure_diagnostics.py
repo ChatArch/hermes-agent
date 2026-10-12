@@ -96,9 +96,12 @@ def test_unavailable_locale_diagnostics_do_not_change_admission(monkeypatch, tmp
     assert report.ok is (failure == "reference")
 
 
-def test_unavailable_hint_diagnostics_keep_original_fallback(monkeypatch):
+def test_unavailable_hint_diagnostics_keep_original_fallback(monkeypatch, caplog):
     from plugins import memory
+    from hermes_cli import plugin_host_diagnostics
 
     monkeypatch.setattr(memory, "find_provider_dir", _fail)
-    monkeypatch.setattr(_parser, "private_exc_info", lambda _exc: None, raising=False)
-    assert _parser._plugin_command_install_hint("hermes", "honcho") is None
+    monkeypatch.setattr(plugin_host_diagnostics, "private_exc_info", lambda _exc: None)
+    with caplog.at_level(logging.WARNING, logger="hermes_cli._parser"):
+        assert _parser._plugin_command_install_hint("hermes", "honcho") is None
+    assert not [r for r in caplog.records if r.name == "hermes_cli._parser"]

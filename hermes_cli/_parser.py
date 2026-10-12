@@ -11,8 +11,6 @@ import logging
 import re
 from functools import lru_cache
 
-from hermes_cli.plugin_host_diagnostics import private_exc_info
-
 logger = logging.getLogger(__name__)
 
 # `--profile` / `-p` is consumed by ``main._apply_profile_override`` before argparse runs
@@ -336,6 +334,11 @@ def _plugin_command_install_hint(prog: str, value: str):
         from hermes_cli.memory_provider_migration import catalog_install_hint
         return catalog_install_hint(value, category="memory")
     except Exception as exc:
+        # Bootstrap/recovery imports this module with only the stdlib closure present.
+        try:
+            from hermes_cli.plugin_host_diagnostics import private_exc_info
+        except ImportError:
+            return None
         info = private_exc_info(exc)
         if info is not None:
             logger.warning("Plugin install hint unavailable; retaining command error", exc_info=info)

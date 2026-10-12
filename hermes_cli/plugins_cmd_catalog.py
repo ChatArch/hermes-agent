@@ -24,6 +24,7 @@ from hermes_cli.plugin_catalog import (
     _NAME_RE, _normalize_repo,
 )
 from pm.filesystem import is_junction
+from hermes_cli.plugin_host_diagnostics import private_exc_info
 
 logger = logging.getLogger(__name__)
 
@@ -863,7 +864,10 @@ def catalog_pins() -> dict[str, str]:
     """``{catalog_name: pinned_sha}`` from the live catalog; empty on failure (best effort)."""
     try:
         return {e.name: e.sha for e in load_catalog_live()}
-    except Exception:
+    except Exception as exc:
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Plugin catalog pins unavailable; retaining empty map", exc_info=info)
         return {}
 
 
@@ -873,7 +877,10 @@ def catalog_titles() -> dict[str, str]:
     pay a live-catalog fetch per candidate (see ``resolved_removed_entries``); empty on failure."""
     try:
         return {e.name: e.title for e in load_catalog_live() if e.title}
-    except Exception:
+    except Exception as exc:
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Plugin catalog titles unavailable; retaining empty map", exc_info=info)
         return {}
 
 
@@ -881,7 +888,10 @@ def catalog_versions() -> dict[str, str]:
     """``{catalog_name: version_label}`` for entries that carry one; empty on failure (best effort)."""
     try:
         return {e.name: e.version for e in load_catalog_live() if e.version}
-    except Exception:
+    except Exception as exc:
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Plugin catalog versions unavailable; retaining empty map", exc_info=info)
         return {}
 
 
@@ -893,7 +903,10 @@ def catalog_rows_maps() -> tuple[dict[str, str], dict[str, str], dict[str, str]]
     empty triple on failure."""
     try:
         entries = load_catalog_live()
-    except Exception:
+    except Exception as exc:
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Plugin catalog listing metadata unavailable; retaining empty maps", exc_info=info)
         return {}, {}, {}
     return ({e.name: e.sha for e in entries},
             {e.name: e.version for e in entries if e.version},

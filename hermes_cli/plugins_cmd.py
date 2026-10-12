@@ -18,6 +18,7 @@ from typing import Any, NoReturn, Optional
 from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.config import cfg_get
 from hermes_cli.plugin_capabilities import _child_dict
+from hermes_cli.plugin_host_diagnostics import private_exc_info
 # Tests patch these two on the facade; the install/remove siblings read them through it.
 from hermes_cli.secret_prompt import masked_secret_prompt
 from utils import rmtree_readonly
@@ -824,7 +825,10 @@ def _default_on(dir_path, source: str) -> bool:
         return False
     try:
         kind = str(_load_yaml_manifest(manifest_file).get("kind", "standalone")).strip().lower()
-    except Exception:
+    except Exception as exc:
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Plugin manifest activation lookup failed; retaining opt-in state", exc_info=info)
         return False
     return kind == "model-provider" or (source == "bundled" and kind in _BUNDLED_DEFAULT_ON_KINDS)
 

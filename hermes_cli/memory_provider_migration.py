@@ -26,6 +26,8 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from hermes_cli.plugin_host_diagnostics import private_exc_info
+
 logger = logging.getLogger(__name__)
 
 _attempted: set[tuple[str, str]] = set()
@@ -97,7 +99,10 @@ def catalog_install_hint(name: str, *, category: Optional[str] = None) -> Option
     try:
         from hermes_cli.plugin_catalog import get_catalog_entry
         entry = get_catalog_entry(name) if name else None
-    except Exception:
+    except Exception as exc:
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Memory plugin catalog hint unavailable; retaining recovery fallback", exc_info=info)
         return None
     if entry is None or (category is not None and entry.category != category):
         return None
@@ -136,6 +141,9 @@ def _install_pending(home: Path, name: str, *, install: Callable[[str], dict],
     try:
         result = install(name)
     except Exception as exc:  # network, uv, kill list — report, do not raise
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Memory plugin migration failed; retaining manual recovery", exc_info=info)
         result = {"ok": False, "error": str(exc)}
     if result.get("ok"):
         say(f"  ✓ Memory provider '{name}' moved out of core — installed its plugin from the catalog "
