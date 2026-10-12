@@ -112,6 +112,27 @@ weeks, months and years. The combined timeout is capped below the native signed
 unit limits cannot overflow subprocess polling. Zero/unknown/infinite phase
 limits use the bounded fallback. This does not change active-turn drain settings.
 
+## Configuration facade and presentation
+
+`hermes_cli/config.py` retains the public config commands, credential routing,
+managed-mode guards and atomic writer seams. `config_display.py` owns the
+human-facing `show_config` presentation and section helpers; its getters are
+imported from the facade at call time so the active profile and existing patch
+seams remain effective. Credential masking is still supplied by the facade.
+
+The provider-change notice used by `set_config_value` lives in
+`config_providers.config_set_provider_route_notice`. It delegates ownership
+checks and route-key removal to `route_identity.drop_stale_model_route` and
+returns the existing CLI notice for printing after the atomic write. It does
+not select a new endpoint or refresh credentials.
+
+The explicit `hermes config edit` entry runs the user's foreground editor without
+an automatic deadline: an arbitrary timeout can discard an unsaved buffer. This
+human-owned lifetime is a reviewed exception on that call only, not a bounded
+execution claim or an exception for automated/background/network waits. A hung
+editor or all of its descendants are not guaranteed to recover on interruption;
+an unattended workflow must use its own explicitly bounded path.
+
 ## Nous free tier sign-in
 
 Sign-in completion is one function, `settle_after_upgrade`, called by every caller that persists an

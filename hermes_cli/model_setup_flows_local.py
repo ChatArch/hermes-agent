@@ -11,7 +11,10 @@ bytes already on disk.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
+
+logger = logging.getLogger(__name__)
 
 _POLL_S = 0.2
 _PAUSE_WAIT_S = 15.0
@@ -24,7 +27,12 @@ def local_models_available() -> bool:
         from hermes_cli.local_runtime.binaries import unavailable_reason
 
         return unavailable_reason("cpu") is None
-    except Exception:
+    except Exception as exc:
+        from hermes_cli.plugin_host_diagnostics import private_exc_info
+
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Local engine discovery failed; retaining unavailable result", exc_info=info)
         return False
 
 

@@ -10,11 +10,14 @@ intercepting.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import urllib.request
 from typing import Any, Optional
 from hermes_cli.models_reasoning_caps import _seed_reasoning_caps
+
+logger = logging.getLogger(__name__)
 
 
 # Cache: maps model_id → {"prompt": str, "completion": str} per endpoint
@@ -523,7 +526,12 @@ def get_cached_nous_inference_base_url() -> str:
         state = _load_provider_state(_load_auth_store(), "nous") or {}
         url = _validate_nous_inference_url_from_network(_optional_base_url(state.get("inference_base_url"))) or ""
         return url.rstrip("/").removesuffix("/v1")
-    except Exception:
+    except Exception as exc:
+        from hermes_cli.plugin_host_diagnostics import private_exc_info
+
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Cached pricing endpoint lookup failed; retaining unknown endpoint", exc_info=info)
         return ""
 
 
@@ -556,7 +564,12 @@ def resolve_pricing_provider(provider: str, *, base_url: str = "") -> str:
         from utils import base_url_host_matches
 
         inferred = _infer_provider_from_url(base_url)
-    except Exception:
+    except Exception as exc:
+        from hermes_cli.plugin_host_diagnostics import private_exc_info
+
+        info = private_exc_info(exc)
+        if info is not None:
+            logger.warning("Pricing provider identity lookup failed; retaining unproven endpoint", exc_info=info)
         return ""
     # ``_infer_provider_from_url`` is deliberately broad for user-facing hints. Pricing is a
     # trust boundary: require an exact official hostname (or one of its explicit subdomains),
@@ -587,7 +600,12 @@ def pricing_cache_scope(
             from hermes_cli.auth import _nous_inference_env_override
 
             env_base = _nous_inference_env_override()
-        except Exception:
+        except Exception as exc:
+            from hermes_cli.plugin_host_diagnostics import private_exc_info
+
+            info = private_exc_info(exc)
+            if info is not None:
+                logger.warning("Pricing endpoint override lookup failed; retaining fallback scope", exc_info=info)
             env_base = None
         if env_base:
             return env_base.rstrip("/").removesuffix("/v1")

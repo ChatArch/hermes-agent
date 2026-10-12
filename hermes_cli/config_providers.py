@@ -1,7 +1,9 @@
 """Custom-provider entry normalization and per-route lookups (TLS, headers, context length, capabilities).
 
-Split out of ``hermes_cli/config.py``; every name is re-imported there, so
-``hermes_cli.config.<name>`` keeps resolving (and monkeypatching) as before. Functions that call
+Split out of ``hermes_cli/config.py``; public normalization hooks remain re-imported
+there so existing facade patch seams stay live. The config-set route notice helper
+is consumed at call time by the writer; route identity and credential scope remain
+owned by the existing resolver. Functions that call
 ``get_compatible_custom_providers`` / ``load_config*`` import them lazily from ``hermes_cli.config``
 so tests patching that module still intercept the call.
 """
@@ -613,3 +615,23 @@ def is_provider_enabled(provider_cfg: Optional[dict[str, Any]]) -> bool:
     if isinstance(flag, str):
         return flag.strip().lower() not in _FALSE_WORDS
     return bool(flag)
+
+def config_set_provider_route_notice(key: str, value: Any, user_config: dict, old_provider: str) -> str:
+    """Synchronize a changed provider's route and return the existing CLI notice."""
+    if key != "model.provider" or old_provider.lower() == str(value).strip().lower():
+        return ""
+    from hermes_cli.route_identity import drop_stale_model_route
+    from hermes_cli.config import color, Colors
+
+    popped, unverified = drop_stale_model_route(user_config.get("model"), value, user_config)
+    if popped:
+        return (
+            "  Cleared " + ", ".join(f"model.{k} ({v})" for k, v in popped.items())
+            + f" — that route belonged to {old_provider}, not {value}. {value}'s endpoint resolves "
+            "automatically; set model.base_url again if you meant a custom endpoint.")
+    if unverified:
+        return color(
+            f"⚠ model.base_url ({user_config['model'].get('base_url')}) was set under {old_provider} and "
+            f"still applies to {value} — requests go there. If it is not {value}'s endpoint: "
+            "`hermes config unset model.base_url` (and model.api_mode).", Colors.YELLOW)
+    return ""
