@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
+from hermes_cli.plugin_host_diagnostics import private_exc_info
 from hermes_cli.plugin_host_wire import PluginHostUnavailable, decode, signature_from
 
 logger = logging.getLogger(__name__)
@@ -44,8 +45,8 @@ def _fingerprint(plugin_dir: Path) -> str:
     try:
         from hermes_cli import __version__
         digest.update(str(__version__).encode())
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Plugin version probe failed; retaining file fingerprint", exc_info=private_exc_info(exc))
     for path in sorted(plugin_dir.rglob("*")):
         if not path.is_file() or "__pycache__" in path.parts or ".git" in path.parts:
             continue

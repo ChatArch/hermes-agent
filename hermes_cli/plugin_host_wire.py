@@ -28,6 +28,8 @@ from concurrent.futures import Future
 from pathlib import PurePath
 from typing import Any, BinaryIO, Callable, Dict, Optional
 
+from hermes_cli.plugin_host_diagnostics import private_exc_info
+
 logger = logging.getLogger("hermes_cli.plugins")
 
 PROTOCOL_VERSION = 1
@@ -123,11 +125,12 @@ def encode(value: Any, refs: Optional[Callable[[Any], Optional[dict]]] = None, _
     if callable(dump) and not isinstance(value, type):
         try:
             return {"__record__": type(value).__name__, "fields": encode(dump(), refs, _depth + 1)}
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Plugin value export failed; using opaque fallback", exc_info=private_exc_info(exc))
     try:
         text = repr(value)[:200]
-    except Exception:
+    except Exception as exc:
+        logger.warning("Plugin value representation failed; using empty text", exc_info=private_exc_info(exc))
         text = ""
     return {"__opaque__": type(value).__name__, "repr": text}
 
