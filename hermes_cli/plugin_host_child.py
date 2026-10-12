@@ -28,6 +28,7 @@ import types
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from hermes_cli.plugin_host_diagnostics import private_exc_info
 from hermes_cli.plugin_host_wire import (
     Channel, Opaque, PROTOCOL_VERSION, PluginHostUnsupported, bind_serving_request, decode, describe_signature,
     encode, is_async_callable, serving_request,
@@ -271,8 +272,9 @@ class HostRuntime:
             try:
                 self._run(register(ctx))
             except Exception as exc:
-                if not captured:
-                    logger.debug("register() failed for %s: %s", params.get("name"), exc)
+                info = private_exc_info(exc)
+                if info is not None:
+                    logger.warning("Category registration failed; preserving capture or trying subclasses", exc_info=info)
         if not captured:
             for attr in dir(module):
                 value = getattr(module, attr, None)
@@ -280,7 +282,10 @@ class HostRuntime:
                     try:
                         captured.append(value())
                         break
-                    except Exception:
+                    except Exception as exc:
+                        info = private_exc_info(exc)
+                        if info is not None:
+                            logger.warning("Category constructor failed; trying the next subclass", exc_info=info)
                         continue
         if not captured:
             return None
