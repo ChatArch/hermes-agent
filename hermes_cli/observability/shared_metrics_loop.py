@@ -18,7 +18,10 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Iterator
 
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
+
 logger = logging.getLogger(__name__)
+_failure_logger = PrivateDiagnosticLogger(__name__)
 
 
 @contextlib.contextmanager
@@ -66,7 +69,8 @@ def _current_home() -> str | None:
         from hermes_constants import get_hermes_home
 
         return str(get_hermes_home())
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Shared-metrics profile home unavailable; retaining unresolved fallback", exc_info=exc)
         return None
 
 
@@ -132,7 +136,8 @@ def memory_op_fields(*, op: Any, provider: Any, outcome: Any, origin: Any, failu
 def _record_memory_ops(ops: Iterable[str], *, provider: Any, outcome: str, failure_class: str) -> None:
     try:
         origin = _memory_origin()
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Shared-metrics memory origin unavailable; retaining foreground fallback", exc_info=exc)
         origin = "foreground"
     for op in list(ops)[:_MAX_BATCH_OPS]:
         _emit(
@@ -392,7 +397,8 @@ def _safe_record_browser(backend: Callable[[], str], result: Any, error_class: s
     def name() -> str:
         try:
             return backend()
-        except Exception:
+        except Exception as exc:
+            _failure_logger.warning("Shared-metrics browser backend unavailable; retaining anonymous fallback", exc_info=exc)
             return "other"
 
     record_execution_backend("browser", name, result, error_class=error_class)

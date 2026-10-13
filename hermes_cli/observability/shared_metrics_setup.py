@@ -24,8 +24,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
 
 logger = logging.getLogger(__name__)
+_failure_logger = PrivateDiagnosticLogger(__name__)
 
 MARKER_DIRNAME = "provider_setup_markers"
 # Device codes expire in ~15 minutes; a flow still pending an hour later was left open and forgotten.
@@ -90,7 +92,8 @@ def collection_enabled(hermes_home: Any = None) -> bool:
             from .relay_shared_metrics import enabled
 
             return bool(enabled())
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Shared-metrics collection gate unavailable; retaining disabled fallback", exc_info=exc)
         return False
 
 
@@ -365,7 +368,8 @@ def _resumes(flow: SetupFlow, surface: Any, provider: Any) -> bool:
         from .shared_metrics_catalog import provider_metric_name
 
         return provider not in _NOT_A_PROVIDER and (flow.surface, flow.provider) == (surface, provider_metric_name(provider))
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Shared-metrics setup resume lookup failed; retaining separate-flow fallback", exc_info=exc)
         return False
 
 
