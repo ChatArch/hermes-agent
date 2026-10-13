@@ -24,6 +24,9 @@ import ast
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
+
+logger = PrivateDiagnosticLogger(__name__)
 
 VERDICT_HOST = "host"
 VERDICT_IN_PROCESS = "in_process"
@@ -228,6 +231,7 @@ def _read_manifest(plugin_dir: Path) -> dict[str, Any]:
                 import hermes_yaml as yaml
                 data = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
                 return data if isinstance(data, dict) else {}
-            except Exception:
+            except Exception as exc:
+                logger.warning("Plugin audit manifest unreadable; retaining empty metadata fallback", exc_info=exc)
                 return {}
     return {}
