@@ -4,10 +4,13 @@ Split out of ``hermes_cli/doctor.py``."""
 from __future__ import annotations
 
 import os
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
 from hermes_cli.doctor_report import (
     Finding, _fail_and_issue, _section, check_bool, check_fail, check_info, check_ok, check_warn, doctor_check,
     warn_on_error,
 )
+
+logger = PrivateDiagnosticLogger(__name__)
 
 
 def _has_provider_env_config(content: str) -> bool:
@@ -108,6 +111,7 @@ def _check_relay_plugins(should_fix: bool, f: Finding) -> None:
         check_ok("NeMo Relay is not available on this platform")
         return
     except Exception as exc:
+        logger.warning("Relay plugin diagnostic failed; retaining manual recovery report", exc_info=exc)
         check_warn("Relay plugin configuration could not be read", "(Hermes runs without Relay plugins)")
         _relay_info_lines(cause for cause in (exc, exc.__cause__) if cause is not None)
         f.manual_issues.append("Fix the Relay plugin configuration shown under NeMo Relay Plugins.")

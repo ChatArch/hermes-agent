@@ -11,6 +11,9 @@ from agent.redact import (
     _canonical_url_param_name,
     redact_sensitive_text,
 )
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
+
+logger = PrivateDiagnosticLogger(__name__)
 
 _REDACTED = "[REDACTED]"
 _EMAIL_ADDRESS_RE = re.compile(
@@ -211,6 +214,7 @@ def redact_debug_support_text(value: object, *, max_chars: int | None = None) ->
         text = _redact_url_params(text)
         text = _redact_headers_and_argv(text)
         text = _EMAIL_ADDRESS_RE.sub("[REDACTED_EMAIL]", text)
-    except Exception:
+    except Exception as exc:
+        logger.warning("Support redaction failed; returning fail-closed sentinel", exc_info=exc)
         return REDACTION_UNAVAILABLE
     return text[:max_chars] if max_chars is not None else text
