@@ -12,8 +12,10 @@ import functools
 import logging
 import re
 from pathlib import Path
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
 
 logger = logging.getLogger(__name__)
+_failure_logger = PrivateDiagnosticLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -210,7 +212,8 @@ def slash_command_metric_name(raw: object) -> str:
         from hermes_cli.commands import resolve_command
 
         command = resolve_command(name)
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Shared-metrics core command lookup failed; retaining extension fallback", exc_info=exc)
         command = None
     if command is not None and command.name in _safe(slash_command_names):
         return command.name
@@ -223,8 +226,8 @@ def slash_command_metric_name(raw: object) -> str:
 
         if get_plugin_command_handler(name) is not None:
             return "plugin"
-    except Exception:
-        pass
+    except Exception as exc:
+        _failure_logger.warning("Shared-metrics extension lookup failed; retaining anonymous classification", exc_info=exc)
     return "unknown"
 
 
@@ -274,7 +277,8 @@ def _models_dev_provider(name: str) -> bool:
         from agent.models_dev import get_provider_info
 
         return get_provider_info(name, allow_network=False) is not None
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Shared-metrics provider cache lookup failed; retaining custom classification", exc_info=exc)
         return False
 
 
