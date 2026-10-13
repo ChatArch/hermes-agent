@@ -1,6 +1,9 @@
 """Shared helpers for the real-process Windows hand-off protocol tests (not collected)."""
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
+from functools import wraps
+import json
 import os
 from pathlib import Path
 import re
@@ -17,6 +20,79 @@ MARKER_PS1 = ROOT / 'scripts/desktop-update/marker.ps1'
 MARKER = '.hermes-update-in-progress'
 POWERSHELL = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'),
                           'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+
+_TRACE_MODULES = {
+    'test_desktop_update_windows_commit_outcome': ('commit', (
+        ('_handoff', 'handoff'), ('publish_fixture_launcher', 'fixture'), ('_finish', 'finish'),
+    )),
+    'test_desktop_update_windows_marker': ('marker', (
+        ('_run', 'handoff'), ('publish_fixture_launcher', 'fixture'), ('_finish', 'finish'),
+        ('_protected_pid', 'claim-clock'), ('_creation_time', 'claim-clock'),
+        ('legacy_read', 'legacy-reader'), ('_result', 'result'),
+    )),
+    'test_desktop_update_windows_handoff_lineage': ('lineage', (
+        ('_old_desktop', 'old-desktop'), ('_script', 'spawn'), ('_finish', 'finish'),
+        ('_creation_time', 'claim-clock'), ('_wait_for_log', 'wait-log'),
+    )),
+}
+_TRACE_STEPS = frozenset({
+    'case', 'handoff', 'fixture', 'finish', 'claim-clock', 'legacy-reader', 'result',
+    'old-desktop', 'spawn', 'wait-log', 'prepare',
+})
+
+
+def _phase_record(family: str, step: str, edge: str) -> None:
+    # Flush straight to the per-file runner pipe; do not rely on pytest's
+    # per-case captured buffer, which disappears when the file cap kills it.
+    record = {'handoff_phase': step, 'family': family, 'edge': edge,
+              'monotonic_ns': time.monotonic_ns()}
+    try:
+        print(json.dumps(record), flush=True)
+    except (OSError, ValueError):
+        return  # A closed diagnostic pipe must not replace the test result.
+
+
+def trace_handoff_phase(function=None, *, family: str, step: str, _capture=None):
+    """Bracket one harness call, without recording arguments, paths or errors."""
+    if family not in {'commit', 'marker', 'lineage'} or step not in _TRACE_STEPS:
+        raise ValueError('Unknown handoff phase')
+
+    def decorate(call):
+        @wraps(call)
+        def traced(*args, **kwargs):
+            # pytest restarts capture between fixture setup and call. Keep
+            # this disable scope inside the actual call, not only over yield.
+            with _capture.disabled() if _capture is not None else nullcontext():
+                _phase_record(family, step, 'enter')
+                try:
+                    return call(*args, **kwargs)
+                finally:
+                    _phase_record(family, step, 'exit')
+        return traced
+
+    return decorate if function is None else decorate(function)
+
+
+@contextmanager
+def instrument_handoff_phases(request, monkeypatch):
+    """Only the three native timeout families bypass pytest's output capture."""
+    module = request.module
+    spec = _TRACE_MODULES.get(module.__name__.rsplit('.', 1)[-1])
+    if spec is None:
+        yield
+        return
+    family, helpers = spec
+    capture = request.getfixturevalue('capfd')
+    with monkeypatch.context() as scoped, capture.disabled():
+        for name, step in helpers:
+            scoped.setattr(module, name, trace_handoff_phase(getattr(module, name), family=family, step=step, _capture=capture))
+        _phase_record(family, 'case', 'enter')
+        try:
+            yield
+        finally:
+            _phase_record(family, 'case', 'exit')
+
+
 HOLD_CLI = """
 import os, sys, time
 from pathlib import Path
