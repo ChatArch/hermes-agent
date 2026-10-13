@@ -14,10 +14,13 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
+
 from . import shared_metrics_contract as contract
 from .shared_metrics_contract import _bucket, _non_negative_number
 
 logger = logging.getLogger(__name__)
+_failure_logger = PrivateDiagnosticLogger(__name__)
 
 _TOKEN_THRESHOLDS = (
     (2_000, "lt_2k"), (10_000, "2k_to_10k"), (50_000, "10k_to_50k"), (200_000, "50k_to_200k"),
@@ -358,6 +361,7 @@ def record_prompt_rebuild(agent: Any, stored_prompt: Any, stored_state: str, reb
             (stored := identity_line_value(stored_prompt, label)) and stored != str(getattr(agent, attr, "") or "").strip()
             for label, attr in (("Model", "model"), ("Provider", "provider"))
         )
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Shared-metrics prompt identity lookup failed; retaining rebuild classification", exc_info=exc)
         switched = False
     record_cache_break(agent, "model_switch" if switched else "system_prompt_rebuild")

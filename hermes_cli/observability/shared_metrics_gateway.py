@@ -22,7 +22,10 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone, UTC
 from typing import Any, Callable
 
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
+
 logger = logging.getLogger(__name__)
+_failure_logger = PrivateDiagnosticLogger(__name__)
 
 _executor: ThreadPoolExecutor | None = None
 _executor_lock = threading.Lock()
@@ -316,7 +319,8 @@ def _source_platform(adapter: Any, chat_id: Any) -> Any:
     resolve = getattr(adapter, "_metrics_platform", None)
     try:
         return (resolve(str(chat_id)) if callable(resolve) else None) or adapter
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Shared-metrics fronted platform lookup failed; retaining adapter fallback", exc_info=exc)
         return adapter
 
 
