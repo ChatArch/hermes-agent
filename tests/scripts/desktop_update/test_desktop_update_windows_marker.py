@@ -17,7 +17,7 @@ import pytest
 
 from tests.installation_launcher_fixture import publish_fixture_launcher
 from tests.scripts.desktop_update.legacy_desktop_reader import legacy_read
-from tests.scripts.desktop_update.windows_handoff_support import _HeldLock
+from tests.scripts.desktop_update.windows_handoff_support import _HeldLock, _finish
 
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SCRIPT = ROOT / 'scripts/desktop-update/windows.ps1'
@@ -93,12 +93,7 @@ def _run(home: Path, *args: str, install: Path | None = None, timeout: int = 120
     env = {**os.environ, 'HERMES_HOME': str(home), 'HERMES_RUNTIME_DIR': str(home / 'empty-store')}
     proc = subprocess.Popen(command, cwd=home, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    try:
-        out, _ = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True, check=False)
-        out, _ = proc.communicate()
-        pytest.fail(f'hand-off did not finish within {timeout}s: {out}')
+    _code, out = _finish(proc, timeout=timeout)
     return proc.pid, proc.returncode, out
 
 

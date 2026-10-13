@@ -73,8 +73,19 @@ def _finish(proc: subprocess.Popen, timeout: int = 120) -> tuple[int, str]:
     try:
         out, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True, check=False)
-        out, _ = proc.communicate()
+        try:
+            subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)],
+                           capture_output=True, check=False, timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()  # Only the Popen owned by this test; no unrelated PID discovery.
+        try:
+            out, _ = proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                out, _ = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pytest.fail('hand-off process output did not close after bounded cleanup')
         pytest.fail(f'hand-off did not finish within {timeout}s: {out}')
     return proc.returncode, out
 

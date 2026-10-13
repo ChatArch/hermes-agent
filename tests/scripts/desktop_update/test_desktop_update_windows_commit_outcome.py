@@ -19,6 +19,7 @@ import time
 import pytest
 
 from tests.installation_launcher_fixture import publish_fixture_launcher
+from tests.scripts.desktop_update.windows_handoff_support import _finish
 
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SCRIPT = ROOT / 'scripts/desktop-update/windows.ps1'
@@ -90,23 +91,7 @@ def _handoff(tmp_path: Path, *args: str, verify: str = 'pass\n', timeout: int = 
         env={**os.environ, 'HERMES_HOME': str(home), 'HERMES_RUNTIME_DIR': str(tmp_path / 'empty-store'),
              'HANDOFF_CALLS': str(calls), 'PYTHONIOENCODING': 'utf-8', **env},
     )
-    try:
-        out, _ = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        try:
-            subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)],
-                           capture_output=True, check=False, timeout=15)
-        except subprocess.TimeoutExpired:
-            proc.kill()  # Only the Popen owned by this test; no unrelated PID discovery.
-        try:
-            out, _ = proc.communicate(timeout=15)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                out, _ = proc.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                pytest.fail('hand-off process output did not close after bounded cleanup')
-        pytest.fail(f'hand-off did not finish within {timeout}s: {out}')
+    _code, out = _finish(proc, timeout=timeout)
     argv = [json.loads(line) for line in calls.read_text(encoding='utf-8-sig').splitlines()] if calls.exists() else []
     result_path = home / '.hermes-update-result.json'
     result = json.loads(result_path.read_text(encoding='utf-8-sig')) if result_path.is_file() else None
