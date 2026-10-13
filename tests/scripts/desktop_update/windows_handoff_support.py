@@ -42,9 +42,17 @@ def _ps(command: str, timeout: int = 60) -> str:
 
 
 def _creation_time(pid: int) -> str:
-    out = _ps(f"$c = (Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CreationDate; "
-              "[DateTimeOffset]::new($c.ToUniversalTime()).ToUnixTimeMilliseconds().ToString()")
-    return f'{int(out) / 1000:.3f}'
+    # The same limited-rights kernel clock, without starting a PowerShell/CIM
+    # observer for each marker. Keep CIM's millisecond truncation exactly.
+    from hermes_cli.update_lock import _FILETIME_UNIX_EPOCH, _windows_create_filetime
+
+    ticks = _windows_create_filetime(pid)
+    if ticks is None:
+        pytest.fail(f'Kernel creation time unavailable for pid {pid}')
+    milliseconds = (ticks - _FILETIME_UNIX_EPOCH) // 10000
+    seconds, remainder = divmod(abs(milliseconds), 1000)
+    sign = '-' if milliseconds < 0 else ''
+    return f'{sign}{seconds}.{remainder:03d}'
 
 
 def _alive(pid: int) -> bool:
