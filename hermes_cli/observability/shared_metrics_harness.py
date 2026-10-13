@@ -21,8 +21,10 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
 
 logger = logging.getLogger(__name__)
+_failure_logger = PrivateDiagnosticLogger(__name__)
 
 _BACKGROUND_ORIGIN = "background_review"
 
@@ -32,7 +34,8 @@ def _enabled() -> bool:
         from .relay_shared_metrics import enabled
 
         return enabled()
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Shared-metrics harness gate unavailable; retaining disabled fallback", exc_info=exc)
         return False
 
 
@@ -51,7 +54,8 @@ def _background_tool_call() -> bool:
         from tools.skill_provenance import is_background_review
 
         return is_background_review()
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Shared-metrics background provenance unavailable; retaining ordinary-call fallback", exc_info=exc)
         return False
 
 

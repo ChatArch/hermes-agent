@@ -27,8 +27,10 @@ import logging
 import threading
 from contextvars import ContextVar
 from typing import Any, Iterable, Iterator
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
 
 logger = logging.getLogger(__name__)
+_failure_logger = PrivateDiagnosticLogger(__name__)
 
 CUSTOM = "custom"
 _COMMAND_SURFACES = {
@@ -60,7 +62,8 @@ def current_surface() -> str | None:
             from tui_gateway.server import _resolve_session_platform
 
             return _resolve_session_platform()
-        except Exception:
+        except Exception as exc:
+            _failure_logger.warning("Shared-metrics TUI surface unavailable; retaining generic surface fallback", exc_info=exc)
             return "tui"
     return surface
 

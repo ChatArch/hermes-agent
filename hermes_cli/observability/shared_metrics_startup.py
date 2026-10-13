@@ -15,11 +15,13 @@ import os
 import threading
 import time
 from typing import Any
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
 
 from . import shared_metrics_contract as contract
 from .shared_metrics_contract import _bucket, _non_negative_number
 
 logger = logging.getLogger(__name__)
+_failure_logger = PrivateDiagnosticLogger(__name__)
 
 _THRESHOLDS_MS = (
     (500, "lt_500ms"), (1_000, "500ms_to_1s"), (2_000, "1s_to_2s"), (5_000, "2s_to_5s"), (10_000, "5s_to_10s"),
@@ -61,7 +63,8 @@ def process_started_at() -> float | None:
         import psutil
 
         return float(psutil.Process(os.getpid()).create_time())
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Shared-metrics process creation time unavailable; retaining unmeasured startup", exc_info=exc)
         return None
 
 
