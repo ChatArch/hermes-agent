@@ -16,8 +16,11 @@ from pathlib import Path
 from typing import Any
 
 from hermes_constants import get_hermes_home
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
 
 from . import shared_metrics_contract as contract
+
+_failure_logger = PrivateDiagnosticLogger(__name__)
 
 # The largest bucket starts at 251: counting past it only costs I/O.
 _COUNT_CAP = 251
@@ -79,7 +82,8 @@ def _display_language() -> str:
 def _safe_count(reader) -> int:
     try:
         return reader()
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Shared-metrics snapshot count unavailable; retaining zero fallback", exc_info=exc)
         return 0
 
 

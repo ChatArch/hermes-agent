@@ -31,7 +31,11 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable
 
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
+
 from . import shared_metrics_contract as contract
+
+_failure_logger = PrivateDiagnosticLogger(__name__)
 
 # A gap longer than this is idle time: it counts only up to the cap.
 IDLE_CAP_MS = 5 * 60_000
@@ -125,7 +129,8 @@ def _root_home(profile_home: Path) -> Path:
 
     try:
         return get_default_hermes_root(home=profile_home).resolve()
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Shared-metrics root profile lookup failed; retaining profile fallback", exc_info=exc)
         return profile_home.resolve()
 
 
@@ -142,7 +147,8 @@ def _collects(home: Path) -> bool:
         from hermes_cli.config import read_raw_config_readonly
 
         config: Any = read_raw_config_readonly() or {}
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Shared-metrics root consent unreadable; retaining disabled fallback", exc_info=exc)
         return False
     finally:
         reset_hermes_home_override(token)
