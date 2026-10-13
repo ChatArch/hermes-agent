@@ -831,7 +831,7 @@ class TestLaunchdServiceRecovery:
     ):
         """Hard launchd restarts should still produce startup lifecycle feedback.
 
-        When the CLI falls back to terminate + ``launchctl kickstart -k``, the
+        When the CLI falls back from draining to ``launchctl kickstart -k``, the
         old gateway does not run ``request_restart()``, so it cannot write the
         ``.restart_pending.json`` marker during shutdown. The CLI must create
         that marker before the hard restart so the replacement gateway can send
@@ -839,13 +839,12 @@ class TestLaunchdServiceRecovery:
         """
         calls = []
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
-        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
+        monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 12.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
-        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
+        monkeypatch.setattr(gateway_cli, "probe_gateway_loop_liveness", lambda pid: gateway_cli.GATEWAY_LOOP_ALIVE)
         monkeypatch.setattr(
-            gateway_cli,
-            "terminate_pid",
-            lambda pid, force=False: calls.append(("term", pid, force)),
+            gateway_cli, "_graceful_restart_via_sigusr1",
+            lambda pid, timeout, **kwargs: calls.append(("drain", pid, timeout)) or False,
         )
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
 
