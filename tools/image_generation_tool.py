@@ -14,6 +14,8 @@ import threading
 import uuid
 from typing import Any, Dict, Optional
 
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
+
 # Imported lazily by _load_fal_client() (~64 ms on every CLI cold start); a test-monkeypatched
 # value short-circuits the loader.
 fal_client: Any = None
@@ -44,6 +46,7 @@ from tools.tool_backend_helpers import (
     nous_tool_gateway_unavailable_message, read_selection, selection_error)
 
 logger = logging.getLogger(__name__)
+_creative_controls_logger = PrivateDiagnosticLogger(__name__)
 
 _debug = DebugSession("image_tools", env_var="IMAGE_TOOLS_DEBUG")
 _managed_fal_client = None
@@ -642,7 +645,8 @@ def _declared_controls(provider, controls: Optional[dict[str, Any]]) -> Optional
         return None
     try:
         declared = (provider.capabilities() or {}).get("creative_controls") or ()
-    except Exception:
+    except Exception as exc:
+        _creative_controls_logger.warning("Creative-control metadata unavailable", exc_info=exc)
         return None
     return {name: value for name, value in controls.items() if name in declared} or None
 

@@ -10,8 +10,11 @@ Bodies are rebound onto server.py's globals (method_ctx.bind_module) and referen
 
 from __future__ import annotations
 
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
+
 from .method_ctx import HandlerRegistry, bind_module
 
+_i18n_metadata_logger = PrivateDiagnosticLogger(__name__)
 _registry = HandlerRegistry()
 method = _registry.method
 _profile_scoped = _registry.profile_scoped
@@ -26,6 +29,7 @@ def _(rid, params: dict) -> dict:
     try:
         return _ok(rid, {"languages": language_options()})
     except Exception as e:
+        _i18n_metadata_logger.warning("Language metadata unavailable", exc_info=e)
         return _err(rid, _I18N_ERR, str(e))
 
 
@@ -41,6 +45,7 @@ def _(rid, params: dict) -> dict:
     try:
         return _ok(rid, {"lang": lang, "surface": surface, "messages": surface_catalog(lang, surface)})
     except Exception as e:
+        _i18n_metadata_logger.warning("Language catalog unavailable", exc_info=e)
         return _err(rid, _I18N_ERR, str(e))
 
 
