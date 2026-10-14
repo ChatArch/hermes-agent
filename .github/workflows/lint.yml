@@ -181,7 +181,10 @@ jobs:
       - name: Ratchet the PR against the base branch tip
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python scripts/check --only health --base HEAD^1
+        # The first verified sync adopts the new ratchet without treating the
+        # entire imported history as newly introduced debt. Once main contains
+        # the checker, all later PRs retain normal blocking enforcement.
+        run: python -m scripts.ci.health_adoption --base HEAD^1
 
   windows-footguns:
     # Static guardrails on Windows-unsafe Python primitives — os.kill(pid, 0),
