@@ -12,10 +12,13 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
 from hermes_cli.stderr_timestamp import stamp_line, timestamp
 from tools.mcp_tool_common import _env_ref_name, _prepend_path
 
 logger = logging.getLogger("tools.mcp_tool")
+_mcp_tail_logger = PrivateDiagnosticLogger("tools.mcp_tool")
+_mcp_path_logger = PrivateDiagnosticLogger("tools.mcp_tool")
 
 _mcp_stderr_log_fh: dict[str, Any] = {}  # profile home key -> handle
 _mcp_stderr_log_lock = threading.Lock()
@@ -137,7 +140,8 @@ def _tail_server_stderr(server_name: str, *, max_bytes: int = 8192, max_lines: i
             return ""
         lines = [line for line in chunk[cut:].splitlines() if line.strip()]
         return "\n".join(lines[-max_lines:]) if lines else ""
-    except Exception:
+    except Exception as exc:
+        _mcp_tail_logger.warning("MCP stderr tail unavailable", exc_info=exc)
         return ""
 
 
@@ -272,10 +276,14 @@ def _is_hermes_managed_bin_dir(directory: str) -> bool:
     if resolved == Path(sys.executable).resolve().parent:
         return True
     from hermes_constants import get_hermes_home
+    home = None
     try:
         home = Path(get_hermes_home()).resolve()
-    except Exception:
-        return False
+    except Exception as exc:
+        _mcp_path_logger.warning("MCP managed executable identity unavailable", exc_info=exc)
+    if home is None:
+        # An unknown managed root cannot safely classify a PATH hit as user-owned.
+        raise RuntimeError("Managed executable directory identity unavailable")
     return resolved == home / "bin" or home in resolved.parents
 
 
