@@ -17,7 +17,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
+
 logger = logging.getLogger(__name__)
+_failure_logger = PrivateDiagnosticLogger(__name__)
 
 LAYER_PROVIDER = "provider"
 LAYER_ENDPOINT = "endpoint"
@@ -98,7 +101,21 @@ def _surface(layer: str, code: str, retryable: bool, provider: str = "", model: 
         # OAuth providers are fixed by signing in again; API-key providers by
         # replacing the key. The client's one-click recovery needs to know which.
         surface["auth_kind"] = auth_kind(provider)
+        if surface["auth_kind"] == "api_key" and (env_var := _api_key_env(provider)):
+            surface["api_key_env"] = env_var
     return surface
+
+
+def _api_key_env(provider: str) -> str:
+    """The env var holding ``provider``'s API key, so the client can open that row."""
+    try:
+        from hermes_cli.provider_catalog import provider_catalog_by_slug
+
+        descriptor = provider_catalog_by_slug().get(provider.strip().lower())
+        return descriptor.api_key_env_vars[0] if descriptor and descriptor.api_key_env_vars else ""
+    except Exception as exc:  # pragma: no cover — advisory only
+        _failure_logger.warning("Provider credential metadata unavailable; retaining unnamed key field", exc_info=exc)
+        return ""
 
 
 def _provider_label(provider: str) -> str:
@@ -106,7 +123,8 @@ def _provider_label(provider: str) -> str:
         from hermes_cli.models import provider_label
 
         return provider_label(provider)
-    except Exception:  # pragma: no cover — advisory only
+    except Exception as exc:  # pragma: no cover — advisory only
+        _failure_logger.warning("Provider display metadata unavailable; retaining original identity", exc_info=exc)
         return provider
 
 
@@ -118,7 +136,8 @@ def auth_kind(provider: Optional[str]) -> str:
 
         descriptor = provider_catalog_by_slug().get((provider or "").strip().lower())
         return "oauth" if descriptor is not None and descriptor.tab == "accounts" else "api_key"
-    except Exception:  # pragma: no cover — advisory only
+    except Exception as exc:  # pragma: no cover — advisory only
+        _failure_logger.warning("Provider authentication metadata unavailable; retaining key classification", exc_info=exc)
         return "api_key"
 
 
@@ -219,12 +238,3 @@ def build_error_surface_from_exception(
     except Exception:  # pragma: no cover — never break the error path
         logger.debug("error_surface: exception classification failed", exc_info=True)
         return None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-LAYER_RUNTIME = "runtime"
-# ---- END PLUGIN-COMPAT ----

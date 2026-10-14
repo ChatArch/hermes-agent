@@ -15,7 +15,7 @@ import threading
 from gateway.session_context import get_session_env
 from gateway.ssh_bindings import (
     LOCAL_BACKEND,
-    clear_ssh_binding,
+
     get_backend_auto_policy,
     get_ssh_binding,
     is_local_backend,
@@ -23,7 +23,7 @@ from gateway.ssh_bindings import (
     normalize_backend_name,
     resolve_binding_task_overrides,
     set_backend_auto_enabled,
-    set_ssh_binding,
+
 )
 from gateway.ssh_targets import find_ssh_target, load_ssh_targets, validate_ssh_target_for_runtime
 from tools.registry import registry, tool_error, tool_result
@@ -166,7 +166,7 @@ def _status(ctx: dict[str, str]) -> str:
     backends.extend(_target_summary(target, session_key=session_key, current=current == target.alias) for target in targets)
     return tool_result(
         ok=True,
-        backend="ssh" if resolved else LOCAL_BACKEND,
+        backend=resolved.get("env_type", LOCAL_BACKEND),
         current_backend=current,
         session_key=session_key,
         platform=ctx["platform"],
@@ -213,61 +213,32 @@ def _test_backend(ctx: dict[str, str], args: dict[str, Any]) -> str:
     return tool_result(ok=True, backend=backend, type="ssh", target=_target_summary(target))
 
 
-def _register_backend_overrides(ctx: dict[str, str], session_key: str, overrides: dict[str, Any]) -> None:
-    if not overrides:
-        return
-    try:
-        from tools.terminal_tool import register_task_env_overrides
-
-        task_key = ctx["session_id"] or session_key
-        register_task_env_overrides(task_key, overrides)
-        if session_key and session_key != task_key:
-            register_task_env_overrides(session_key, overrides)
-    except Exception:
-        pass
-
-
 def _switch_to_backend(ctx: dict[str, str], backend: str, args: dict[str, Any], *, source: str) -> str:
+    from gateway.ssh_switch_apply import apply_backend_selection
+    from gateway.ssh_switch_store import SshStateUnavailable
+
     session_key = ctx["session_key"]
-    if is_local_backend(backend):
-        previous = get_ssh_binding(session_key)
-        clear_ssh_binding(session_key)
-        try:
-            from tools.terminal_tool import clear_task_env_overrides
-
-            clear_task_env_overrides(ctx["session_id"] or session_key)
-            clear_task_env_overrides(session_key)
-        except Exception:
-            pass
-        return tool_result(
-            ok=True,
-            backend=LOCAL_BACKEND,
-            current_backend=LOCAL_BACKEND,
-            changed=previous is not None,
-            previous_alias=previous.alias if previous else None,
-            source=source,
-            reason=str(args.get("reason") or "").strip() or None,
-        )
-
+    previous = get_ssh_binding(session_key)
     targets = load_ssh_targets()
-    target = find_ssh_target(targets, backend)
-    if target is None:
+    target = None if is_local_backend(backend) else find_ssh_target(targets, backend)
+    if not is_local_backend(backend) and target is None:
         return tool_error(f"Unknown backend: {backend}", known_backends=_known_backend_names())
-    target_error = validate_ssh_target_for_runtime(target)
-    if target_error:
+    if target is not None and (target_error := validate_ssh_target_for_runtime(target)):
         return tool_error(target_error)
     cwd = str(args.get("cwd") or "").strip() or None
     reason = str(args.get("reason") or "").strip() or None
-    binding = set_ssh_binding(session_key, alias=backend, cwd=cwd, source=source, reason=reason)
-    overrides = resolve_binding_task_overrides(session_key, targets=targets)
-    _register_backend_overrides(ctx, session_key, overrides)
+    try:
+        binding = apply_backend_selection(session_key, [ctx["session_id"] or session_key], backend,
+                                          targets=targets, cwd=cwd, source=source, reason=reason)
+    except SshStateUnavailable as exc:
+        return tool_result(ok=False, error=str(exc), requested_backend=backend, execution_blocked=True)
+    if binding is None:
+        return tool_result(ok=True, backend=LOCAL_BACKEND, current_backend=LOCAL_BACKEND,
+                           changed=previous is not None, previous_alias=previous.alias if previous else None,
+                           source=source, reason=reason)
     return tool_result(
-        ok=True,
-        backend="ssh",
-        current_backend=binding.alias,
-        alias=binding.alias,
-        cwd=binding.cwd or target.cwd,
-        source=binding.source,
+        ok=True, backend="ssh", current_backend=binding.alias, alias=binding.alias,
+        cwd=binding.cwd or target.cwd, source=binding.source,
         message="Backend switched for this session. Subsequent terminal/file/execute_code calls should use the selected backend.",
     )
 
@@ -295,7 +266,15 @@ def _use(ctx: dict[str, str], args: dict[str, Any], task_id: str | None) -> str:
         if target_error:
             return tool_error(target_error)
         binding = get_ssh_binding(session_key)
-        _register_backend_overrides(ctx, session_key, resolve_binding_task_overrides(session_key, targets=targets))
+        from gateway.ssh_switch_apply import apply_backend_selection
+        from gateway.ssh_switch_store import SshStateUnavailable
+        try:
+            apply_backend_selection(session_key, [ctx["session_id"] or session_key], backend,
+                                    targets=targets, cwd=binding.cwd if binding else None,
+                                    source=binding.source if binding else "user",
+                                    reason=binding.reason if binding else None)
+        except SshStateUnavailable as exc:
+            return tool_result(ok=False, error=str(exc), requested_backend=backend, execution_blocked=True)
         return tool_result(
             ok=True,
             backend="ssh",
@@ -379,6 +358,14 @@ def _user_owned_policy_change(ctx: dict[str, str], args: dict[str, Any], enabled
 
 
 def ssh_mode_tool(args: dict[str, Any], **kw) -> str:
+    from gateway.ssh_switch_store import SshStateUnavailable
+    try:
+        return _dispatch_ssh_mode(args, **kw)
+    except SshStateUnavailable as exc:
+        return tool_result(ok=False, error=str(exc), execution_blocked=True)
+
+
+def _dispatch_ssh_mode(args: dict[str, Any], **kw) -> str:
     action = str(args.get("action") or "status").strip().lower()
     ctx = _current_context(kw.get("task_id"))
     if action == "status":

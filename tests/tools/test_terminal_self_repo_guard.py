@@ -6,7 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import tools.self_repo_guard as self_repo_guard
+from tools import self_repo_guard
+from tools.environments.local import LocalEnvironment
 
 
 def _make_env_config(**overrides):
@@ -38,7 +39,7 @@ def _run(command, config, monkeypatch, repo_root, session_cwds=None,
 
     monkeypatch.setattr(self_repo_guard, "get_running_source_root", lambda: repo_root)
     monkeypatch.setattr(self_repo_guard, "guard_active", lambda: guard_on)
-    mock_env = MagicMock()
+    mock_env = MagicMock(spec=LocalEnvironment)
     mock_env.execute.return_value = {"output": "ok", "returncode": 0}
     mock_env.cwd = config["cwd"]
 

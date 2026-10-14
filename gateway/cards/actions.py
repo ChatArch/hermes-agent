@@ -27,19 +27,19 @@ class CardActionResponse:
     text: str = ""
 
     @classmethod
-    def replace_card(cls, card: Card) -> "CardActionResponse":
+    def replace_card(cls, card: Card) -> CardActionResponse:
         return cls(kind="replace_card", card=card)
 
     @classmethod
-    def toast(cls, text: str) -> "CardActionResponse":
+    def toast(cls, text: str) -> CardActionResponse:
         return cls(kind="toast", text=text)
 
     @classmethod
-    def dispatch_message(cls, text: str) -> "CardActionResponse":
+    def dispatch_message(cls, text: str) -> CardActionResponse:
         return cls(kind="dispatch_message", text=text)
 
     @classmethod
-    def noop(cls) -> "CardActionResponse":
+    def noop(cls) -> CardActionResponse:
         return cls(kind="noop")
 
 

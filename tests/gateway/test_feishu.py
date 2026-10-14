@@ -215,7 +215,6 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
 
             async def handle(self, event):
                 processed.append(event.text)
-                return None
 
         adapter.set_message_handler(Runner().handle)
 
@@ -399,7 +398,6 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
-        ws_client = SimpleNamespace()
         ws_calls = []
 
         class _FakeFeishuWSClient:
@@ -2151,10 +2149,6 @@ class TestAdapterBehavior(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_dedents_nested_list_fenced_code_blocks(self):
-        from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
         payload = json.loads(
             _build_markdown_post_payload(
                 "- 只更新模型渠道：\n"
@@ -2184,10 +2178,6 @@ class TestAdapterBehavior(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_keeps_fence_like_code_lines_inside_code_block(self):
-        from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
         payload = json.loads(
             _build_markdown_post_payload(
                 "before\n```python\n```oops\n```\nafter"
@@ -2205,10 +2195,6 @@ class TestAdapterBehavior(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_preserves_trailing_spaces_in_code_block(self):
-        from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
         payload = json.loads(
             _build_markdown_post_payload(
                 "before\n```python\nline with two spaces  \n```\nafter"
@@ -2226,10 +2212,6 @@ class TestAdapterBehavior(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_splits_multiple_fenced_code_blocks(self):
-        from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
         payload = json.loads(
             _build_markdown_post_payload(
                 "before\n```python\nprint(1)\n```\nmiddle\n```json\n{}\n```\nafter"
@@ -3040,7 +3022,7 @@ class TestFeishuExtractMessageContent(unittest.TestCase):
             ],
         )
 
-        text, inbound_type, media_urls, media_types, media_text_inlined, mentions = asyncio.run(
+        text, _inbound_type, _media_urls, _media_types, media_text_inlined, mentions = asyncio.run(
             adapter._extract_message_content(message)
         )
         self.assertEqual(text, "@Alice hello")

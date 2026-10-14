@@ -107,7 +107,7 @@ async def test_draining_gateway_rejects_new_non_active_session_turn():
     assert isinstance(result, str)
     assert "Gateway is restarting" in result
     runner._handle_thread_command.assert_not_awaited()
-    assert not getattr(adapter, "sent_messages")
+    assert not adapter.sent_messages
 
 
 @pytest.mark.asyncio
@@ -174,7 +174,6 @@ async def test_sentinel_placed_before_agent_setup():
     concurrent message sees the session as occupied."""
     runner = _make_runner()
     event = _make_event()
-    session_key = build_session_key(event.source)
 
     # Patch _handle_message_with_agent to capture state at entry
     sentinel_was_set = False

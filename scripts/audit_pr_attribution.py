@@ -9,7 +9,8 @@ you are about to push:
     python3 scripts/audit_pr_attribution.py --fix      # create mapping files
 
 Logic (kept in sync with contributor-check.yml):
-  - scans ``git log $(git merge-base origin/main HEAD)..HEAD --format=%ae``
+  - scans the full PR history and delegates only commits reachable from this
+    cycle's pinned and remotely verified official-main merge parents
   - skips teknium/bot emails and ``<id>+<login>@users.noreply.github.com``
     (CI auto-resolves those)
   - everything else must have ``contributors/emails/<email>`` or a legacy
@@ -42,7 +43,7 @@ SKIP_SUBSTRINGS = (
     "anthropic.com",
     "cursor.com",
 )
-ID_NOREPLY_RE = re.compile(r"\d+\+.+@users\.noreply\.github\.com$")
+ID_NOREPLY_RE = re.compile(r"^[0-9]+\+[A-Za-z0-9-]+@users\.noreply\.github\.com$")
 BARE_NOREPLY_RE = re.compile(r"^([A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38})@users\.noreply\.github\.com$")
 
 
@@ -50,6 +51,7 @@ def run(*args: str, check: bool = True) -> str:
     result = subprocess.run(
         list(args), capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(REPO_ROOT),
+        check=False,
     )
     if check and result.returncode != 0:
         raise RuntimeError(f"{' '.join(args)}: {result.stderr.strip()}")
@@ -57,9 +59,11 @@ def run(*args: str, check: bool = True) -> str:
 
 
 def new_emails() -> list[str]:
+    from scripts.ci.official_import_authors import fork_authors
+
     base = run("git", "merge-base", "origin/main", "HEAD")
-    log = run("git", "log", f"{base}..HEAD", "--format=%ae", "--no-merges", check=False)
-    return sorted({e for e in log.splitlines() if e.strip()})
+    emails, _ = fork_authors(REPO_ROOT, base)
+    return emails
 
 
 def is_mapped(email: str) -> bool:

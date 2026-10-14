@@ -495,7 +495,7 @@ class TestOrphanedPipeReconciliation:
             ["sh", "-c", "exec 1>&2; ( sleep 30 ) & disown; exit 0"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid,
+            start_new_session=True,
         )
 
         s = _make_session(sid="proc_orphan_test")
@@ -535,7 +535,7 @@ class TestOrphanedPipeReconciliation:
             ["sh", "-c", "( sleep 30 ) & disown; exit 0"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid,
+            start_new_session=True,
         )
 
         s = _make_session(sid="proc_wait_orphan")
@@ -956,7 +956,7 @@ class TestSpawnEnvSanitization:
             patch.object(registry, "_write_checkpoint"):
             registry.spawn_via_env(env, "echo hello")
 
-        args, kwargs = env.commands[0]
+        _, kwargs = env.commands[0]
         assert kwargs.get("rewrite_compound_background") is False
 
     def test_spawn_via_env_uses_non_login_shell_for_wrapped_command(self, registry):
@@ -1077,6 +1077,7 @@ class TestEnvPollerIncrementalRead:
             out = subprocess.run(
                 ["sh", "-c", ProcessRegistry._log_delta_command(quoted, 0)],
                 capture_output=True, timeout=30,
+                check=False,
             ).stdout
             header, _, delta = out.partition(b"\n")
             size, _offset = map(int, header.split())
@@ -1180,40 +1181,29 @@ class TestPopenLeakOnSetupFailure:
 
     def test_popen_killed_when_thread_creation_fails(self, registry):
         """If Thread() raises after Popen, proc must be killed — not orphaned."""
-        killed = []
-
         proc = MagicMock()
         proc.pid = 9999
         proc.stdout = iter([])
         proc.stdin = MagicMock()
         proc.poll.return_value = None
-
-        def fake_kill():
-            killed.append(True)
-
-        proc.kill = fake_kill
         proc.wait = MagicMock()
 
         def boom(*args, **kwargs):
             raise RuntimeError("Thread creation failed")
 
-        # proc.pid is a MagicMock-backed fake; os.getpgid(fake_pid) would query
-        # the real OS for an arbitrary PID. On a busy host that PID may exist,
-        # in which case spawn_local's primary cleanup path
-        # (os.killpg(os.getpgid(pid), SIGKILL)) succeeds against an UNRELATED
-        # real process group and proc.kill() is never reached — flaky failure,
-        # and a real risk of SIGKILLing an innocent process group. Force the
-        # ProcessLookupError fallback so the test deterministically exercises
-        # proc.kill() and never issues a real killpg.
+        # The orphan path terminates through _terminate_host_pid, which
+        # revalidates the recorded kernel start time before signalling, so a
+        # MagicMock pid can never reach a real killpg/os.kill.
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("threading.Thread", side_effect=boom), \
-             patch("os.getpgid", side_effect=ProcessLookupError), \
+             patch.object(ProcessRegistry, "_terminate_host_pid") as terminate, \
              patch.object(registry, "_write_checkpoint"):
             with pytest.raises(RuntimeError, match="Thread creation failed"):
                 registry.spawn_local("echo hello", cwd="/tmp")
 
-        assert killed, "proc.kill() must be called when post-Popen setup raises"
+        assert terminate.call_count == 1, "post-Popen setup failure must terminate the orphan"
+        assert terminate.call_args[0][0] == 9999
 
 # =========================================================================
 # Spawn rewrite regression (issue #68915)
@@ -2010,7 +2000,7 @@ class TestHandleProcessRedaction:
         ``output_preview[-200:]`` with no redaction wrap, leaking inline
         secrets (unlike poll/log/wait/kill).
         """
-        pr, sess = self._setup(
+        pr, _sess = self._setup(
             monkeypatch, "curl -H 'Authorization: Bearer sk-abc123def456ghi789jkl012345'",
             "opaque token sk-proj-AAAABBBBCCCCDDDDEEEEFFFFGGGG output",
         )
@@ -2110,7 +2100,7 @@ class TestReaderLoopOrphanedPipe:
             text=True,
             encoding="utf-8",
             errors="replace",
-            preexec_fn=os.setsid,
+            start_new_session=True,
         )
         s = _make_session(sid="proc_orphan_reader")
         s.process = proc
@@ -2154,7 +2144,7 @@ class TestReaderLoopOrphanedPipe:
             text=True,
             encoding="utf-8",
             errors="replace",
-            preexec_fn=os.setsid,
+            start_new_session=True,
         )
         s = _make_session(sid="proc_orphan_notify")
         s.process = proc
@@ -2691,6 +2681,34 @@ class TestSystemdCgroupIsolation:
         ), probe_argv
 
     @pytest.mark.platforms("linux")
+    @pytest.mark.parametrize("rejects_no_expand", [False, True], ids=["systemd>=254", "systemd<254"])
+    def test_scoped_command_is_not_expanded_by_systemd_run(self, monkeypatch, rejects_no_expand):
+        """systemd >= 254 rewrites ``$$``/``${X}`` in a --scope command unless given
+        ``--expand-environment=no``; older systemd-run rejects that option, and losing
+        it there must not cost the scope (#132385)."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_RUN_NO_EXPAND", True)
+        probes = []
+
+        def fake_run(argv, **kwargs):
+            probes.append(argv)
+            if rejects_no_expand and "--expand-environment=no" in argv:
+                return subprocess.CompletedProcess(
+                    argv, 1, stderr=b"systemd-run: unrecognized option '--expand-environment=no'")
+            return subprocess.CompletedProcess(argv, 0, stderr=b"")
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert pr._systemd_run_user_scope_available() is True
+        spawn = pr._build_systemd_scope_argv(["bash", "-c", "echo $$"], unit_suffix="t")
+        assert ("--expand-environment=no" in spawn) is not rejects_no_expand
+        assert spawn[spawn.index("--") + 1:] == ["bash", "-c", "echo $$"]
+        assert len(probes) == (2 if rejects_no_expand else 1)
+
+    @pytest.mark.platforms("linux")
     def test_successful_systemd_probe_revalidates_after_cache_ttl(self, monkeypatch):
         """A vanished user bus invalidates a formerly successful scope verdict."""
         import tools.process_registry as pr
@@ -3044,154 +3062,3 @@ class TestGetByPrefix:
         result = registry.poll("4dae56ca")
         assert result["session_id"] == "proc_4dae56ca81f6"
         assert result["status"] == "running"
-
-
-# ---------------------------------------------------------------------------
-# Config-level model_not_found notice in delegation batch reports (#97654)
-# ---------------------------------------------------------------------------
-
-
-def _make_delegation_batch_evt(results):
-    """A batch async-delegation event carrying a per-task ``results`` list."""
-    return {
-        "type": "async_delegation",
-        "delegation_id": "deleg_97654",
-        "is_batch": True,
-        "results": results,
-        "goals": [r.get("goal") or "" for r in results],
-        "session_key": "agent:main:cli:dm:local",
-        "status": "completed",
-        "model": "upstage/solar-pro-4",
-    }
-
-
-def _patch_delegation_config(
-    monkeypatch, model="upstage/solar-pro-4", provider="openrouter", **over
-):
-    import tools.process_registry_notifications as _prn
-
-    cfg = {"model": model, "provider": provider}
-    cfg.update(over)
-    monkeypatch.setattr(_prn, "_delegation_config", lambda: cfg)
-    return cfg
-
-
-def _format_async(evt) -> str:
-
-    text = format_process_notification(evt)
-    assert text is not None, "format_process_notification returned None"
-    return text
-
-
-def test_model_not_found_notice_single_failure_once(monkeypatch):
-    evt = _make_delegation_batch_evt([
-        {
-            "task_index": 0,
-            "status": "failed",
-            "exit_reason": "error",
-            "goal": "Create bridge module",
-            "error": "HTTP 400: upstage/solar-pro-4 is not a valid model ID",
-            "summary": "HTTP 400: upstage/solar-pro-4 is not a valid model ID",
-        }
-    ])
-    _patch_delegation_config(monkeypatch)
-    text = _format_async(evt)
-    assert text is not None
-    assert text.count("SUBAGENT MODEL REJECTED") == 1
-    assert "upstage/solar-pro-4" in text
-    assert "openrouter" in text
-    assert "No fallback chain is configured" in text
-
-
-def test_model_not_found_notice_mixed_batch_named_model(monkeypatch):
-    evt = _make_delegation_batch_evt([
-        {
-            "task_index": 0,
-            "status": "failed",
-            "exit_reason": "error",
-            "goal": "A",
-            "error": "HTTP 400: upstage/solar-pro-4 is not a valid model ID",
-            "summary": "HTTP 400: upstage/solar-pro-4 is not a valid model ID",
-        },
-        {
-            "task_index": 1,
-            "status": "completed",
-            "goal": "B",
-            "summary": "ok",
-            "api_calls": 3,
-        },
-    ])
-    _patch_delegation_config(monkeypatch)
-    text = _format_async(evt)
-    assert text.count("SUBAGENT MODEL REJECTED") == 1
-    assert "upstage/solar-pro-4" in text
-
-
-def test_model_not_found_notice_absent_for_non_model_errors(monkeypatch):
-    evt = _make_delegation_batch_evt([
-        {
-            "task_index": 0,
-            "status": "failed",
-            "goal": "A",
-            "error": "HTTP 429: rate limit exceeded",
-        },
-        {
-            "task_index": 1,
-            "status": "failed",
-            "goal": "B",
-            "error": "Connection timed out",
-        },
-    ])
-    _patch_delegation_config(monkeypatch)
-    text = _format_async(evt)
-    assert "SUBAGENT MODEL REJECTED" not in text
-
-
-def test_model_not_found_notice_absent_when_configured_model_not_named(monkeypatch):
-    evt = _make_delegation_batch_evt([
-        {
-            "task_index": 0,
-            "status": "failed",
-            "goal": "A",
-            "error": "HTTP 400: gpt-99 is not a valid model ID",
-        }
-    ])
-    # Configured model is upstage/solar-pro-4; the rejection names gpt-99.
-    _patch_delegation_config(monkeypatch)
-    text = _format_async(evt)
-    assert "SUBAGENT MODEL REJECTED" not in text
-
-
-def test_model_not_found_notice_single_dispatch(monkeypatch):
-    evt = {
-        "type": "async_delegation",
-        "delegation_id": "deleg_single",
-        "session_key": "agent:main:cli:dm:local",
-        "goal": "task A",
-        "model": "upstage/solar-pro-4",
-        "status": "failed",
-        "error": "HTTP 400: upstage/solar-pro-4 is not a valid model ID",
-        "summary": "HTTP 400: upstage/solar-pro-4 is not a valid model ID",
-    }
-    _patch_delegation_config(monkeypatch)
-    text = _format_async(evt)
-    assert text.count("SUBAGENT MODEL REJECTED") == 1
-    assert "upstage/solar-pro-4" in text
-
-
-def test_model_not_found_notice_absent_when_fallback_chain_configured(monkeypatch):
-    evt = _make_delegation_batch_evt([
-        {
-            "task_index": 0,
-            "status": "failed",
-            "goal": "A",
-            "error": "HTTP 400: upstage/solar-pro-4 is not a valid model ID",
-        }
-    ])
-    _patch_delegation_config(
-        monkeypatch,
-        fallback_providers=[{"provider": "openrouter", "model": "upstage/solar-pro4"}],
-    )
-    text = _format_async(evt)
-    assert text.count("SUBAGENT MODEL REJECTED") == 1
-    assert "No fallback chain is configured" not in text

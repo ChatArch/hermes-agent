@@ -14,6 +14,7 @@ spellings cannot coexist on disk.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -39,6 +40,7 @@ def _run_check(*args, root=None):
         timeout=60,
         stdin=subprocess.DEVNULL,
         cwd=REPO_ROOT,
+        check=False,
     )
 
 
@@ -116,3 +118,17 @@ def test_same_name_in_different_dirs_is_not_a_collision(tmp_path):
 
     result = _run_check(root=repo)
     assert result.returncode == 0, f"expected clean, got:\n{result.stdout}"
+
+
+def test_git_index_timeout_is_a_measurement_error(tmp_path, monkeypatch, capsys):
+    spec = importlib.util.spec_from_file_location("case_collision_check", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), str(tmp_path)])
+
+    def timed_out(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, 120)
+
+    monkeypatch.setattr(module.subprocess, "run", timed_out)
+    assert module.main() == 2
+    assert "git ls-files timed out" in capsys.readouterr().out

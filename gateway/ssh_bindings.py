@@ -16,6 +16,7 @@ import time
 
 from hermes_constants import get_hermes_home
 from gateway.ssh_targets import find_ssh_target, load_ssh_targets, SshTarget
+from gateway.ssh_switch_store import SshStateUnavailable, serialized_store, write_state
 
 LOCAL_BACKEND = "local"
 
@@ -86,19 +87,23 @@ def _empty_store() -> dict[str, Any]:
 def _read_store(path: str | Path | None = None) -> dict[str, Any]:
     store_path = Path(path).expanduser() if path is not None else default_ssh_bindings_path()
     try:
-        data = json.loads(store_path.read_text(encoding="utf-8-sig") or "{}")
+        data = json.loads(store_path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return _empty_store()
-    except Exception:
-        return _empty_store()
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise SshStateUnavailable("SSH state unreadable; execution blocked") from None
     if not isinstance(data, dict):
-        return _empty_store()
+        raise SshStateUnavailable("SSH state invalid; execution blocked")
     bindings = data.get("bindings")
-    if not isinstance(bindings, dict):
+    if "bindings" not in data:
         data["bindings"] = {}
+    elif not isinstance(bindings, dict):
+        raise SshStateUnavailable("SSH binding state invalid; execution blocked")
     policy = data.get("backend_policy")
-    if not isinstance(policy, dict):
+    if "backend_policy" not in data:
         data["backend_policy"] = {}
+    elif not isinstance(policy, dict):
+        raise SshStateUnavailable("SSH policy state invalid; execution blocked")
 
     # Narrow migration for the PR #44 local-only policy shape.  This keeps
     # existing user state readable while the user-facing SSH Mode interface no
@@ -125,20 +130,7 @@ def _read_store(path: str | Path | None = None) -> dict[str, Any]:
 
 
 def _write_store(data: dict[str, Any], path: str | Path | None = None) -> None:
-    store_path = Path(path).expanduser() if path is not None else default_ssh_bindings_path()
-    store_path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    tmp = store_path.with_suffix(store_path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    try:
-        tmp.chmod(0o600)
-    except OSError:
-        pass
-    tmp.replace(store_path)
-    try:
-        store_path.chmod(0o600)
-    except OSError:
-        pass
+    write_state(data, path)
 
 
 def _coerce_binding(session_key: str, raw: Any) -> SshBinding | None:
@@ -213,6 +205,7 @@ def list_backend_auto_policies(
     }
 
 
+@serialized_store
 def set_backend_auto_enabled(
     session_key: str,
     backend: str,
@@ -297,6 +290,7 @@ def get_ssh_binding(session_key: str, *, path: str | Path | None = None) -> SshB
     return _coerce_binding(session_key, data.get("bindings", {}).get(session_key))
 
 
+@serialized_store
 def set_ssh_binding(
     session_key: str,
     *,
@@ -333,6 +327,7 @@ def set_ssh_binding(
     return _coerce_binding(session_key, record)  # type: ignore[return-value]
 
 
+@serialized_store
 def clear_ssh_binding(session_key: str, *, path: str | Path | None = None) -> bool:
     """Remove a section SSH binding, returning True if one existed."""
 
@@ -398,6 +393,10 @@ def resolve_binding_task_overrides(
 ) -> dict[str, Any]:
     """Return task env overrides for a session_key binding, or {}."""
 
+    from gateway.ssh_switch_state import committed_overrides
+    selected = committed_overrides(session_key, targets=targets, path=path)
+    if selected is not None:
+        return selected
     resolved = resolve_binding_target(session_key, targets=targets, path=path)
     if resolved is None:
         return {}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import uuid
 from copy import deepcopy
@@ -24,6 +25,7 @@ from gateway.cards import (
 )
 from gateway.cards.renderers.feishu import render_feishu_card
 
+logger = logging.getLogger(__name__)
 _INTERACTION_REQUEST_TIMEOUT_SECONDS = 300
 
 _ALLOWED_BUTTON_STYLES = ["default", "primary", "danger"]
@@ -219,6 +221,12 @@ def _err(message: str) -> str:
     return json.dumps({"success": False, "error": message}, ensure_ascii=False)
 
 
+def _private_traceback(exc: Exception):
+    """Retain the stack without serializing payload-bearing exception messages."""
+    diagnostic = RuntimeError(f"Feishu card boundary failed ({type(exc).__name__})")
+    return RuntimeError, diagnostic, exc.__traceback__
+
+
 def _dsl_schema() -> dict[str, Any]:
     return {
         "card_schema": _CARD_DSL_SCHEMA,
@@ -267,6 +275,56 @@ def _unknown_keys(value: dict[str, Any], allowed: set[str]) -> list[str]:
     return sorted(str(key) for key in value if str(key) not in allowed)
 
 
+def _header_diagnostics(header, errors, warnings):
+    if not isinstance(header, dict):
+        errors.append("header must be an object")
+        return
+    unknown = _unknown_keys(header, {"title", "color"})
+    if unknown:
+        errors.append(f"unsupported header fields: {', '.join(unknown)}")
+    title = str(header.get("title") or "")
+    color = str(header.get("color") or "blue")
+    if title and len(title) > 80:
+        warnings.append("header.title is long; Feishu card headers are easier to scan under 80 chars")
+    if color and color not in _ALLOWED_HEADER_COLORS:
+        errors.append(f"unsupported header.color: {color!r}")
+
+
+def _actions_diagnostics(element, index, errors, warnings):
+    layout = str(element.get("layout") or "row")
+    if layout not in _ALLOWED_LAYOUTS:
+        errors.append(f"unsupported actions layout at elements[{index}]: {layout!r}")
+    buttons = element.get("buttons") or []
+    if not isinstance(buttons, list):
+        errors.append(f"elements[{index}].buttons must be an array")
+        return
+    if not buttons:
+        errors.append(f"elements[{index}].buttons must contain at least one button")
+    for button_index, button in enumerate(buttons):
+        loc = f"elements[{index}].buttons[{button_index}]"
+        if not isinstance(button, dict):
+            errors.append(f"{loc} must be an object")
+            continue
+        unknown = _unknown_keys(button, {"text", "style", "action", "url", "payload"})
+        if unknown:
+            errors.append(f"unsupported fields on {loc}: {', '.join(unknown)}")
+        if not str(button.get("text") or ""):
+            errors.append(f"{loc}.text is required")
+        style = str(button.get("style") or "default")
+        if style not in _ALLOWED_BUTTON_STYLES:
+            errors.append(f"unsupported {loc}.style: {style!r}")
+        payload = button.get("payload") if "payload" in button else {}
+        if not isinstance(payload, dict):
+            errors.append(f"{loc}.payload must be an object")
+        url = str(button.get("url") or "")
+        if url and not url.startswith(("http://", "https://")):
+            errors.append(f"{loc}.url must start with http:// or https://")
+        if url and not button.get("action"):
+            warnings.append(f"{loc} has url but no action; add action for deterministic callback payloads")
+        if not url and not button.get("action"):
+            warnings.append(f"{loc} has no action; Hermes will fall back to button text as the choice")
+
+
 def _card_spec_diagnostics(spec: dict[str, Any]) -> dict[str, list[str]]:
     """Return local DSL diagnostics before Feishu sees the card."""
 
@@ -289,18 +347,7 @@ def _card_spec_diagnostics(spec: dict[str, Any]) -> dict[str, list[str]]:
 
     header = spec.get("header") or None
     if header is not None:
-        if not isinstance(header, dict):
-            errors.append("header must be an object")
-        else:
-            header_unknown = _unknown_keys(header, {"title", "color"})
-            if header_unknown:
-                errors.append(f"unsupported header fields: {', '.join(header_unknown)}")
-            title = str(header.get("title") or "")
-            color = str(header.get("color") or "blue")
-            if title and len(title) > 80:
-                warnings.append("header.title is long; Feishu card headers are easier to scan under 80 chars")
-            if color and color not in _ALLOWED_HEADER_COLORS:
-                errors.append(f"unsupported header.color: {color!r}")
+        _header_diagnostics(header, errors, warnings)
 
     elements = spec.get("elements") or []
     if not isinstance(elements, list):
@@ -335,38 +382,7 @@ def _card_spec_diagnostics(spec: dict[str, Any]) -> dict[str, list[str]]:
             elif not image_key.startswith("img_"):
                 errors.append(f"elements[{index}].image_key must be an uploaded Feishu image key starting with img_")
         if element_type == "actions":
-            layout = str(element.get("layout") or "row")
-            if layout not in _ALLOWED_LAYOUTS:
-                errors.append(f"unsupported actions layout at elements[{index}]: {layout!r}")
-            buttons = element.get("buttons") or []
-            if not isinstance(buttons, list):
-                errors.append(f"elements[{index}].buttons must be an array")
-                continue
-            if not buttons:
-                errors.append(f"elements[{index}].buttons must contain at least one button")
-            for button_index, button in enumerate(buttons):
-                loc = f"elements[{index}].buttons[{button_index}]"
-                if not isinstance(button, dict):
-                    errors.append(f"{loc} must be an object")
-                    continue
-                button_unknown = _unknown_keys(button, {"text", "style", "action", "url", "payload"})
-                if button_unknown:
-                    errors.append(f"unsupported fields on {loc}: {', '.join(button_unknown)}")
-                if not str(button.get("text") or ""):
-                    errors.append(f"{loc}.text is required")
-                style = str(button.get("style") or "default")
-                if style not in _ALLOWED_BUTTON_STYLES:
-                    errors.append(f"unsupported {loc}.style: {style!r}")
-                payload = button.get("payload") if "payload" in button else {}
-                if not isinstance(payload, dict):
-                    errors.append(f"{loc}.payload must be an object")
-                url = str(button.get("url") or "")
-                if url and not url.startswith(("http://", "https://")):
-                    errors.append(f"{loc}.url must start with http:// or https://")
-                if url and not button.get("action"):
-                    warnings.append(f"{loc} has url but no action; add action for deterministic callback payloads")
-                if not url and not button.get("action"):
-                    warnings.append(f"{loc} has no action; Hermes will fall back to button text as the choice")
+            _actions_diagnostics(element, index, errors, warnings)
     return {"errors": errors, "warnings": warnings}
 
 
@@ -375,6 +391,27 @@ def _validate_card_spec(spec: dict[str, Any]) -> dict[str, list[str]]:
     if diagnostics["errors"]:
         raise ValueError("; ".join(diagnostics["errors"]))
     return diagnostics
+
+
+def _actions_from_spec(raw_element):
+    raw_buttons = raw_element.get("buttons") or []
+    if not isinstance(raw_buttons, list):
+        raise ValueError("actions.buttons must be an array")
+    buttons = []
+    for raw_button in raw_buttons:
+        if not isinstance(raw_button, dict):
+            raise ValueError("each button must be an object")
+        payload = raw_button.get("payload") if "payload" in raw_button else {}
+        if not isinstance(payload, dict):
+            raise ValueError("button.payload must be an object")
+        buttons.append(Button(
+            text=str(raw_button.get("text") or ""),
+            style=str(raw_button.get("style") or "default"),
+            action=str(raw_button.get("action") or ""),
+            url=(str(raw_button["url"]) if raw_button.get("url") else None),
+            payload={str(k): str(v) for k, v in payload.items()},
+        ))
+    return Actions(buttons=buttons, layout=str(raw_element.get("layout") or "row"))
 
 
 def _card_from_spec(spec: dict[str, Any]) -> Card | RawFeishuCard:
@@ -401,47 +438,25 @@ def _card_from_spec(spec: dict[str, Any]) -> Card | RawFeishuCard:
     if not isinstance(raw_elements, list):
         raise ValueError("elements must be an array")
 
+    element_builders = {
+        "markdown": lambda raw: Markdown(_normalize_card_text(raw.get("content"))),
+        "divider": lambda raw: Divider(),
+        "image": lambda raw: Image(
+            image_key=str(raw.get("image_key") or raw.get("img_key") or ""),
+            alt=str(raw.get("alt") or "image"),
+        ),
+        "note": lambda raw: Note(_normalize_card_text(raw.get("content"))),
+        "actions": _actions_from_spec,
+    }
     elements = []
     for raw_element in raw_elements:
         if not isinstance(raw_element, dict):
             raise ValueError("each element must be an object")
         element_type = str(raw_element.get("type") or "").strip().lower()
-        if element_type == "markdown":
-            elements.append(Markdown(_normalize_card_text(raw_element.get("content"))))
-        elif element_type == "divider":
-            elements.append(Divider())
-        elif element_type == "image":
-            elements.append(
-                Image(
-                    image_key=str(raw_element.get("image_key") or raw_element.get("img_key") or ""),
-                    alt=str(raw_element.get("alt") or "image"),
-                )
-            )
-        elif element_type == "note":
-            elements.append(Note(_normalize_card_text(raw_element.get("content"))))
-        elif element_type == "actions":
-            raw_buttons = raw_element.get("buttons") or []
-            if not isinstance(raw_buttons, list):
-                raise ValueError("actions.buttons must be an array")
-            buttons = []
-            for raw_button in raw_buttons:
-                if not isinstance(raw_button, dict):
-                    raise ValueError("each button must be an object")
-                payload = raw_button.get("payload") if "payload" in raw_button else {}
-                if not isinstance(payload, dict):
-                    raise ValueError("button.payload must be an object")
-                buttons.append(
-                    Button(
-                        text=str(raw_button.get("text") or ""),
-                        style=str(raw_button.get("style") or "default"),
-                        action=str(raw_button.get("action") or ""),
-                        url=(str(raw_button["url"]) if raw_button.get("url") else None),
-                        payload={str(k): str(v) for k, v in payload.items()},
-                    )
-                )
-            elements.append(Actions(buttons=buttons, layout=str(raw_element.get("layout") or "row")))
-        else:
+        builder = element_builders.get(element_type)
+        if builder is None:
             raise ValueError(f"unsupported card element type: {element_type!r}")
+        elements.append(builder(raw_element))
 
     return Card(header=header, elements=elements)
 
@@ -530,7 +545,8 @@ def _current_feishu_session_target() -> tuple[str, str, str, str]:
     """Return the current Feishu gateway target from session ContextVars."""
     try:
         from gateway.session_context import get_session_env
-    except Exception:
+    except ImportError as exc:
+        logger.warning("Feishu session context unavailable", exc_info=_private_traceback(exc))
         return "", "", "", ""
 
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
@@ -643,6 +659,7 @@ async def _request_interaction(args: dict[str, Any]) -> str:
         effective_args["session_key"] = session_key
         rendered = _render_for_args(effective_args)
     except Exception as exc:
+        logger.warning("Feishu interaction preparation failed", exc_info=_private_traceback(exc))
         return _err(str(exc))
 
     request_key = (session_key, request_id)
@@ -684,6 +701,7 @@ async def _request_interaction(args: dict[str, Any]) -> str:
     except Exception as exc:
         with _interaction_lock:
             _interaction_requests.pop(request_key, None)
+        logger.warning("Feishu interaction failed", exc_info=_private_traceback(exc))
         return _err(str(exc))
 
 
@@ -791,6 +809,7 @@ def feishu_card_tool(args: dict[str, Any]) -> str:
             return _ok(rendered=render_feishu_card(card, session_key=session_key))
         return _err(f"unsupported action: {action}")
     except Exception as exc:
+        logger.warning("Feishu card operation failed", exc_info=_private_traceback(exc))
         return _err(str(exc))
 
 
@@ -836,4 +855,5 @@ async def feishu_card_tool_async(args: dict[str, Any]) -> str:
             return _ok(**payload)
         return _err(getattr(result, "error", "Feishu card send failed") or "Feishu card send failed")
     except Exception as exc:
+        logger.warning("Feishu card send failed", exc_info=_private_traceback(exc))
         return _err(str(exc))

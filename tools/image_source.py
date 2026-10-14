@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import os
 import re
 from dataclasses import dataclass
@@ -89,15 +90,23 @@ async def resolve_image_source(
         except (ValueError, PermissionError) as exc:
             raise SourceUnsafe(str(exc), src=s) from exc
     local = _is_local_terminal_backend(ctx.task_id)
-    p = Path(os.path.expanduser(candidate) if local else candidate)
-    host_target = _permitted_host_read_target(p, ctx)
-    if host_target is not None and host_target.is_file():
-        _guard_credential_read(host_target, s)
-        data = await asyncio.to_thread(host_target.read_bytes)
+    p, data = await asyncio.to_thread(_read_host_source, candidate, ctx, local, s)
+    if data is not None:
         return _finalize(data, "", "file", s, permitted)
     if local or gateway_file:
         raise SourceNotFound(f"media file not found: '{p}'", src=s, origin="file")
     return await _resolve_container_fallback(p, ctx, s, permitted)
+
+
+def _read_host_source(candidate: str, ctx: ResolveContext, local: bool,
+                      src: str) -> tuple[Path, Optional[bytes]]:
+    """Probe and read off-loop; carry task context and check credentials before I/O."""
+    p = Path(os.path.expanduser(candidate) if local else candidate)
+    host_target = _permitted_host_read_target(p, ctx)
+    if host_target is not None and host_target.is_file():
+        _guard_credential_read(host_target, src)
+        return p, host_target.read_bytes()
+    return p, None
 
 
 def _guard_credential_read(host_target: Path, src: str) -> None:
@@ -110,7 +119,7 @@ def _guard_credential_read(host_target: Path, src: str) -> None:
         # model-supplied local paths. Import is best-effort (guard unavailability must not break image
         # loading); a real block always propagates.
         from agent.file_safety import raise_if_read_blocked
-    except Exception:  # noqa: BLE001 — guard unavailable: proceed
+    except Exception:
         return
     try:
         raise_if_read_blocked(str(host_target))
@@ -128,8 +137,8 @@ def _resolve_data_url(s: str) -> tuple[bytes, str]:
         raise SourceTooLarge("data: URL exceeds size limit", src=s[:64])
     try:
         data = base64.b64decode(payload, validate=True)
-    except Exception as exc:
-        raise NotAnImage(f"invalid base64 in data: URL: {exc}", src=s[:64])
+    except (binascii.Error, ValueError) as exc:
+        raise NotAnImage(f"invalid base64 in data: URL: {exc}", src=s[:64]) from exc
     return data, declared  # real mime verified in _finalize via magic bytes
 
 
@@ -190,14 +199,14 @@ def _permitted_host_read_target(p: Path, ctx: ResolveContext) -> Optional[Path]:
     if _is_local_terminal_backend(ctx.task_id):
         try:
             return p.resolve()
-        except Exception:  # noqa: BLE001 — unresolved path: let is_file() fail downstream
+        except Exception:
             return p
     if not p.is_absolute():
         return None
     from tools.credential_files import from_agent_visible_cache_path
     try:
         real = Path(from_agent_visible_cache_path(str(p))).resolve()
-    except Exception:  # noqa: BLE001 — cannot resolve -> not a safe host read
+    except Exception:
         return None
     if any(real.is_relative_to(root.resolve()) for root in _media_cache_roots()):
         return real

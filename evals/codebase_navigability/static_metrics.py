@@ -2,7 +2,12 @@
 
 First-party Python only (excludes tests/, node_modules, apps/, website, build, .venv, skills md).
 """
-import ast, collections, io, json, os, shutil, subprocess, sys, time, tokenize
+import ast, collections, io, json, os, sys, time, tokenize
+
+if __package__:
+    from .radon_metrics import radon
+else:
+    from radon_metrics import radon
 
 TREE, LABEL = sys.argv[1], sys.argv[2]
 SKIP = {".git", "node_modules", "apps", "website", "build", ".venv", "venv", "MagicMock", "__pycache__", ".worktrees", "dist", "evals", "skills", "optional-skills", "docs"}
@@ -57,7 +62,7 @@ def analyse(files):
         try: tree = ast.parse(src)
         except Exception: m["unparsable"] = m.get("unparsable", 0) + 1; continue
         rel = os.path.relpath(p, TREE)[:-3].replace(os.sep, ".")
-        if rel.endswith(".__init__"): rel = rel[:-9]
+        rel = rel.removesuffix(".__init__")
         mods[rel] = p
         for n in ast.walk(tree):
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -124,33 +129,11 @@ def analyse(files):
               "fan_in_max": max(fan_in.values()) if fan_in else 0, "fan_in_top": fan_in.most_common(5), "import_cycles": len(cyc), "largest_cycle": max((len(c) for c in cyc), default=0), "modules_in_cycles": sum(len(c) for c in cyc)})
     return dict(m)
 
-def radon(files):
-    """radon cc + mi over the file list (JSON), aggregated."""
-    R = shutil.which("radon") or os.path.join(os.path.dirname(sys.executable), "radon")
-    import tempfile
-    out = {}
-    lst = "\n".join(files)
-    # radon can't take a list file; run per-directory roots instead
-    roots = sorted({os.path.relpath(f, TREE).split(os.sep)[0] if os.sep in os.path.relpath(f, TREE) else os.path.relpath(f, TREE) for f in files})
-    roots = [r for r in roots if r != "tests"]
-    cc = subprocess.run([R, "cc", "-j", "-s", "-e", "tests/*,tests/**", *roots], cwd=TREE, capture_output=True, text=True).stdout
-    mi = subprocess.run([R, "mi", "-j", "-e", "tests/*,tests/**", *roots], cwd=TREE, capture_output=True, text=True).stdout
-    try:
-        ccj = json.loads(cc); blocks = [b for v in ccj.values() if isinstance(v, list) for b in v if isinstance(b, dict) and "complexity" in b]
-        cs = sorted(b["complexity"] for b in blocks)
-        out.update({"cc_blocks": len(cs), "cc_avg": round(sum(cs) / max(1, len(cs)), 2), "cc_p95": cs[int(len(cs) * .95) - 1] if cs else 0, "cc_max": cs[-1] if cs else 0,
-                    "cc_gt_15": sum(1 for c in cs if c > 15), "cc_gt_30": sum(1 for c in cs if c > 30), "cc_gt_50": sum(1 for c in cs if c > 50),
-                    "cc_worst": sorted(((b["complexity"], f, b["name"]) for f, v in ccj.items() if isinstance(v, list) for b in v if isinstance(b, dict) and "complexity" in b), reverse=True)[:8]})
-    except Exception as e: out["cc_error"] = repr(e)[:200]
-    try:
-        mij = json.loads(mi); vals = [v["mi"] for v in mij.values() if isinstance(v, dict) and "mi" in v]
-        out.update({"mi_files": len(vals), "mi_avg": round(sum(vals) / max(1, len(vals)), 2), "mi_lt_20": sum(1 for v in vals if v < 20), "mi_lt_10": sum(1 for v in vals if v < 10)})
-    except Exception as e: out["mi_error"] = repr(e)[:200]
-    return out
+
 
 src_files = sorted(py_files(TREE, False)); test_files = sorted(py_files(TREE, True))
 res = {"label": LABEL, "tree": TREE, "source": analyse(src_files), "tests": analyse(test_files)}
-res["source"].update({"radon_" + k: v for k, v in radon(src_files).items()})
+res["source"].update({"radon_" + k: v for k, v in radon(src_files, TREE).items()})
 OUT = os.environ.get("NAV_OUT", "."); os.makedirs(OUT, exist_ok=True)
 json.dump(res, open(os.path.join(OUT, f"{LABEL}.static.json"), "w", encoding="utf-8"), indent=1, default=str)
 s = res["source"]; t = res["tests"]

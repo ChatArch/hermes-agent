@@ -18,8 +18,8 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from scripts.releases import authors, authors_legacy  # noqa: E402
-from add_contributor import add_contributor, read_mapping_file  # noqa: E402
+from scripts.releases import authors, authors_legacy
+from add_contributor import add_contributor, read_mapping_file
 
 
 # ── directory loader behavior ─────────────────────────────────────────
@@ -58,6 +58,27 @@ def test_attribution_gate_accepts_case_distinct_author_without_case_colliding_pa
     assert audit_pr_attribution.is_mapped("agent@Agents-Mac-mini.local")
     assert audit_pr_attribution.is_mapped("agent@agents-Mac-mini.local")
     assert audit_pr_attribution.is_mapped("Halldrix@users.noreply.github.com")
+
+
+def test_only_standard_numeric_noreply_auto_resolves():
+    from scripts import audit_pr_attribution
+
+    assert audit_pr_attribution.is_mapped("12345+verified-user@users.noreply.github.com")
+    assert not audit_pr_attribution.is_mapped("12345+extra+user@users.noreply.github.com")
+    assert not audit_pr_attribution.is_mapped("dmetcalfe+hermes@users.noreply.github.com")
+
+
+def test_local_author_audit_uses_the_verified_official_import_scope(monkeypatch):
+    from scripts import audit_pr_attribution
+    from scripts.ci import official_import_authors
+
+    observed = []
+    monkeypatch.setattr(audit_pr_attribution, "run", lambda *args: "base-commit")
+    monkeypatch.setattr(official_import_authors, "fork_authors", lambda repo, base: (
+        observed.append((repo, base)) or ["fork@example.com"], ["official-tip"],
+    ))
+    assert audit_pr_attribution.new_emails() == ["fork@example.com"]
+    assert observed == [(audit_pr_attribution.REPO_ROOT, "base-commit")]
 
 
 def test_unlinked_coauthor_keeps_literal_credit_without_fabricated_github_login():
@@ -126,6 +147,7 @@ def test_cli_entrypoint_end_to_end(tmp_path):
         [sys.executable, str(scripts / "add_contributor.py"),
          "cli@example.com", "cliperson", "via subprocess"],
         cwd=tmp_path, capture_output=True, text=True,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     out = (tmp_path / "contributors" / "emails" / "cli@example.com").read_text(encoding="utf-8")

@@ -292,7 +292,7 @@ def test_feishu_card_tool_send_uses_current_session_reply_anchor(monkeypatch):
             return SimpleNamespace(success=True, message_id="om_sent", thread_id="omt_current", error=None)
 
     fake_gateway_run = ModuleType("gateway.run")
-    setattr(fake_gateway_run, "_gateway_runner_ref", lambda: SimpleNamespace(adapters={Platform.FEISHU: Adapter()}))
+    fake_gateway_run._gateway_runner_ref = lambda: SimpleNamespace(adapters={Platform.FEISHU: Adapter()})
     monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
 
     from gateway.session_context import clear_session_vars, set_session_vars

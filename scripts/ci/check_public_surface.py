@@ -32,11 +32,17 @@ import subprocess
 import sys
 
 SRC_DIRS = ("agent", "gateway", "hermes_cli", "tools", "tui_gateway", "cron", "acp_adapter", "plugins")
-_TEST_DEF_RE = re.compile(r"^\s*(?:async\s+)?def test_", re.M)
+_TEST_DEF_RE = re.compile(r"^\s*(?:async\s+)?def test_", re.MULTILINE)
 
 
 def _git(*args: str) -> str:
-    return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+    result = subprocess.run(
+        ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=120, check=False,
+    )
+    if result.returncode and not (args[0] == "merge-base" and result.returncode == 1):
+        raise RuntimeError(f"git {args[0]} failed: {result.stderr.strip()[:240]}")
+    return result.stdout
 
 
 def _changed_py(base: str, head: str) -> list[str]:
@@ -44,9 +50,14 @@ def _changed_py(base: str, head: str) -> list[str]:
     return [f for f in out.split() if f.endswith(".py")]
 
 
-def _show(rev: str, path: str) -> str | None:
-    r = subprocess.run(["git", "show", f"{rev}:{path}"], capture_output=True, text=True, encoding="utf-8", errors="replace")
-    return r.stdout if r.returncode == 0 else None
+def _show(rev: str, path: str) -> str:
+    r = subprocess.run(
+        ["git", "show", f"{rev}:{path}"], capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=120, check=False,
+    )
+    if r.returncode:
+        raise RuntimeError(f"git show failed: {r.stderr.strip()[:240]}")
+    return r.stdout
 
 
 def public_toplevel(src: str) -> set[str] | None:
@@ -110,8 +121,6 @@ def diff_surface(base: str, head: str) -> dict:
     test_drops: dict[str, tuple[int, int]] = {}
     for path in _changed_py(base, head):
         before, after = _show(base, path), _show(head, path)
-        if before is None or after is None:
-            continue
         if path.startswith("tests/"):
             nb, na = len(_TEST_DEF_RE.findall(before)), len(_TEST_DEF_RE.findall(after))
             if na < nb:
@@ -160,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", dest="json_out", help="also write the report as JSON")
     args = ap.parse_args(argv)
     for ref in (args.base, args.head):
-        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], capture_output=True).returncode != 0:
+        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], capture_output=True, timeout=120, check=False).returncode != 0:
             print(f"public-surface: cannot resolve ref {ref!r} (fetch it first); refusing to report a clean diff", file=sys.stderr)
             return 2
     base = _git("merge-base", args.base, args.head).strip()

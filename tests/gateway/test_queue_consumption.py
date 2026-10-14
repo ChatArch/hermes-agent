@@ -357,11 +357,11 @@ async def test_pending_followup_direct_send_fails_closed_for_remote_media(
     )
 
     fake_dotenv = types.ModuleType("dotenv")
-    setattr(fake_dotenv, "load_dotenv", lambda *args, **kwargs: None)
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
     fake_run_agent = types.ModuleType("run_agent")
-    setattr(fake_run_agent, "AIAgent", _PendingFollowupRemoteMediaAgent)
+    fake_run_agent.AIAgent = _PendingFollowupRemoteMediaAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
     gateway_run = importlib.import_module("gateway.run")

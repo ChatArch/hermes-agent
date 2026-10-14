@@ -145,11 +145,9 @@ def test_exhaustion_preserves_model_retries_and_paces_fallbacks():
 
     def wait_for_fallback(_agent, seconds, _retry, **kwargs):
         fallback_waits.append(seconds)
-        return None
 
     def wait_for_retry(_agent, seconds, _retry, **kwargs):
         retry_waits.append(seconds)
-        return None
 
     with (
         patch.object(agent, "_interruptible_api_call", side_effect=api_call),

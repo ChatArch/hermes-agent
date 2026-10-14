@@ -10,9 +10,9 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from hermes_constants import get_hermes_home
 from gateway.ssh_targets import find_ssh_target, load_ssh_targets, render_ssh_targets, validate_ssh_target_for_runtime
-from gateway.ssh_bindings import (LOCAL_BACKEND, clear_ssh_binding, get_backend_auto_policy,
+from gateway.ssh_bindings import (LOCAL_BACKEND, get_backend_auto_policy,
     get_ssh_binding, is_local_backend, list_backend_auto_policies, normalize_backend_name,
-    resolve_binding_task_overrides, resolve_binding_target, set_backend_auto_enabled, set_ssh_binding)
+    resolve_binding_task_overrides, resolve_binding_target, set_backend_auto_enabled)
 logger = logging.getLogger("gateway.run")
 
 class ChatArchGatewayMixin:
@@ -498,12 +498,13 @@ class ChatArchGatewayMixin:
             if not backend:
                 return "Usage: /ssh use <backend> [--cwd <remote-path>]"
             if is_local_backend(backend):
-                clear_ssh_binding(section_key)
+                from gateway.ssh_switch_apply import apply_backend_selection
+                from gateway.ssh_switch_store import SshStateUnavailable
                 try:
-                    from tools.terminal_tool import clear_task_env_overrides
-                    clear_task_env_overrides(section_key)
-                except Exception:
-                    pass
+                    apply_backend_selection(section_key, [], LOCAL_BACKEND,
+                                            targets=load_ssh_targets(), source="user")
+                except SshStateUnavailable as exc:
+                    return str(exc)
                 self._evict_cached_agent(section_key)
                 return "Backend switched for this section: `local`."
 
@@ -545,14 +546,13 @@ class ChatArchGatewayMixin:
                 )
 
             bind_key = self._session_key_for_source(bind_source)
-            binding = set_ssh_binding(bind_key, alias=backend, cwd=cwd, source="user")
-            overrides = resolve_binding_task_overrides(bind_key, targets=load_ssh_targets())
-            if overrides:
-                try:
-                    from tools.terminal_tool import register_task_env_overrides
-                    register_task_env_overrides(bind_key, overrides)
-                except Exception:
-                    pass
+            from gateway.ssh_switch_apply import apply_backend_selection
+            from gateway.ssh_switch_store import SshStateUnavailable
+            try:
+                binding = apply_backend_selection(bind_key, [], backend, targets=load_ssh_targets(),
+                                                  cwd=cwd, source="user")
+            except SshStateUnavailable as exc:
+                return str(exc)
             self._evict_cached_agent(bind_key)
             lines = [
                 f"Backend switched for this section: `{binding.alias}`",

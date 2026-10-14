@@ -17,7 +17,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import {
   DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,
@@ -322,3 +322,78 @@ test('the merged-tail seed does not match prose that merely names the sentinel',
 
   await assert.rejects(wait, /Timed out waiting/)
 })
+
+// ---------------------------------------------------------------------------
+// source-update completion banners extend the deadline (#122206)
+// ---------------------------------------------------------------------------
+
+test('a completion banner re-arms the deadline past the original timeout', async () => {
+  // The backend prints venv_sync's banner (finishing an owed update tail)
+  // after the normal budget would have expired. The wait must keep waiting
+  // while the repair is in progress, then resolve on the late announcement.
+  const child = makeFakeChild()
+  const p = waitForDashboardPort(child, 40)
+  child.stdout.emit('data', 'hermes: finishing an interrupted source update...\n')
+  // Past the original 40ms deadline: without the banner grace this wait has
+  // already rejected. Give the "repair" a moment, then announce.
+  await new Promise(resolve => setTimeout(resolve, 80))
+  child.stdout.emit('data', 'HERMES_BACKEND_READY port=4455\n')
+  assert.equal(await p, 4455)
+})
+
+test(
+  'a stalled completion banner is capped, not waited out forever',
+  async () => {
+    // Advance timers and the monotonic clock together: the unchanged real
+    // five-minute grace must expire without spending five minutes in CI.
+    const graceMs = 5 * 60_000
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'hrtime'] })
+    try {
+      const child = makeFakeChild()
+      const startedAt = process.hrtime.bigint()
+      let settled = false
+      const wait = waitForDashboardPort(child, 20)
+      wait.then(() => { settled = true }, () => { settled = true })
+      const failure = assert.rejects(
+        wait,
+        /Timed out waiting for Hermes backend port announcement .* while an update completion was in progress/
+      )
+      failure.catch(() => {}) // keep an early boundary assertion from orphaning a rejection
+
+      child.stdout.emit('data', 'hermes: finishing an interrupted source update...\n')
+      await vi.advanceTimersByTimeAsync(graceMs - 1)
+      assert.equal(process.hrtime.bigint() - startedAt, BigInt(graceMs - 1) * 1_000_000n)
+      assert.equal(settled, false, 'the completion grace must not expire early')
+      assert.equal(child.stdout.listenerCount('data'), 1)
+
+      await vi.advanceTimersByTimeAsync(1)
+      await failure
+      assert.equal(settled, true)
+      assert.equal(child.stdout.listenerCount('data'), 0)
+      assert.equal(child.listenerCount('exit'), 0)
+      assert.equal(child.listenerCount('error'), 0)
+      assert.equal(vi.getTimerCount(), 0)
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  },
+  6 * 60_000
+)
+
+test('a banner already in the spawn-time tail also re-arms', async () => {
+  // The dormant bufferedOutput gap (#60323): the banner was flushed before the
+  // listener attached. Seeding from the tail must extend the deadline too.
+  const child = makeFakeChild()
+
+  const p = waitForDashboardPort(
+    child,
+    40,
+    () => '',
+    () => 'hermes: completing source-update dependencies...\n'
+  )
+
+  await new Promise(resolve => setTimeout(resolve, 80))
+  child.stdout.emit('data', 'HERMES_BACKEND_READY port=4471\n')
+  assert.equal(await p, 4471)
+}, 10_000)

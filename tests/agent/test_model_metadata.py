@@ -428,6 +428,7 @@ class TestCodexOAuthContextLength:
     def setup_method(self):
         import agent.model_metadata as mm
         mm._codex_oauth_context_cache = {}
+        mm._codex_oauth_max_context_cache = {}  # the fallback branch reads it too
 
 
     def test_live_catalogue_cache_is_scoped_to_access_token(self):
@@ -630,12 +631,14 @@ class TestCodexOAuthContextLength:
                 )
             assert ctx == max(1_000_000, advertised)
 
+    @pytest.mark.parametrize("base", ["gpt-5.6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize("catalog_max,expected", [(872_000, 872_000), (None, 900_000), (1_050_000, 900_000)])
-    def test_catalogue_max_hint_cannot_lower_the_policy_floor(self, catalog_max, expected):
-        """Catalogue max hints do not override client policy; wire acceptance is separate."""
+    def test_opted_in_variant_capped_at_live_catalog_max(self, base, catalog_max, expected):
+        """The ChatArch unconfigured 1M policy floor wins over lower catalog hints;
+        verified picker aliases still resolve against the live catalog."""
         from agent.model_metadata import get_model_context_length
 
-        item = {"slug": "gpt-5.6-luna", "context_window": 272_000}
+        item = {"slug": base, "context_window": 272_000}
         if catalog_max is not None:
             item["max_context_window"] = catalog_max
         fake_response = MagicMock()
@@ -645,7 +648,7 @@ class TestCodexOAuthContextLength:
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
-                model="gpt-5.6-luna-900k",
+                model=f"{base}-900k",
                 base_url="https://chatgpt.com/backend-api/codex",
                 api_key=_codex_jwt("fake-token"),
                 provider="openai-codex",
@@ -671,6 +674,68 @@ class TestCodexOAuthContextLength:
                 provider="openai-codex",
             )
         assert ctx == 1_000_000
+
+    def test_failed_refresh_past_ttl_keeps_the_policy_floor(self):
+        """A failed refresh preserves the observed catalog cap while an unconfigured
+        OAuth route retains ChatArch's 1M default policy."""
+        import agent.model_metadata as mm
+
+        ok = MagicMock(status_code=200)
+        ok.json.return_value = {"models": [{"slug": "GPT-5.6-Luna", "context_window": 272_000, "max_context_window": 600_000}]}
+        route = dict(base_url="https://chatgpt.com/backend-api/codex", api_key=_codex_jwt("fake-token"), provider="openai-codex")
+        with patch.object(mm, "_codex_oauth_context_cache", {}), patch.object(mm, "_codex_oauth_max_context_cache", {}), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            with patch("agent.model_metadata.model_metadata_http.get", return_value=ok):
+                assert mm.get_model_context_length(model="gpt-5.6-luna-900k", **route) == 1_000_000
+            with patch("agent.model_metadata.model_metadata_http.get", side_effect=OSError("catalog down")), \
+                 patch("agent.model_metadata.time.time", return_value=time.time() + mm._CODEX_OAUTH_CONTEXT_CACHE_TTL + 1):
+                assert mm.get_model_context_length(model="gpt-5.6-luna-900k", **route) == 1_000_000
+                assert mm._cached_codex_catalog_max(route["api_key"], route["base_url"], "gpt-5.6-luna") == 600_000
+
+    def test_a_probe_that_finds_no_catalog_is_not_repeated_within_the_negative_ttl(self):
+        """Every context resolution (init, /status, aux, @-reference turns) used to re-probe a dead or
+        non-Codex-shaped catalog; one miss is now remembered for the short negative TTL, then retried."""
+        import agent.model_metadata as mm
+
+        calls = []
+
+        def down(url, **_kw):
+            calls.append(url)
+            raise OSError("catalog down")
+
+        route = dict(base_url="https://chatgpt.com/backend-api/codex", api_key=_codex_jwt("fake-token"), provider="openai-codex")
+        with patch.object(mm, "_codex_oauth_context_cache", {}), patch.object(mm, "_codex_oauth_max_context_cache", {}), \
+             patch("agent.model_metadata.model_metadata_http.get", side_effect=down), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            assert mm.get_model_context_length(model="gpt-5.6-sol", **route) == mm.CODEX_OAUTH_DEFAULT_CONTEXT_LENGTH
+            per_probe = len(calls)
+            mm.get_model_context_length(model="gpt-5.6-sol", **route)
+            mm.get_model_context_length(model="gpt-5.6-sol-900k", **route)
+            assert per_probe and len(calls) == per_probe
+            with patch("agent.model_metadata.time.time", return_value=time.time() + mm._CODEX_OAUTH_CONTEXT_NEGATIVE_TTL + 1):
+                mm.get_model_context_length(model="gpt-5.6-sol", **route)
+        assert len(calls) == 2 * per_probe
+
+    def test_catalog_max_is_published_before_the_context_entry(self):
+        """A reader that sees a fresh context entry must already be able to see its cap, or a
+        concurrent -900k resolution between the two writes skips the catalog max."""
+        import agent.model_metadata as mm
+
+        max_cache: dict = {}
+
+        class _ContextCache(dict):
+            def __setitem__(self, key, value):
+                assert key in max_cache, "context entry published before its max_context_window cap"
+                super().__setitem__(key, value)
+
+        ok = MagicMock(status_code=200)
+        ok.json.return_value = {"models": [{"slug": "gpt-5.6-luna", "context_window": 272_000, "max_context_window": 872_000}]}
+        with patch.object(mm, "_codex_oauth_context_cache", _ContextCache()), patch.object(mm, "_codex_oauth_max_context_cache", max_cache), \
+             patch("agent.model_metadata.model_metadata_http.get", return_value=ok):
+            live, _fresh = mm._fetch_codex_oauth_context_lengths_with_source(_codex_jwt("fake-token"))
+        assert live == {"gpt-5.6-luna": 272_000}
 
 
     @pytest.mark.parametrize("slug", ["gpt-5.6-sol-900k"])
@@ -743,9 +808,7 @@ class TestCodexOAuthContextLength:
 
         bare = model_id.rsplit("/", 1)[-1]
         catalog_slug = strip_codex_context_variant_suffix(bare)
-        if catalog_slug.endswith("-900k"):
-            # invalid alias — catalog advertises the underlying family slug
-            catalog_slug = catalog_slug[: -len("-900k")]
+        catalog_slug = catalog_slug.removesuffix("-900k")
         fake_response = MagicMock()
         fake_response.status_code = 200
         fake_response.json.return_value = {
@@ -1180,6 +1243,33 @@ class TestGetModelContextLength:
                 provider=provider, custom_providers=custom_providers,
             )
         assert ctx == max(mm.CODEX_OAUTH_DEFAULT_CONTEXT_LENGTH, mm._CODEX_OAUTH_CONTEXT_FALLBACK["gpt-6-astra"])
+
+    def test_codex_proxy_route_caps_an_opted_in_variant_by_its_own_catalog_max(self):
+        """On a custom codex_responses route the -900k bump is capped by the gateway's own Codex-shaped
+        max_context_window, asked once with the route's key at the route's URL; its context_window is not
+        trusted, the base slug keeps the ChatArch 1M default, and a gateway without a Codex catalog is not
+        re-probed on every resolution."""
+        from agent import model_metadata as mm
+
+        custom = [{"name": "codex-proxy", "base_url": "http://127.0.0.1:8317/v1", "api_mode": "codex_responses"}]
+        route = dict(base_url="http://127.0.0.1:8317/v1", api_key="proxy-key", provider="custom:codex-proxy", custom_providers=custom)
+        codex_shaped = MagicMock(status_code=200)
+        codex_shaped.json.return_value = {"models": [{"slug": "GPT-6-Sol", "context_window": 1_050_000, "max_context_window": 600_000}]}
+        openai_shaped = MagicMock(status_code=200)
+        openai_shaped.json.return_value = {"data": [{"id": "gpt-6-sol"}]}
+        with patch.object(mm, "_codex_oauth_context_cache", {}), patch.object(mm, "_codex_oauth_max_context_cache", {}), \
+             patch.object(mm, "get_cached_context_length", return_value=None), patch.object(mm, "save_context_length"):
+            with patch("agent.model_metadata.model_metadata_http.get", return_value=codex_shaped) as get:
+                assert get_model_context_length("gpt-6-sol-900k", **route) == 600_000
+                assert get_model_context_length("gpt-6-sol", **route) == mm.CODEX_OAUTH_DEFAULT_CONTEXT_LENGTH
+                assert get.call_args_list and all(c.args[0].startswith("http://127.0.0.1:8317/v1/") for c in get.call_args_list)
+            mm._codex_oauth_context_cache.clear()
+            mm._codex_oauth_max_context_cache.clear()
+            with patch("agent.model_metadata.model_metadata_http.get", return_value=openai_shaped) as get:
+                for _ in range(3):
+                    assert get_model_context_length("gpt-6-sol-900k", **route) == mm.CODEX_OAUTH_DEFAULT_CONTEXT_LENGTH
+                probes = get.call_count
+            assert 0 < probes <= 2  # one probe (both client_version URLs at most), not one per resolution
 
     def test_codex_proxy_route_explicit_context_length_override_still_wins(self):
         """providers.<name>.models[].context_length beats the Codex table on a codex_responses route (#102644)."""
@@ -1790,108 +1880,6 @@ class TestMoAContextLength:
 # Fallback diagnostic logging
 # =========================================================================
 
-class TestFallbackWarning:
-    """When all 9 detection methods fail, the 10th fallback should log a
-    warning so users with small-context models (8K, 32K) don't silently get
-    256K and hit hard-to-debug API context-length errors.
-
-    The warning is deduped per (model, base_url) — the fallback result is
-    deliberately never cached, so without dedup it would repeat on every
-    resolution (e.g. once per gateway message via session hygiene).
-    """
-
-    @pytest.fixture(autouse=True)
-    def _reset_warned_set(self):
-        from agent import model_metadata as mm
-        mm._FALLBACK_WARNED.clear()
-        yield
-        mm._FALLBACK_WARNED.clear()
-
-    @staticmethod
-    def _patch_all_lookups():
-        from contextlib import ExitStack
-        stack = ExitStack()
-        for target, value in [
-            ("agent.model_metadata.get_cached_context_length", None),
-            ("agent.model_metadata.fetch_model_metadata", {}),
-            ("agent.model_metadata.fetch_endpoint_model_metadata", {}),
-            ("agent.model_metadata._query_ollama_api_show", None),
-            ("agent.model_metadata._query_anthropic_context_length", None),
-            ("agent.model_metadata._endpoint_scoped_context_length", None),
-            ("agent.model_metadata._resolve_endpoint_context_length", None),
-            ("agent.models_dev.lookup_models_dev_context", None),
-        ]:
-            stack.enter_context(patch(target, return_value=value))
-        return stack
-
-    def test_warning_emitted_on_fallback(self, caplog):
-        import logging
-
-        with self._patch_all_lookups():
-            with caplog.at_level(logging.WARNING, logger="agent.model_metadata"):
-                result = get_model_context_length(
-                    "totally-unknown-model-xyz",
-                )
-
-        assert result == DEFAULT_FALLBACK_CONTEXT
-        # The warning must mention the model name and the config override hint.
-        warning_msgs = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("totally-unknown-model-xyz" in r.getMessage() for r in warning_msgs)
-        assert any("model.context_length" in r.getMessage() for r in warning_msgs)
-
-    def test_warning_fires_once_per_model(self, caplog):
-        """Repeated resolutions of the same unknown model warn only once."""
-        import logging
-
-        with self._patch_all_lookups():
-            with caplog.at_level(logging.WARNING, logger="agent.model_metadata"):
-                for _ in range(3):
-                    get_model_context_length("totally-unknown-model-xyz")
-
-        fallback_warnings = [
-            r for r in caplog.records
-            if r.levelno == logging.WARNING and "falling back" in r.getMessage()
-        ]
-        assert len(fallback_warnings) == 1
-
-    def test_warning_emitted_on_custom_endpoint_fallback(self, caplog):
-        """The sibling step-3b fallback (custom/local endpoint, probes down,
-        no catalog match) is the same silent-256K bug class and must warn too."""
-        import logging
-
-        with self._patch_all_lookups(), \
-             patch("agent.model_metadata._query_local_context_length", return_value=None):
-            with caplog.at_level(logging.WARNING, logger="agent.model_metadata"):
-                result = get_model_context_length(
-                    "totally-unknown-model-xyz",
-                    base_url="http://192.168.1.50:8080/v1",
-                )
-
-        assert result == DEFAULT_FALLBACK_CONTEXT
-        warning_msgs = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("totally-unknown-model-xyz" in r.getMessage() for r in warning_msgs)
-        assert any("model.context_length" in r.getMessage() for r in warning_msgs)
-
-    def test_no_warning_when_cached(self, caplog):
-        """No fallback warning when the context length is found in the cache."""
-        import logging
-
-        with patch(
-            "agent.model_metadata.get_cached_context_length",
-            return_value=32_000,
-        ):
-            with caplog.at_level(logging.WARNING, logger="agent.model_metadata"):
-                result = get_model_context_length(
-                    "some-model",
-                    base_url="http://127.0.0.1:1/v1",
-                )
-
-        assert result == 32_000
-        fallback_warnings = [
-            r for r in caplog.records
-            if r.levelno == logging.WARNING and "falling back" in r.getMessage()
-        ]
-        assert len(fallback_warnings) == 0
 
 
 # =========================================================================

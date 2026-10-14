@@ -1,4 +1,5 @@
 import json
+import pytest
 
 from gateway.session_context import clear_session_vars, set_session_vars
 from gateway.ssh_bindings import (
@@ -11,6 +12,14 @@ from gateway.ssh_targets import SshTarget
 
 
 SESSION_KEY = "agent:main:feishu:group:oc_chat:omt_thread"
+
+
+@pytest.fixture(autouse=True)
+def _use_the_same_registry_for_committed_routing(monkeypatch):
+    """The tool and durable routing reader consume one target registry in production."""
+    from gateway import ssh_bindings
+    from tools import ssh_mode_tool
+    monkeypatch.setattr(ssh_bindings, "load_ssh_targets", lambda: ssh_mode_tool.load_ssh_targets())
 
 
 def _call(args):
@@ -46,7 +55,7 @@ def test_ssh_mode_schema_is_flat_backend_interface():
 
 def test_ssh_mode_status_and_list_show_local_and_targets_as_peer_backends(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import tools.ssh_mode_tool as ssh_mode_tool
+    from tools import ssh_mode_tool
 
     monkeypatch.setattr(
         ssh_mode_tool,
@@ -72,7 +81,7 @@ def test_ssh_mode_status_and_list_show_local_and_targets_as_peer_backends(monkey
 
 def test_ssh_mode_use_off_ssh_backend_requests_approval_and_does_not_switch(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import tools.ssh_mode_tool as ssh_mode_tool
+    from tools import ssh_mode_tool
 
     monkeypatch.setattr(
         ssh_mode_tool,
@@ -94,7 +103,7 @@ def test_ssh_mode_use_off_ssh_backend_requests_approval_and_does_not_switch(monk
 
 def test_ssh_mode_use_current_backend_skips_off_policy_and_approval(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import tools.ssh_mode_tool as ssh_mode_tool
+    from tools import ssh_mode_tool
     from tools.terminal_tool import clear_task_env_overrides, resolve_task_overrides
 
     monkeypatch.setattr(
@@ -155,7 +164,7 @@ def test_ssh_mode_use_local_current_backend_skips_off_policy(monkeypatch, tmp_pa
 
 def test_ssh_mode_allow_current_enables_each_requested_backend_additively(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import tools.ssh_mode_tool as ssh_mode_tool
+    from tools import ssh_mode_tool
     from tools.terminal_tool import clear_task_env_overrides, resolve_task_overrides
 
     monkeypatch.setattr(
@@ -204,7 +213,7 @@ def test_ssh_mode_allow_current_enables_each_requested_backend_additively(monkey
 
 def test_ssh_mode_allow_all_enables_every_backend_policy(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import tools.ssh_mode_tool as ssh_mode_tool
+    from tools import ssh_mode_tool
     from gateway.ssh_bindings import list_backend_auto_policies
     from tools.terminal_tool import clear_task_env_overrides, resolve_task_overrides
 
@@ -293,7 +302,7 @@ def test_ssh_mode_model_cannot_use_on_off_to_grant_itself_backend_permission(mon
 
 def test_ssh_mode_use_rejects_feishu_parent_chat_for_ssh_backend(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import tools.ssh_mode_tool as ssh_mode_tool
+    from tools import ssh_mode_tool
 
     monkeypatch.setattr(
         ssh_mode_tool,

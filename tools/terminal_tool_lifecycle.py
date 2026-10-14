@@ -64,7 +64,7 @@ def _check_disk_usage_warning():
 
 
 def _create_configured_env(
-    config: Dict[str, Any], env_type: str, *, image: str, cwd: str, timeout: int,
+    config: dict[str, Any], env_type: str, *, image: str, cwd: str, timeout: int,
     task_id: str, host_cwd: Optional[str], local_config: Optional[dict] = None,
 ):
     """``_create_environment`` with the ssh/container kwargs shaped from *config*
@@ -147,6 +147,8 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
         _last_activity,
     )
     current_time = time.time()
+    from gateway.ssh_switch_env import reap_retired
+    reap_retired(lifetime_seconds)
 
     # Sandboxes with active background processes stay alive (refresh activity).
     try:
@@ -170,7 +172,11 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     for task_id, env in envs_to_stop:
         if env is not None:
             _clear_file_ops_cache(task_id)
-            _teardown_env(env, task_id)
+            if getattr(env, "_hermes_ssh_snapshot", None) is not None:
+                from gateway.ssh_switch_env import retire_env
+                retire_env(env)
+            else:
+                _teardown_env(env, task_id)
 
 
 def get_active_env(task_id: str):
@@ -200,14 +206,23 @@ def ensure_task_env(task_id: Optional[str] = None):
         _get_env_config, _last_activity, _resolve_container_task_id, apply_task_env_overrides,
         _resolve_task_host_cwd, _select_image, _start_cleanup_thread, resolve_task_overrides,
     )
-    config = apply_task_env_overrides(_get_env_config(), resolve_task_overrides(task_id))
+    from gateway.ssh_switch_state import runtime_config_snapshot
+    from gateway.ssh_switch_env import cached_env, publish_env
+    overrides = resolve_task_overrides(task_id)
+    config, snapshot = runtime_config_snapshot(task_id, overrides, _get_env_config())
     env_type = config["env_type"]
     if env_type == "local":
         return None
 
     effective_task_id = _resolve_container_task_id(task_id)
 
-    existing = get_active_env(effective_task_id)
+    def current_env():
+        if snapshot is None:
+            return get_active_env(effective_task_id)
+        return cached_env(snapshot, _active_environments, _last_activity, _env_lock,
+                          (effective_task_id, task_id))
+
+    existing = current_env()
     if existing is not None:
         with _env_lock:
             _last_activity[effective_task_id] = time.time()
@@ -221,7 +236,7 @@ def ensure_task_env(task_id: Optional[str] = None):
         task_lock = _creation_locks.setdefault(effective_task_id, threading.Lock())
 
     with task_lock:
-        existing = get_active_env(effective_task_id)
+        existing = current_env()
         if existing is not None:
             return existing
         try:
@@ -230,16 +245,15 @@ def ensure_task_env(task_id: Optional[str] = None):
                 timeout=config["timeout"], task_id=effective_task_id,
                 host_cwd=_resolve_task_host_cwd(config, task_id),
             )
-        except Exception as exc:  # noqa: BLE001 — best-effort bring-up
+        except Exception as exc:
             logger.warning(
                 "Lazy %s environment init failed for task %s: %s",
                 env_type, effective_task_id[:8], exc,
             )
             return None
 
-        with _env_lock:
-            _active_environments[effective_task_id] = new_env
-            _last_activity[effective_task_id] = time.time()
+        publish_env(snapshot, new_env, _active_environments, _last_activity,
+                    _env_lock, effective_task_id)
         logger.info(
             "%s environment lazily initialized for task %s",
             env_type, effective_task_id[:8],

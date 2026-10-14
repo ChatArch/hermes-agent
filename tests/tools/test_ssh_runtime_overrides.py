@@ -358,6 +358,7 @@ def test_execute_code_remote_keeps_followup_relative_operations_in_bound_cwd(mon
 
 def test_prompt_builder_uses_task_override_backend(monkeypatch):
     from agent import prompt_builder
+    from gateway.session_context import _SESSION_ID
     from tools import terminal_tool as tt
 
     monkeypatch.setenv("TERMINAL_ENV", "local")
@@ -376,9 +377,11 @@ def test_prompt_builder_uses_task_override_backend(monkeypatch):
             "ssh_host_key_policy": "strict",
         },
     )
+    token = _SESSION_ID.set("session-prompt")
     try:
         hints = prompt_builder.build_environment_hints()
     finally:
+        _SESSION_ID.reset(token)
         tt.clear_task_env_overrides("session-prompt")
 
     assert "Terminal backend: ssh" in hints

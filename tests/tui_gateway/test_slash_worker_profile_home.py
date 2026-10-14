@@ -1,12 +1,14 @@
 """Profile and argv propagation through the real slash worker constructor."""
 from types import SimpleNamespace
+import os
 import sys
 
 import pytest
 
 
 @pytest.mark.parametrize("scoped", [False, True])
-def test_slash_worker_uses_requested_profile_and_keeps_argv(tmp_path, monkeypatch, scoped):
+@pytest.mark.parametrize("provider", [None, "moa"])
+def test_slash_worker_uses_requested_profile_and_keeps_argv(tmp_path, monkeypatch, scoped, provider):
     from tui_gateway import server
 
     inherited = tmp_path / "default"
@@ -22,9 +24,14 @@ def test_slash_worker_uses_requested_profile_and_keeps_argv(tmp_path, monkeypatc
 
     monkeypatch.setattr(server.subprocess, "Popen", spawn)
     worker = server._SlashWorker("test-session", "test-model",
-                                 profile_home=str(requested) if scoped else None)
+                                 profile_home=str(requested) if scoped else None,
+                                 provider=provider)
     assert worker.proc is not None
     assert captured["env"]["HERMES_HOME"] == str(requested if scoped else inherited)
     assert captured["env"]["PATH"]
     assert captured["argv"][:3] == [sys.executable, "-m", "tui_gateway.slash_worker"]
-    assert captured["argv"][3:] == ["--session-key", "test-session", "--model", "test-model"]
+    expected = ["--session-key", "test-session", "--parent-pid", str(os.getpid()),
+                "--model", "test-model"]
+    if provider:
+        expected += ["--provider", provider]
+    assert captured["argv"][3:] == expected

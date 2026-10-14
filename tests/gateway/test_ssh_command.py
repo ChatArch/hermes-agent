@@ -525,7 +525,7 @@ async def test_ssh_test_unknown_backend_does_not_change_binding(monkeypatch):
     import gateway.run as gateway_run
     import chatarch_custom.gateway.commands as custom_commands
 
-    monkeypatch.setattr(gateway_run, "load_ssh_targets", lambda: [], raising=False)
+    monkeypatch.setattr(gateway_run, "load_ssh_targets", list, raising=False)
 
     runner = _runner()
     event = _event("/ssh test missing-host")

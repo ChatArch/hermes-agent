@@ -9,12 +9,13 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+_PDFTOPPM_TIMEOUT_SECONDS = 60
 
 def available_backends() -> list[str]:
     """Names of usable rasterizer backends, in preference order."""
     backends = []
     try:
-        import pypdfium2  # noqa: F401
+        import pypdfium2
         backends.append("pypdfium2")
     except ImportError:
         pass
@@ -59,6 +60,7 @@ def _via_pdfium(pdf_path: str, page: int, dpi: int, password: str | None):
 
 
 def _via_pdftoppm(pdf_path: str, page: int, dpi: int, password: str | None):
+    """Bound the single-page converter and never retain password-bearing timeout state."""
     from PIL import Image
     with tempfile.TemporaryDirectory() as tmp:
         prefix = str(Path(tmp) / "page")
@@ -66,7 +68,15 @@ def _via_pdftoppm(pdf_path: str, page: int, dpi: int, password: str | None):
         if password:
             cmd += ["-upw", password]
         cmd += [pdf_path, prefix]
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+        timed_out = False
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                                  timeout=_PDFTOPPM_TIMEOUT_SECONDS, check=False)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+        if timed_out:
+            # Raise after leaving the handler: hiding a chain would still retain its argv.
+            raise ValueError(f"pdftoppm timed out after {_PDFTOPPM_TIMEOUT_SECONDS} seconds")
         if proc.returncode != 0:
             raise ValueError(f"pdftoppm failed: {proc.stderr.strip()}")
         produced = sorted(Path(tmp).glob("page*.png"))

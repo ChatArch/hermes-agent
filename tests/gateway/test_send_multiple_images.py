@@ -121,7 +121,7 @@ class TestBaseDefaultLoop:
         assert a.sent_texts[0][1] == "⚠️ Couldn't deliver the image attachment."
 
 
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 class TestTelegramMultiImage:
@@ -178,7 +178,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 class TestDiscordMultiImage:
@@ -326,7 +326,7 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter
 
 
 class TestSlackMultiImage:
@@ -363,13 +363,12 @@ class TestSlackMultiImage:
 # ---------------------------------------------------------------------------
 
 
-from plugins.platforms.mattermost.adapter import MattermostAdapter  # noqa: E402
+from plugins.platforms.mattermost.adapter import MattermostAdapter
 
 
 class TestMattermostMultiImage:
     @pytest.fixture
     def adapter(self):
-        config = PlatformConfig(enabled=True, token="fake")
         # Minimal construction via object.__new__ to avoid full setup
         a = object.__new__(MattermostAdapter)
         a._base_url = "https://mm.example.com"
@@ -403,7 +402,7 @@ class TestMattermostMultiImage:
 # ---------------------------------------------------------------------------
 
 
-from plugins.platforms.email.adapter import EmailAdapter  # noqa: E402
+from plugins.platforms.email.adapter import EmailAdapter
 
 
 class TestEmailMultiImage:

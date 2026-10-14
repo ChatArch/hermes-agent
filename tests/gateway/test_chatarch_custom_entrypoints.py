@@ -82,6 +82,9 @@ def test_chatarch_custom_registry_exports_local_commands():
     assert resolve_command("t").name == "thread"
     assert resolve_command("tpl").name == "template"
     assert resolve_command("ssh").name == "ssh"
+    assert resolve_command("compress-local").name == "compress-local"
+    assert resolve_command("compact-local") is None
+    assert resolve_command("rescue-compress") is None
     assert local_gateway_handler_name("thread") == "_handle_thread_command"
     assert local_gateway_handler_name("template") == "_handle_template_command"
     assert local_gateway_handler_name("ssh") == "_handle_ssh_command"
@@ -126,6 +129,21 @@ async def test_ssh_reaches_cold_path_ssh_handler():
     runner._handle_ssh_command.assert_awaited_once_with(event)
     runner._handle_thread_command.assert_not_awaited()
     runner._handle_template_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_compress_local_reaches_typed_idle_path_with_no_llm_flag():
+    runner = _runner()
+    runner._handle_compress_command = AsyncMock(return_value="local compression handled")
+    event = _event("/compress-local")
+
+    result = await runner._handle_message(event)
+
+    assert result == "local compression handled"
+    runner._handle_compress_command.assert_awaited_once_with(event, local_fallback_only=True)
+    runner._handle_thread_command.assert_not_awaited()
+    runner._handle_template_command.assert_not_awaited()
+    runner._handle_ssh_command.assert_not_awaited()
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
