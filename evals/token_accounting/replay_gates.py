@@ -35,7 +35,6 @@ import argparse
 import hashlib
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import threading
@@ -273,10 +272,17 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
+    from hermes_cli._subprocess_compat import bounded_probe_run
+
+    identity = bounded_probe_run(["git", "rev-parse", "HEAD"], cwd=ROOT, timeout=5.0)
+    if identity is None or identity.returncode != 0:
+        print("Evaluation identity probe unavailable; no scenarios were started.", file=sys.stderr)
+        return 1
+    head = identity.stdout.strip()
     tmp = Path(tempfile.mkdtemp(prefix="ab-token-accounting-"))
     os.environ["HERMES_HOME"] = str(tmp / "home")
     (tmp / "home").mkdir(parents=True)
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False).stdout.strip()
+
     wire = _FakeChat()
     result: dict = {"checkout": str(ROOT), "head": head,
                     "compressor_sha256": hashlib.sha256(
