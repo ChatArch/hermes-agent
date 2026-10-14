@@ -13,6 +13,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
 from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, DEFAULT_VERCEL_IMAGE
 from hermes_cli.models import provider_label
 from hermes_cli.runtime_provider import resolve_requested_provider
@@ -20,6 +21,8 @@ from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_cli.status_auth import (  # renderers wired into _SECTIONS below
     _render_api_keys, _render_apikey_providers, _render_auth_providers, _render_nous_gateway)
 from hermes_constants import OPENROUTER_MODELS_URL
+
+_failure_logger = PrivateDiagnosticLogger(__name__)
 
 
 def check_mark(ok: bool) -> str:
@@ -143,7 +146,8 @@ def _load_ctx_config(ctx) -> None:
     """Load config.yaml into the shared context (fail-soft)."""
     try:
         ctx.config = load_config()
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Status configuration unavailable; retaining empty display context", exc_info=exc)
         ctx.config = {}
 
 
@@ -262,7 +266,8 @@ def _cron_summary() -> str:
         # that plain utf-8 json.load rejects.
         jobs = _load_json(jobs_file, "utf-8-sig").get("jobs", [])
         return f"{sum(1 for j in jobs if j.get('enabled', True))} active, {len(jobs)} total"
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Status job metadata unavailable; retaining unreadable display", exc_info=exc)
         return "(error reading jobs file)"
 
 
@@ -387,7 +392,8 @@ def _summary_row(label: str, probe, empty: str) -> None:
     """One summary row; a failing probe degrades only its own row."""
     try:
         values = list(dict.fromkeys(probe()))
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Status component probe unavailable; retaining unknown display", exc_info=exc)
         values = None
     _kv(label, "unknown" if values is None else ", ".join(values) or empty)
 
@@ -403,7 +409,8 @@ def _render_summary(ctx):
     try:
         running, text = _gateway_state()
         _kv_flag("Gateway:", running, text, text)
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Status gateway metadata unavailable; retaining unknown display", exc_info=exc)
         _kv("Gateway:", "unknown")
     _summary_row("Platforms:", _connected_platform_labels, "none configured")
     _kv("Jobs:", _cron_summary())

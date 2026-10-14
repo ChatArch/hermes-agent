@@ -17,7 +17,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
+
 logger = logging.getLogger(__name__)
+_failure_logger = PrivateDiagnosticLogger(__name__)
 
 LAYER_PROVIDER = "provider"
 LAYER_ENDPOINT = "endpoint"
@@ -110,7 +113,8 @@ def _api_key_env(provider: str) -> str:
 
         descriptor = provider_catalog_by_slug().get(provider.strip().lower())
         return descriptor.api_key_env_vars[0] if descriptor and descriptor.api_key_env_vars else ""
-    except Exception:  # pragma: no cover — advisory only
+    except Exception as exc:  # pragma: no cover — advisory only
+        _failure_logger.warning("Provider credential metadata unavailable; retaining unnamed key field", exc_info=exc)
         return ""
 
 
@@ -119,7 +123,8 @@ def _provider_label(provider: str) -> str:
         from hermes_cli.models import provider_label
 
         return provider_label(provider)
-    except Exception:  # pragma: no cover — advisory only
+    except Exception as exc:  # pragma: no cover — advisory only
+        _failure_logger.warning("Provider display metadata unavailable; retaining original identity", exc_info=exc)
         return provider
 
 
@@ -131,7 +136,8 @@ def auth_kind(provider: Optional[str]) -> str:
 
         descriptor = provider_catalog_by_slug().get((provider or "").strip().lower())
         return "oauth" if descriptor is not None and descriptor.tab == "accounts" else "api_key"
-    except Exception:  # pragma: no cover — advisory only
+    except Exception as exc:  # pragma: no cover — advisory only
+        _failure_logger.warning("Provider authentication metadata unavailable; retaining key classification", exc_info=exc)
         return "api_key"
 
 

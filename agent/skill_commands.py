@@ -9,12 +9,14 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from hermes_constants import display_hermes_home
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
 from agent.initiate_setup_prompt import HEADER as INITIATE_SETUP_HEADER
 from agent.prompt_cache_boundary import register_stable_prefix
 from agent.skill_preprocessing import load_skills_config as _load_skills_config, preprocess_skill_content
 from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
 
 logger = logging.getLogger(__name__)
+_failure_logger = PrivateDiagnosticLogger(__name__)
 
 # Multi-slot skill-command cache keyed by the full resolved identity
 # (_resolve_skill_commands_platform(), _resolve_skill_commands_home(),
@@ -265,7 +267,8 @@ def _missing_skill_label(identifier: str) -> str:
         from tools.skills_tool import skill_view
         from agent.skill_utils import normalize_skill_lookup_name
         payload = json.loads(skill_view(normalize_skill_lookup_name(identifier), preprocess=False))
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Skill lookup metadata unavailable; retaining original identifier", exc_info=exc)
         return identifier
     return ambiguous_skill_label(identifier, payload) or identifier
 

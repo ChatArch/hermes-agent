@@ -18,6 +18,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
+
+_failure_logger = PrivateDiagnosticLogger(__name__)
 
 _SKIP_PARTS = {".archive", ".hub", ".locks", "node_modules", ".git"}
 _USAGE_TS_KEYS = ("last_activity_at", "last_used_at", "last_viewed_at", "last_patched_at", "created_at")
@@ -88,7 +91,8 @@ def build_skill_nodes(skill_roots: list[tuple[str, Path]]) -> dict[str, SkillNod
     # name still classifies as its own source.
     try:
         from agent.skill_utils import is_external_skill_path
-    except Exception:
+    except Exception as exc:
+        _failure_logger.warning("Skill origin metadata unavailable; retaining root classification", exc_info=exc)
         is_external_skill_path = None  # type: ignore[assignment]
     for source, root in skill_roots:
         for skill_md in root.rglob("SKILL.md") if root.exists() else ():
