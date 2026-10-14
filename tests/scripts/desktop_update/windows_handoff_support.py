@@ -131,6 +131,70 @@ def _creation_time(pid: int) -> str:
     return f'{sign}{seconds}.{remainder:03d}'
 
 
+def _kernel_process_rows() -> list[tuple[int, str]]:
+    """Read process ids/names without starting PowerShell or consulting WMI."""
+    import ctypes
+    from ctypes import wintypes
+    from hermes_cli.update_lock import _windows_kernel32
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ('dwSize', wintypes.DWORD), ('cntUsage', wintypes.DWORD),
+            ('th32ProcessID', wintypes.DWORD), ('th32DefaultHeapID', ctypes.c_size_t),
+            ('th32ModuleID', wintypes.DWORD), ('cntThreads', wintypes.DWORD),
+            ('th32ParentProcessID', wintypes.DWORD), ('pcPriClassBase', ctypes.c_long),
+            ('dwFlags', wintypes.DWORD), ('szExeFile', ctypes.c_wchar * 260),
+        ]
+
+    kernel32 = _windows_kernel32()
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    for walk in (kernel32.Process32FirstW, kernel32.Process32NextW):
+        walk.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        walk.restype = wintypes.BOOL
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)
+    if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+        pytest.fail('Kernel process snapshot unavailable')
+    rows = []
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        found = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while found:
+            rows.append((int(entry.th32ProcessID), entry.szExeFile))
+            found = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+        if ctypes.get_last_error() != 18:  # ERROR_NO_MORE_FILES is the sole normal end.
+            pytest.fail('Kernel process enumeration did not complete')
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return rows
+
+
+def _select_protected_pid(rows, open_process, close_handle) -> int:
+    names = ('csrss.exe', 'smss.exe', 'wininit.exe', 'services.exe', 'lsass.exe', 'MsMpEng.exe')
+    for pid, name in rows:
+        if name not in names:
+            continue
+        full = limited = None
+        try:
+            full = open_process(0x0400, False, pid)
+            limited = open_process(0x1000, False, pid)
+        finally:
+            for handle in (full, limited):
+                if handle:
+                    close_handle(handle)
+        if limited and not full:
+            return pid
+    pytest.fail('No process grants only limited query rights')
+
+
+def _protected_pid() -> int:
+    from hermes_cli.update_lock import _windows_kernel32
+
+    kernel32 = _windows_kernel32()
+    return _select_protected_pid(_kernel_process_rows(), kernel32.OpenProcess, kernel32.CloseHandle)
+
+
 def _alive(pid: int) -> bool:
     return str(pid) in subprocess.run(['tasklist', '/FI', f'PID eq {pid}', '/NH'],
                                       capture_output=True, text=True, check=False).stdout
