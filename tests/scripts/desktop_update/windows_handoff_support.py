@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
+from datetime import datetime
 from functools import wraps
 import json
 import os
@@ -40,6 +41,45 @@ _TRACE_STEPS = frozenset({
     'old-desktop', 'spawn', 'wait-log', 'prepare',
 })
 
+_STAGE_LABELS = (
+    (re.compile(r'^(?:claimed|adopted|reclaiming stale) update marker\b'), 'claim'),
+    (re.compile(r'^hand-off start:'), 'start'),
+    (re.compile(r'^update marker names its custodian pid\b'), 'custodian'),
+    (re.compile(r'^process cwd set to install root:'), 'cwd'),
+    (re.compile(r'^running: python\b'), 'update'),
+    (re.compile(r'^hermes update exit code:'), 'exit'),
+    (re.compile(r'^removed update marker \(owned\)'), 'release'),
+)
+_STAGE_ORDER = {name: index for index, (_, name) in enumerate(_STAGE_LABELS)}
+_STAGE_TIMESTAMP = re.compile(r'^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:Z|[+-]\d\d:\d\d)) (.*)$')
+
+
+def _handoff_stage_spans(family: str, output: str) -> list[dict]:
+    """Measure adjacent, known PowerShell milestones; never retain their text."""
+    if family not in {'commit', 'marker'}:
+        return []
+    previous = None
+    spans = []
+    for line in output.splitlines():
+        match = _STAGE_TIMESTAMP.fullmatch(line)
+        if match is None:
+            continue
+        label = next((name for pattern, name in _STAGE_LABELS if pattern.search(match[2])), None)
+        if label is None:
+            continue
+        try:
+            stamp = datetime.fromisoformat(match[1])
+        except ValueError:
+            continue
+        if previous is not None:
+            old_label, old_stamp = previous
+            if _STAGE_ORDER[label] <= _STAGE_ORDER[old_label] or stamp < old_stamp:
+                continue
+            spans.append({'handoff_stage': f'{old_label}-to-{label}', 'family': family,
+                          'elapsed_s': int((stamp - old_stamp).total_seconds())})
+        previous = (label, stamp)
+    return spans
+
 
 def _phase_record(family: str, step: str, edge: str) -> None:
     # Flush straight to the per-file runner pipe; do not rely on pytest's
@@ -65,7 +105,16 @@ def trace_handoff_phase(function=None, *, family: str, step: str, _capture=None)
             with _capture.disabled() if _capture is not None else nullcontext():
                 _phase_record(family, step, 'enter')
                 try:
-                    return call(*args, **kwargs)
+                    result = call(*args, **kwargs)
+                    if step == 'handoff' and isinstance(result, tuple):
+                        output_index = {'commit': 1, 'marker': 2}.get(family)
+                        if output_index is not None and len(result) > output_index and isinstance(result[output_index], str):
+                            for record in _handoff_stage_spans(family, result[output_index]):
+                                try:
+                                    print(json.dumps(record), flush=True)
+                                except (OSError, ValueError):
+                                    break
+                    return result
                 finally:
                     _phase_record(family, step, 'exit')
         return traced
