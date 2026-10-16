@@ -336,12 +336,7 @@ class GatewayAgentCacheMixin:
         current = int(state.persistent.run_generation or 0)
         tokens = state.turn.lease_tokens
         for gen in [g for g in tokens if int(g) < current]:
-            token = tokens.pop(gen)
-            try:
-                registry.release(token)
-            except Exception:
-                logger.debug("Failed to release displaced turn lease gen %s for %s", gen, session_key,
-                             exc_info=True)
+            self._release_turn_lease(session_key, gen)
 
     def _held_turn_lease(self, session_key: str, run_generation: int):
         """Return ``(registry, lease_tokens)`` when ``session_key`` holds a lease token for
@@ -361,6 +356,13 @@ class GatewayAgentCacheMixin:
         if held is None:
             return False
         registry, tokens = held
+        state = self._peek_session_state(session_key)
+        worker_done = state.turn.lease_worker_done.get(run_generation)
+        if worker_done is not None and not worker_done.is_set():
+            state.turn.lease_release_pending.add(run_generation)
+            return False
+        state.turn.lease_worker_done.pop(run_generation, None)
+        state.turn.lease_release_pending.discard(run_generation)
         token = tokens.pop(run_generation)
         try:
             return registry.release(token)

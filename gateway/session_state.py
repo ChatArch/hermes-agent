@@ -31,6 +31,10 @@ class TurnState:
     # token for their own generation, so a displaced turn's unwind frees only its own lease and
     # never a successor's (an evicted turn and its replacement may both hold one briefly).
     lease_tokens: dict[int, Any] = field(default_factory=dict)
+    # A displaced turn keeps its local transcript fence until the executor has released
+    # the durable row lease. These survive clear() just like lease_tokens.
+    lease_worker_done: dict[int, Any] = field(default_factory=dict)
+    lease_release_pending: set[int] = field(default_factory=set)
 
     def clear(self) -> None:
         """Reset the per-turn slot.  The caller pops ``lease`` first to release it."""

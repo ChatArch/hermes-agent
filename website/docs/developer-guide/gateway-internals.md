@@ -280,7 +280,7 @@ tail), `all` (running updates + final raw output), `result` (final raw output on
 (final raw output only on non-zero exit), `off`.
 
 The watcher is armed on the gateway loop at registration time (`terminal_tool_background.py::
-_register_completion_watcher` → `run_notifications.py::arm_process_watcher`); `pending_watchers`
+_register_completion_watcher` → `run_notifications_watcher.py::arm_process_watcher`); `pending_watchers`
 is only the fallback for processes registered before the gateway serves (checkpoint recovery) or
 while it stops, drained at startup and post-turn. Agent-notify watchers send no user-facing
 receipt (the agent's next turn is the report) unless the launching turn is still running at exit
