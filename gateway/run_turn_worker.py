@@ -88,4 +88,3 @@ class GatewayTurnWorkerMixin:
             self._run_in_executor_with_context(_run_sync_with_timeout_lifecycle)
         )
         return worker
-

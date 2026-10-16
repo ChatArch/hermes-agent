@@ -360,7 +360,10 @@ class GatewayAgentCacheMixin:
         worker_done = state.turn.lease_worker_done.get(run_generation)
         if worker_done is not None and not worker_done.is_set():
             state.turn.lease_release_pending.add(run_generation)
-            return False
+            # The worker may exit after the first read but before pending is published.
+            # Recheck after publication so either this call or its callback owns release.
+            if not worker_done.is_set():
+                return False
         state.turn.lease_worker_done.pop(run_generation, None)
         state.turn.lease_release_pending.discard(run_generation)
         token = tokens.pop(run_generation)
