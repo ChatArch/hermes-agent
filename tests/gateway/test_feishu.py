@@ -1846,7 +1846,7 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_send_thread_metadata_without_reply_anchor_falls_back_to_chat_id(self):
+    def test_send_thread_metadata_without_reply_anchor_fails_closed(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
@@ -1877,10 +1877,8 @@ class TestAdapterBehavior(unittest.TestCase):
             )
         )
 
-        self.assertTrue(result.success)
-        self.assertEqual(captured["request"].receive_id_type, "chat_id")
-        self.assertEqual(captured["request"].request_body.receive_id, "oc_chat")
-        self.assertEqual(result.message_id, "om_cron")
+        self.assertFalse(result.success)
+        self.assertNotIn("request", captured)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_retries_transient_failure(self):
