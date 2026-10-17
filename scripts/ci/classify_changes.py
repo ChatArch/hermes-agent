@@ -334,6 +334,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_platform/resolver/__init__.py",  # update_cmd_commit's interpreter lookup
     "hermes_platform/resolver/base.py",
     "hermes_platform/resolver/core.py",
+    "hermes_platform/resolver/git.py",  # relocated PortableGit self-heal used by update_cmd_git
     "agent/curator.py",
     "plugins/memory/__init__.py",
     "tools/checkpoint_maintenance.py",
