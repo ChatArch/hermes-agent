@@ -5,6 +5,37 @@ import json
 from tests.scripts.desktop_update import windows_handoff_support as support
 
 
+def test_sharded_handoff_traces_owner_helpers_and_restores_aliases(monkeypatch, capsys):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    result = (0, "")
+    owner = SimpleNamespace(_finish=lambda: result)
+
+    def handoff():
+        return owner._finish()
+
+    owner._handoff = handoff
+    module = SimpleNamespace(
+        __name__="tests.scripts.desktop_update.test_desktop_update_windows_commit_watchdog",
+        _HANDOFF_TRACE_OWNER=owner, _handoff=handoff,
+    )
+    capture = SimpleNamespace(disabled=nullcontext)
+    request = SimpleNamespace(module=module, getfixturevalue=lambda _name: capture)
+    original_finish = owner._finish
+
+    with support.instrument_handoff_phases(request, monkeypatch):
+        assert module._handoff() is result
+
+    assert owner._finish is original_finish
+    assert module._handoff is handoff
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [(r["handoff_phase"], r["edge"]) for r in rows] == [
+        ("case", "enter"), ("handoff", "enter"), ("finish", "enter"),
+        ("finish", "exit"), ("handoff", "exit"), ("case", "exit"),
+    ]
+
+
 def test_stage_timings_use_only_fixed_labels_and_elapsed_seconds():
     output = "\n".join([
         "2026-10-14T10:00:00Z claimed update marker (private path)",

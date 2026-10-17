@@ -5,8 +5,8 @@ import subprocess
 import pytest
 
 from tests.scripts.desktop_update import windows_handoff_support as support
-from tests.scripts.desktop_update import test_desktop_update_windows_marker as marker
-from tests.scripts.desktop_update import test_desktop_update_windows_commit_outcome as outcome
+from tests.scripts.desktop_update import windows_marker_support as marker
+from tests.scripts.desktop_update import windows_commit_support as outcome
 
 
 class OwnedProcess:

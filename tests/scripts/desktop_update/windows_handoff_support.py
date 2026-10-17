@@ -36,6 +36,16 @@ _TRACE_MODULES = {
         ('_creation_time', 'claim-clock'), ('_wait_for_log', 'wait-log'),
     )),
 }
+_TRACE_MODULES.update(dict.fromkeys((
+    'test_desktop_update_windows_marker_bodies',
+    'test_desktop_update_windows_marker_bridge',
+    'test_desktop_update_windows_marker_custody',
+), _TRACE_MODULES['test_desktop_update_windows_marker']))
+_TRACE_MODULES.update(dict.fromkeys((
+    'test_desktop_update_windows_commit_receipts',
+    'test_desktop_update_windows_commit_custody',
+    'test_desktop_update_windows_commit_watchdog',
+), _TRACE_MODULES['test_desktop_update_windows_commit_outcome']))
 _TRACE_STEPS = frozenset({
     'case', 'handoff', 'fixture', 'finish', 'claim-clock', 'legacy-reader', 'result',
     'old-desktop', 'spawn', 'wait-log', 'prepare',
@@ -131,10 +141,17 @@ def instrument_handoff_phases(request, monkeypatch):
         yield
         return
     family, helpers = spec
+    owner = getattr(module, '_HANDOFF_TRACE_OWNER', module)
     capture = request.getfixturevalue('capfd')
     with monkeypatch.context() as scoped, capture.disabled():
         for name, step in helpers:
-            scoped.setattr(module, name, trace_handoff_phase(getattr(module, name), family=family, step=step, _capture=capture))
+            target = owner if hasattr(owner, name) else module
+            if not hasattr(target, name):
+                continue  # This protocol group does not exercise that optional helper.
+            traced = trace_handoff_phase(getattr(target, name), family=family, step=step, _capture=capture)
+            scoped.setattr(target, name, traced)
+            if target is not module and hasattr(module, name):
+                scoped.setattr(module, name, traced)
         _phase_record(family, 'case', 'enter')
         try:
             yield

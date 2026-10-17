@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.scripts.desktop_update import test_desktop_update_windows_commit_outcome as outcome
+from tests.scripts.desktop_update import windows_commit_support as outcome
+from tests.scripts.desktop_update import test_desktop_update_windows_commit_custody as custody
 
 
 class StalledHandoff:
@@ -117,10 +118,10 @@ def test_r6_release_ownership_survives_observer_preemption(monkeypatch, tmp_path
 
     monkeypatch.setattr(Path, "touch", touch_then_pause_observer)
     monkeypatch.setattr(outcome.subprocess, "Popen", lambda argv, **_kwargs: Holder(argv))
-    monkeypatch.setattr(outcome, "_handoff", fake_handoff)
+    monkeypatch.setattr(custody, "_handoff", fake_handoff)
     if pause_before_publish:
         with pytest.raises(AssertionError, match="never entered the checkout-lock release wait"):
-            outcome.test_result_finished_at_is_stamped_after_the_r6_release_wait(tmp_path)
+            custody.test_result_finished_at_is_stamped_after_the_r6_release_wait(tmp_path)
     else:
-        outcome.test_result_finished_at_is_stamped_after_the_r6_release_wait(tmp_path)
+        custody.test_result_finished_at_is_stamped_after_the_r6_release_wait(tmp_path)
     assert observed_main_cleanup.is_set()
