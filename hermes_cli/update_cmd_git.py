@@ -577,19 +577,22 @@ def _portable_git_candidates() -> list:
 
 
 def _locate_real_git() -> Optional[Path]:
-    """Find a real Git-for-Windows ``git-core/git.exe`` (standard locations + managed PortableGit) that runs
-    without the trampoline guard. None when nothing suits — callers keep the broken command and let the
-    fetch-failure ZIP fallback handle it. A failed probe (None) disqualifies a candidate like a guard hit.
+    """Find a real Git-for-Windows ``git-core/git.exe`` (standard locations, managed PortableGit,
+    or beside a relocated PATH launcher) that runs without the trampoline guard. None when nothing
+    suits — callers keep the broken command and let the fetch-failure ZIP fallback handle it.
+    A failed probe (None) disqualifies a candidate like a guard hit.
 
     The trampoline symptom is PATH-level: ``bin\\git.exe`` / ``cmd\\git.exe`` (both ~46KB shims) fail to
     re-exec git-core, while the real binary at ``mingw64\\libexec\\git-core\\git.exe`` (≈4.4MB) works when
     invoked directly (#87876).
     """
+    from hermes_platform.resolver.git import windows_git_core_candidates
+
     candidates = [
         Path(base) / "Git" / arch / "libexec" / "git-core" / "git.exe"
         for base in (r"C:\Program Files", r"C:\Program Files (x86)")
         for arch in ("clangarm64", "mingw64", "mingw32")
-    ] + _portable_git_candidates()
+    ] + _portable_git_candidates() + windows_git_core_candidates()
     return next((c for c in candidates if c.exists() and _probe_fork_bomb([str(c)]) is False), None)
 
 
