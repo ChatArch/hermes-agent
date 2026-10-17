@@ -56,6 +56,13 @@ def test_jobs_only_read_declared_dependencies():
     assert not violations, "workflow job graph:\n" + "\n".join(violations)
 
 
+def test_code_health_checkout_includes_ancestry_used_by_adoption_gate():
+    job = _loaded()["lint.yml"]["jobs"]["code-health"]
+    checkout = next(step for step in job["steps"] if "actions/checkout@" in step.get("uses", ""))
+    assert any("scripts.ci.health_adoption" in step.get("run", "") for step in job["steps"])
+    assert str(checkout["with"]["fetch-depth"]) == "0"
+
+
 def test_no_workflow_runs_from_a_tag_push():
     violations = []
     for filename, workflow in _loaded().items():

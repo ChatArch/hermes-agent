@@ -4316,8 +4316,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 key_msg_type=resolved_message_type, key_payload=key_payload,
                 media_tag={"tag": "media", "file_key": file_key, "file_name": display_name},
             )
-            # Audio may fail with 99992402 under thread_id routing: retry as a reply to the
-            # thread's last message, then fall back to a plain chat_id send.
+            # Audio may fail with 99992402 under thread routing: retry against the
+            # thread's last message, but never send a thread delivery to the parent chat.
             if (not caption
                     and not self._response_succeeded(message_response)
                     and getattr(message_response, "code", None) == 99992402
@@ -4331,11 +4331,6 @@ class FeishuAdapter(BasePlatformAdapter):
                     logger.info("[Feishu] Audio: retrying via reply API in thread")
                     message_response = await self._feishu_send_with_retry(
                         chat_id=chat_id, msg_type="audio", payload=payload, reply_to=thread_msg_id, metadata=metadata,
-                    )
-                if not self._response_succeeded(message_response):
-                    logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
-                    message_response = await self._feishu_send_with_retry(
-                        chat_id=chat_id, msg_type="audio", payload=payload, reply_to=None, metadata=None,
                     )
             return self._finalize_send_result(message_response, "file send failed")
         except Exception as exc:
@@ -4385,16 +4380,17 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
 
-        # Feishu create-message does not accept thread_id as receive_id_type.
-        # Cron deliveries can have a target thread_id but no reply anchor; in
-        # that case send to the parent chat instead of failing validation.
-        _thread_id = (metadata or {}).get("thread_id")
-        if _thread_id:
-            logger.warning(
-                "[Feishu] Thread metadata for chat %s has no reply anchor; "
-                "sending to chat_id instead of invalid thread_id create",
-                chat_id,
-            )
+        # Feishu create-message has no thread destination. Resolve a live anchor or fail
+        # so callers can retry; creating in chat_id would leak a thread notice to the DM.
+        if thread_id:
+            latest = await self._fetch_last_message_in_thread(thread_id)
+            if latest:
+                body = self._build_reply_message_body(
+                    content=payload, msg_type=msg_type, reply_in_thread=True, uuid_value=str(uuid.uuid4()),
+                )
+                request = self._build_reply_message_request(latest, body)
+                return await self._run_blocking(self._client.im.v1.message.reply, request)
+            raise ValueError("Feishu thread delivery requires a reply anchor")
 
         receive_id = chat_id
         receive_id_type = "chat_id"

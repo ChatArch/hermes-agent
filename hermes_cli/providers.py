@@ -53,6 +53,10 @@ HERMES_OVERLAYS: dict[str, HermesOverlay] = {
                                    base_url_override="https://api.minimax.io/anthropic"),
     "minimax-cn": HermesOverlay(transport="anthropic_messages", base_url_env_var="MINIMAX_CN_BASE_URL"),
     "deepseek": HermesOverlay(base_url_env_var="DEEPSEEK_BASE_URL"),
+    # Keep the bundled profile's credential/endpoint contract when the catalog adds this provider.
+    "commandcode": HermesOverlay(extra_env_vars=("COMMANDCODE_API_KEY", "CMD_API_KEY"),
+                                 base_url_override="https://api.commandcode.ai/provider/v1",
+                                 base_url_env_var="COMMANDCODE_BASE_URL"),
     "alibaba": HermesOverlay(base_url_env_var="DASHSCOPE_BASE_URL"),
     "alibaba-coding-plan": HermesOverlay(base_url_env_var="ALIBABA_CODING_PLAN_BASE_URL"),
     "vercel": HermesOverlay(is_aggregator=True),

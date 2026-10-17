@@ -24,6 +24,7 @@ from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
+from gateway.run_notifications_watcher import GatewayProcessWatcherMixin
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -73,8 +74,6 @@ def _update_output_tail(output: str, limit: int) -> str:
 
 
 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
-# Routing fields copied verbatim from a process watcher onto its synthetic completion event.
-_WATCHER_ROUTE_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id", "user_name")
 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 # Storage causes that clear on their own (one session's lease/compression, not the store): the
 # home-channel notice appends the operator restart tail for every OTHER cause.
@@ -122,7 +121,7 @@ def _raw_process_event_session_id(evt: dict) -> str:
     return str(evt.get("origin_session_id") or session_key or "").strip()
 
 
-class GatewayNotificationsMixin:
+class GatewayNotificationsMixin(GatewayProcessWatcherMixin):
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
 
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
@@ -1278,6 +1277,28 @@ class GatewayNotificationsMixin:
             return _transport.adapter
         return next((a for p, a in adapters.items() if p.value == platform_name), None)
 
+    @staticmethod
+    async def _feishu_thread_reply_anchor(source, adapter) -> Optional[str]:
+        """Use the originating message, or resolve a live message in its restored thread."""
+        anchor = getattr(source, "message_id", None)
+        if anchor:
+            return str(anchor)
+        fetch = getattr(type(adapter), "_fetch_last_message_in_thread", None)
+        if callable(fetch):
+            anchor = await fetch(adapter, source.thread_id)
+            if anchor:
+                return str(anchor)
+        return None
+
+    @staticmethod
+    def _feishu_thread_route_matches(source, evt: dict) -> bool:
+        """Every available thread claim must agree with the restored origin."""
+        from gateway.run import _parse_session_key
+        parsed = _parse_session_key(str(evt.get("session_key") or "")) or {}
+        actual = str(getattr(source, "thread_id", None) or "")
+        return all(not claim or str(claim) == actual
+                   for claim in (evt.get("thread_id"), parsed.get("thread_id")))
+
     async def _inject_watch_notification(
         self, synth_text: str, evt: dict, *, raise_not_accepted: bool = False,
     ) -> Optional[bool]:
@@ -1320,6 +1341,16 @@ class GatewayNotificationsMixin:
             raw_sid = str(evt.get("origin_session_id") or "").strip() or str(source.chat_id or "")
             return await self._self_post_api_server(adapter, synth_text, raw_sid, evt)
         try:
+            feishu_anchor = None
+            if platform_name == Platform.FEISHU.value:
+                if not self._feishu_thread_route_matches(source, evt):
+                    logger.warning("Deferring Feishu notification with conflicting restored thread route")
+                    return False
+                if source.thread_id:
+                    feishu_anchor = await self._feishu_thread_reply_anchor(source, adapter)
+                    if not feishu_anchor:
+                        logger.warning("Deferring Feishu thread notification without a reply anchor")
+                        return False
             metadata = {"notification_origin": "process_registry_synthetic"}
             synth_text = _mark_internal_notification(synth_text)
             session_key = str(evt.get("session_key") or "").strip()
@@ -1347,7 +1378,7 @@ class GatewayNotificationsMixin:
                 source = replace_source(source, message_id=None)
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
-                metadata=metadata,
+                metadata=metadata, reply_to_message_id=feishu_anchor,
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
@@ -1963,180 +1994,3 @@ class GatewayNotificationsMixin:
         source = await asyncio.to_thread(self._build_process_event_source, watcher)
         adapter = self._resolve_injection_adapter(platform_name, source)
         return session_key in (getattr(adapter, "_active_sessions", None) or {})
-
-    async def _send_watcher_message(self, platform_name: str, chat_id, thread_id, message_text: str, watcher: dict) -> None:
-        from gateway.run import _non_conversational_metadata
-        source = await asyncio.to_thread(self._build_process_event_source, watcher)
-        adapter = self._resolve_injection_adapter(platform_name, source)
-        if adapter and chat_id:
-            with _log_suppressed(logging.ERROR, "Watcher delivery error: %s"):
-                send_meta = {"thread_id": thread_id} if thread_id else None
-                await adapter.send(
-                    chat_id, message_text, metadata=_non_conversational_metadata(send_meta, platform=platform_name),
-                )
-
-    @staticmethod
-    def _build_process_completion_event(watcher: dict, session, session_id: str) -> dict:
-        """Build the synthetic ``completion`` event for an agent-notify watcher."""
-        from gateway.run import _redact_gateway_user_facing_secrets
-        from agent.redact import redact_terminal_output
-        from tools.ansi_strip import strip_ansi
-        from tools.process_registry import transform_process_output
-        _command = getattr(session, "command", "") or ""
-        _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
-        _raw = transform_process_output(_raw, command=_command, returncode=session.exit_code,
-                                        task_id=getattr(session, "task_id", "") or "") if _raw else _raw
-        _raw = redact_terminal_output(_raw, _command)
-        # Keep the last ~2000 chars snapped to a line boundary, with a marker when cut.
-        _LIMIT = 2000
-        # Truncate at line boundaries so notifications never start mid-line (fixes #23284). Keep the last
-        # ~2000 chars but snap to the nearest preceding newline, then prepend a truncation marker when
-        # output was cut.
-        if len(_raw) > _LIMIT:
-            _tail = _raw[-_LIMIT:]
-            _nl = _tail.find("\n")
-            _tail = _tail[_nl + 1:] if _nl != -1 else _tail
-            _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
-        else:
-            _out = _raw
-        return {
-            "type": "completion",
-            "session_id": session_id,
-            **{k: watcher.get(k, "") for k in _WATCHER_ROUTE_FIELDS},
-            "message_id": str(watcher.get("message_id") or "").strip() or None,
-            "started_at": getattr(session, "started_at", None),
-            "command": _redact_gateway_user_facing_secrets(_command),
-            "exit_code": session.exit_code,
-            "completion_reason": getattr(session, "completion_reason", "exited"),
-            "termination_source": getattr(session, "termination_source", ""),
-            "output": _redact_gateway_user_facing_secrets(_out),
-            # Spawning session-db id: lets pre-flight drop this completion if the user /new'd first.
-            "parent_session_id": (
-                watcher.get("parent_session_id") or getattr(session, "parent_session_id", "") or ""
-            ),
-        }
-
-    def _format_process_final_message(self, session_id: str, session, notify_mode: str) -> str:
-        """Human-facing completion message. Every mode shares the one-line status header; the
-        raw-output modes (all/result/error) append the bounded output tail under it instead of the
-        old bracketed ``[Background process proc_… finished~ …]`` debug wrapper (#54266)."""
-        from gateway.run import _format_concise_process_notification, _redact_gateway_user_facing_secrets
-        new_output = self._redacted_output_tail(session, 1000)
-        _started = getattr(session, "started_at", None)
-        _dur = max(0.0, time.time() - _started) if isinstance(_started, (int, float)) else None
-        command = _redact_gateway_user_facing_secrets(getattr(session, "command", "") or "")
-        if notify_mode == "concise":
-            return _format_concise_process_notification(session_id, command, session.exit_code, new_output,
-                                                        duration_seconds=_dur)
-        header = _format_concise_process_notification(session_id, command, session.exit_code, "", duration_seconds=_dur)
-        return t("gateway.background.final_output", header=header, output=new_output.strip()) if new_output.strip() else header
-
-    def _format_process_running_message(self, session) -> str:
-        from gateway.run import _redact_gateway_user_facing_secrets, _shorten_command_for_display
-        new_output = self._redacted_output_tail(session, 500)
-        short_cmd = _shorten_command_for_display(_redact_gateway_user_facing_secrets(getattr(session, "command", "") or ""))
-        header = t("gateway.background.still_running") + (f" — `{short_cmd}`" if short_cmd else "")
-        return t("gateway.background.recent_output", header=header, output=new_output.strip()) if new_output.strip() else header
-
-    def arm_process_watcher(self, watcher: dict) -> bool:
-        """Start ``_run_process_watcher`` for a watcher registered mid-turn, from the agent's
-        tool thread. Waiting for the post-turn drain leaves a process that finishes while its
-        launching turn is still running with no watcher at all (#112033). False = the gateway
-        is not serving (startup, shutdown): the caller keeps the descriptor in
-        ``pending_watchers`` for the startup / post-turn drain."""
-        loop = getattr(self, "_gateway_loop", None)
-        if not getattr(self, "_running", False) or loop is None or not loop.is_running():
-            return False
-        from agent.async_utils import safe_schedule_threadsafe
-        future = safe_schedule_threadsafe(
-            self._run_process_watcher(watcher), loop, logger=logger,
-            log_message="Live process watcher arming failed",
-        )
-        return future is not None
-
-    async def _run_process_watcher(self, watcher: dict) -> None:
-        """Poll a background process and push updates until it exits. Mode
-        (``display.background_process_notifications``): concise (default one-liner; failures append
-        the output tail) / all (running updates + final raw) / result (final raw) / error (final raw
-        if exit != 0) / off."""
-        from tools.process_registry import process_registry
-        from tools.process_registry_notifications import format_process_notification
-        session_id = watcher["session_id"]
-        interval = watcher["check_interval"]
-        platform_name = watcher.get("platform", "")
-        chat_id = watcher.get("chat_id", "")
-        thread_id = watcher.get("thread_id", "")
-        agent_notify = watcher.get("notify_on_complete", False)
-        # The mode belongs to the profile that started the process; recovered watchers run in the
-        # root context, so resolve it under the owning profile's scope (no-op for the default).
-        async with self._completion_event_scope(watcher):
-            notify_mode = self._load_background_notifications_mode()
-        logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
-                      session_id, interval, notify_mode, agent_notify)
-        silent = notify_mode == "off" and not agent_notify
-        last_output_len = 0
-        while True:
-            await asyncio.sleep(interval)
-            session = process_registry.get(session_id)
-            if session is None:
-                break
-            if silent:
-                # Still wait for the process to exit so we can log it, but don't push any messages.
-                if session.exited:
-                    break
-                continue
-            current_output_len = len(session.output_buffer)
-            has_new_output = current_output_len > last_output_len
-            last_output_len = current_output_len
-            if session.exited:
-                # Agent-notify: inject a synthetic message unless the agent already consumed the result via
-                # wait/log (poll() is read-only and deliberately does NOT mark consumed).
-                if agent_notify and not process_registry.is_completion_consumed(session_id):
-                    completion_evt = self._build_process_completion_event(watcher, session, session_id)
-                    synth_text = format_process_notification(completion_evt)
-                    if not synth_text:
-                        break
-                    # Captured before injection: afterwards the key is busy either way (the injected
-                    # turn itself installs the guard).
-                    turn_busy = await self._launching_turn_active(platform_name, watcher)
-                    delivered = await self._enqueue_process_completion_notification(synth_text, completion_evt)
-                    if delivered is False:
-                        # The process remains terminal; retry after failed adapter injection instead
-                        # of suppressing the result.
-                        continue
-                    # The agent normally reports the result itself, so the chat gets no separate receipt.
-                    # While the launching turn is still running the injection only queues a follow-up, and
-                    # the chat would stay mute for as long as that turn lasts (#112033): send the concise
-                    # receipt now.
-                    if turn_busy and (notify_mode in {"concise", "all", "result"} or (
-                        notify_mode == "error" and session.exit_code not in {0, None}
-                    )):
-                        message_text = self._format_process_final_message(session_id, session, "concise")
-                        await self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher)
-                    break
-                # Text-only notification; skip when already consumed via wait/log (the agent_notify branch
-                # FALLS THROUGH here, hence the re-check).
-                if process_registry.is_completion_consumed(session_id):
-                    logger.debug(
-                        "Process watcher: completion for %s already consumed "
-                        "via wait/log — skipping raw notification (#65379)", session_id,
-                    )
-                    break
-                if notify_mode in {"concise", "all", "result"} or (
-                    notify_mode == "error" and session.exit_code not in {0, None}
-                ):
-                    message_text = self._format_process_final_message(session_id, session, notify_mode)
-                    from gateway.warning_notifications import present_notification
-                    async with self._completion_event_scope(watcher):
-                        # Non-zero exit is the automatic diagnostic; a clean completion is the requested result.
-                        await present_notification(
-                            lambda: self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher),
-                            platform=platform_name, diagnostic=session.exit_code not in {0, None})
-                break
-            elif has_new_output and notify_mode == "all" and not agent_notify:
-                # New output — deliver a status update (only in "all" mode; agent_notify watchers
-                # only care about completion).
-                await self._send_watcher_message(
-                    platform_name, chat_id, thread_id, self._format_process_running_message(session), watcher,
-                )
-        logger.debug("Process watcher ended%s: %s", " (silent)" if silent else "", session_id)

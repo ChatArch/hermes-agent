@@ -36,6 +36,7 @@ from gateway.session import (
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
+from gateway.run_turn_worker import GatewayTurnWorkerMixin
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -165,7 +166,7 @@ def hygiene_no_commit_reason(agent) -> str:
     return "in-place commit did not complete"
 
 
-class GatewayTurnMixin:
+class GatewayTurnMixin(GatewayTurnWorkerMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
     def _resolve_session_agent_runtime(
@@ -3441,73 +3442,6 @@ class GatewayTurnMixin:
             except Exception:
                 return False
         return False
-
-    def _run_agent_start_turn_worker(self, turn_ctx: TurnContext, run_sync: Callable[[], Any]) -> GatewayRunner._RunAgentWorker:
-        """Schedule ``run_sync`` on the executor plus the inactivity watchdog thread.
-
-        *Inactivity* timeout (agent.gateway_timeout / HERMES_AGENT_TIMEOUT, env wins; 0 = unlimited),
-        not wall-clock. The daemon watchdog is independent of asyncio: cgroup memory reclaim can
-        starve the loop that runs the normal timeout poll."""
-        from gateway.run import _float_env, _watch_gateway_turn_inactivity
-        from tools.process_registry import process_registry
-        agent_holder, session_key, run_generation = turn_ctx.agent_holder, turn_ctx.session_key, turn_ctx.run_generation
-        _agent_timeout, _agent_warning = (
-            v if v > 0 else None
-            for v in (_float_env("HERMES_AGENT_TIMEOUT", 1800), _float_env("HERMES_AGENT_TIMEOUT_WARNING", 900))
-        )
-
-        # background=true processes survive a turn: reap only children created by THIS turn on timeout.
-        _turn_task_id = turn_ctx.session_id or ""
-        # The daemon watchdog is independent of asyncio: cgroup memory reclaim may starve the event loop
-        # that runs the normal timeout poll, but it need not also postpone cleanup until the loop recovers
-        # (#76115).
-        _turn_process_baseline = process_registry.snapshot_running_ids(_turn_task_id)
-        turn_ctx.process_task_id = _turn_task_id
-        turn_ctx.process_baseline = _turn_process_baseline
-        # task_id is session-scoped: gate the reap on this claim still being current so a replacement
-        # turn's fresh process isn't killed by this turn's stale baseline.
-        worker = self._RunAgentWorker(
-            agent_timeout=_agent_timeout, agent_warning=_agent_warning, task_id=_turn_task_id,
-            process_baseline=_turn_process_baseline, worker_done=threading.Event(),
-            timeout_fired=threading.Event(), cleanup_lock=threading.Lock(),
-            is_current=(
-                (lambda: self._is_session_run_current(session_key, run_generation))
-                if run_generation is not None
-                else (lambda: True)
-            ),
-        )
-
-        def _run_sync_with_timeout_lifecycle():
-            try:
-                return run_sync()
-            finally:
-                worker.worker_done.set()
-                # `.turn.agent` stays reachable until the *next* turn is claimed; clearing the
-                # ownership markers now means a /stop on the finished turn no longer reaps background
-                # work it left running.
-                # `.turn.agent` on the session state is only reset to _AGENT_PENDING_SENTINEL when the
-                # *next* turn is claimed (see _session_state(...).turn.agent = ... at claim time), so a
-                # stale reference to this exact agent instance stays reachable from
-                # _interrupt_and_clear_session() until then. See #76115.
-                _finished_agent = agent_holder[0] if agent_holder else None
-                if _finished_agent is not None:
-                    _finished_agent._gateway_turn_process_task_id = ""
-                    _finished_agent._gateway_turn_process_baseline = frozenset()
-
-        if _agent_timeout is not None:
-            threading.Thread(
-                target=_watch_gateway_turn_inactivity,
-                kwargs={
-                    "agent_holder": agent_holder, "timeout": _agent_timeout, "poll_interval": 5.0,
-                    **self._reaper_kwargs(worker),
-                },
-                name=f"gateway-turn-watchdog-{_turn_task_id[:12]}",
-                daemon=True,
-            ).start()
-        worker.executor_task = asyncio.ensure_future(
-            self._run_in_executor_with_context(_run_sync_with_timeout_lifecycle)
-        )
-        return worker
 
     @staticmethod
     def _reaper_kwargs(worker: GatewayRunner._RunAgentWorker) -> dict:

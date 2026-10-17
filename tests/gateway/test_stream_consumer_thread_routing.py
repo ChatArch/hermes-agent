@@ -110,9 +110,8 @@ class TestFeishuFallbackThreadRouting:
     """Verify FeishuAdapter._send_raw_message avoids invalid thread creates."""
 
     @pytest.mark.asyncio
-    async def test_create_falls_back_to_chat_id_without_reply_anchor(self):
-        """When reply_to=None and metadata has thread_id, message.create
-        should target the parent chat because Feishu has no thread_id receive type."""
+    async def test_thread_without_reply_anchor_never_creates_in_parent_chat(self):
+        """A thread destination without an anchor cannot use Feishu message.create."""
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         # We test the _send_raw_message method directly by mocking the client
@@ -130,6 +129,7 @@ class TestFeishuFallbackThreadRouting:
         adapter._client = mock_client
         adapter._build_create_message_body = FeishuAdapter._build_create_message_body
         adapter._build_create_message_request = FeishuAdapter._build_create_message_request
+        adapter._fetch_last_message_in_thread = AsyncMock(return_value=None)
         # _send_raw_message routes blocking SDK calls through _run_blocking
         # (adapter-owned executor). On a MagicMock(spec=...) that method is
         # auto-mocked and would swallow the real call, so wire a passthrough.
@@ -139,36 +139,17 @@ class TestFeishuFallbackThreadRouting:
 
         # Call _send_raw_message with reply_to=None and thread_id in metadata
         import json
-        await FeishuAdapter._send_raw_message(
-            adapter,
-            chat_id="oc_main_chat",
-            msg_type="text",
-            payload=json.dumps({"text": "hello"}),
-            reply_to=None,
-            metadata={"thread_id": "omt_topic_abc"},
-        )
-
-        # Verify message.create was called (not message.reply)
-        mock_client.im.v1.message.create.assert_called_once()
-
-        # The request should fall back to the parent chat_id, not the thread_id.
-        call_args = mock_client.im.v1.message.create.call_args[0][0]
-        # Lark SDK builder exposes .body; the in-tree fallback exposes .request_body.
-        # The contributor's branch had the lark SDK installed, the test environment
-        # may not -- handle both shapes.
-        body = getattr(call_args, "body", None) or getattr(call_args, "request_body", None)
-        assert body is not None, "request has neither .body nor .request_body"
-        receive_id = getattr(body, "receive_id", None)
-        if receive_id is None and isinstance(body, str):
-            import json as _json
-            receive_id = _json.loads(body).get("receive_id")
-        assert receive_id == "oc_main_chat", (
-            f"Expected receive_id='oc_main_chat', got '{receive_id}'"
-        )
-        receive_id_type = getattr(call_args, "receive_id_type", None)
-        assert receive_id_type == "chat_id", (
-            f"Expected receive_id_type='chat_id', got '{receive_id_type}'"
-        )
+        with pytest.raises(ValueError, match="reply anchor"):
+            await FeishuAdapter._send_raw_message(
+                adapter,
+                chat_id="oc_main_chat",
+                msg_type="text",
+                payload=json.dumps({"text": "hello"}),
+                reply_to=None,
+                metadata={"thread_id": "omt_topic_abc"},
+            )
+        mock_client.im.v1.message.create.assert_not_called()
+        mock_client.im.v1.message.reply.assert_not_called()
 
 
 class TestFallbackResendThreading:

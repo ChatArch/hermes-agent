@@ -18,6 +18,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner, _parse_session_key
 from gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER
+from gateway.platforms.base import SendResult
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +88,212 @@ def _watch_event(session_id="proc_watch", thread_id="42"):
         "command": "build",
         "output": "READY\n",
     }
+
+
+@pytest.mark.asyncio
+async def test_feishu_raw_watcher_uses_restored_thread_route_and_reply_anchor(monkeypatch, tmp_path):
+    from gateway.session import SessionSource
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = SimpleNamespace(send=AsyncMock(return_value=SendResult(success=True, message_id="reply")))
+    runner.adapters[Platform.FEISHU] = adapter
+    key = "agent:main:feishu:dm:chat-thread:topic-1"
+    runner.session_store._entries[key] = SimpleNamespace(origin=SessionSource(
+        platform=Platform.FEISHU, chat_id="chat-thread", chat_type="dm",
+        thread_id="topic-1", message_id="anchor-1", user_id="user-1",
+    ))
+
+    delivered = await runner._send_watcher_message(
+        "feishu", "chat-main", None, "✅ Background task finished", {"session_key": key},
+    )
+
+    assert delivered is True
+    adapter.send.assert_awaited_once()
+    args, kwargs = adapter.send.await_args
+    assert args[:2] == ("chat-thread", "✅ Background task finished")
+    assert kwargs["metadata"]["thread_id"] == "topic-1"
+    assert kwargs["metadata"]["reply_to_message_id"] == "anchor-1"
+    assert kwargs.get("reply_to") in (None, "anchor-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_type", ["completion", "watch_match"])
+async def test_feishu_synthetic_status_restores_anchor_without_using_foreground(monkeypatch, tmp_path, event_type):
+    from gateway.session import SessionSource
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
+    runner.adapters[Platform.FEISHU] = adapter
+    key = "agent:main:feishu:dm:chat-thread:topic-1"
+    runner.session_store._entries[key] = SimpleNamespace(origin=SessionSource(
+        platform=Platform.FEISHU, chat_id="chat-thread", chat_type="dm",
+        thread_id="topic-1", message_id="anchor-1", user_id="user-1",
+    ))
+    runner._running_event = SimpleNamespace(source=SessionSource(
+        platform=Platform.FEISHU, chat_id="chat-main", chat_type="dm", message_id="wrong-anchor",
+    ))
+
+    delivered = await runner._inject_watch_notification(
+        "completion status", {"type": event_type, "session_key": key,
+                              "platform": "feishu", "message_id": "trigger-old"},
+    )
+
+    assert delivered is True
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_id == "chat-thread"
+    assert event.source.thread_id == "topic-1"
+    assert event.source.message_id is None
+    assert runner._reply_anchor_for_event(event) == "anchor-1"
+    assert event.metadata["original_trigger_message_id"] == "trigger-old"
+
+
+@pytest.mark.asyncio
+async def test_feishu_unanchored_synthetic_status_is_requeued_until_route_recovers(monkeypatch, tmp_path):
+    from gateway.session import SessionSource
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
+    runner.adapters[Platform.FEISHU] = adapter
+    key = "agent:main:feishu:dm:chat-thread:topic-1"
+    source = SessionSource(platform=Platform.FEISHU, chat_id="chat-thread", chat_type="dm",
+                           thread_id="topic-1", user_id="user-1")
+    runner.session_store._entries[key] = SimpleNamespace(origin=source)
+    event = {"type": "watch_match", "session_id": "proc-1", "session_key": key,
+             "platform": "feishu", "pattern": "READY", "output": "READY"}
+    pending = queue.Queue()
+    pending.put(event)
+
+    await runner._drain_watch_notifications(pending)
+    assert pending.qsize() == 1
+    assert pending.get_nowait() is event
+    adapter.handle_message.assert_not_awaited()
+
+    source.message_id = "anchor-1"
+    pending.put(event)
+    await runner._drain_watch_notifications(pending)
+    assert pending.empty()
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_feishu_raw_watcher_without_anchor_fails_without_parent_chat_send(monkeypatch, tmp_path):
+    from gateway.session import SessionSource
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = SimpleNamespace(send=AsyncMock(return_value=SendResult(success=True, message_id="wrong")))
+    runner.adapters[Platform.FEISHU] = adapter
+    key = "agent:main:feishu:dm:chat-thread:topic-1"
+    source = SessionSource(platform=Platform.FEISHU, chat_id="chat-thread", chat_type="dm",
+                           thread_id="topic-1", user_id="user-1")
+    runner.session_store._entries[key] = SimpleNamespace(origin=source)
+
+    delivered = await runner._send_watcher_message("feishu", "chat-main", None, "status", {"session_key": key})
+    assert delivered is False
+    adapter.send.assert_not_awaited()
+
+    source.message_id = "anchor-1"
+    assert await runner._send_watcher_message("feishu", "chat-main", None, "status", {"session_key": key})
+    adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_feishu_terminal_raw_watcher_retries_until_thread_anchor_recovers(monkeypatch, tmp_path):
+    from gateway.session import SessionSource
+    import tools.process_registry as pr_module
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = SimpleNamespace(send=AsyncMock(return_value=SendResult(success=True, message_id="reply")))
+    runner.adapters[Platform.FEISHU] = adapter
+    key = "agent:main:feishu:dm:chat-thread:topic-1"
+    source = SessionSource(platform=Platform.FEISHU, chat_id="chat-thread", chat_type="dm",
+                           thread_id="topic-1", user_id="user-1")
+    runner.session_store._entries[key] = SimpleNamespace(origin=source)
+    done = SimpleNamespace(output_buffer="done", exited=True, exit_code=0,
+                           command="job", started_at=None)
+
+    class _TerminalRegistry:
+        polls = 0
+
+        def get(self, _session_id):
+            self.polls += 1
+            if self.polls == 2:
+                source.message_id = "anchor-1"
+            return done
+
+        def is_completion_consumed(self, _session_id):
+            return False
+
+    registry = _TerminalRegistry()
+    monkeypatch.setattr(pr_module, "process_registry", registry)
+    await runner._run_process_watcher({
+        "session_id": "proc-1", "check_interval": 0, "session_key": key,
+        "platform": "feishu", "chat_id": "chat-main", "thread_id": "topic-1",
+    })
+
+    assert registry.polls == 2
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.args[0] == "chat-thread"
+    assert adapter.send.await_args.kwargs["metadata"]["reply_to_message_id"] == "anchor-1"
+
+
+@pytest.mark.asyncio
+async def test_feishu_restored_route_without_its_thread_is_deferred(monkeypatch, tmp_path):
+    from gateway.session import SessionSource
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AdmittingHandler())
+    runner.adapters[Platform.FEISHU] = adapter
+    key = "agent:main:feishu:dm:chat-thread:topic-1"
+    runner.session_store._entries[key] = SimpleNamespace(origin=SessionSource(
+        platform=Platform.FEISHU, chat_id="chat-thread", chat_type="dm", message_id="anchor-1",
+    ))
+    event = {"session_key": key, "platform": "feishu", "thread_id": "topic-1"}
+
+    assert await runner._inject_watch_notification("status", event) is False
+    assert await runner._send_watcher_message("feishu", "chat-thread", "topic-1", "status", event) is False
+    adapter.handle_message.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_feishu_raw_watcher_with_unresolved_origin_does_not_send_to_parent_chat(monkeypatch, tmp_path):
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = SimpleNamespace(send=AsyncMock(return_value=SendResult(success=True, message_id="wrong")))
+    runner.adapters[Platform.FEISHU] = adapter
+    watcher = {"platform": "feishu", "chat_id": "chat-main"}
+
+    delivered = await runner._send_watcher_message("feishu", "chat-main", None, "status", watcher)
+
+    assert delivered is False
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivery", ["raw", "synthetic"])
+async def test_feishu_watcher_thread_conflicting_with_session_key_is_deferred(monkeypatch, tmp_path, delivery):
+    from gateway.session import SessionSource
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = SimpleNamespace(
+        send=AsyncMock(return_value=SendResult(success=True, message_id="wrong")),
+        handle_message=AdmittingHandler(),
+    )
+    runner.adapters[Platform.FEISHU] = adapter
+    key = "agent:main:feishu:dm:chat-thread:topic-a"
+    runner.session_store._entries[key] = SimpleNamespace(origin=SessionSource(
+        platform=Platform.FEISHU, chat_id="chat-thread", chat_type="dm",
+        thread_id="topic-b", message_id="anchor-b",
+    ))
+    event = {"session_key": key, "platform": "feishu", "thread_id": "topic-b"}
+
+    if delivery == "raw":
+        delivered = await runner._send_watcher_message("feishu", "chat-main", "topic-b", "status", event)
+    else:
+        delivered = await runner._inject_watch_notification("status", event)
+
+    assert delivered is False
+    adapter.send.assert_not_awaited()
+    adapter.handle_message.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

@@ -59,7 +59,7 @@ MagicMock adapters in older tests auto-create truthy attributes.
 ## Background process notifications
 
 `terminal(background=true, notify_on_complete=true)` arms a watcher on the gateway loop
-(`run_notifications.py::arm_process_watcher`) that starts a new turn on completion; verbosity is
+(`run_notifications_watcher.py::arm_process_watcher`) that starts a new turn on completion; verbosity is
 `display.background_process_notifications`. Injection requires the `admit_internal_event` receipt
 (a handler returning None is not acceptance); refused admission refunds every claimed batch sibling
 without spending an attempt. Long form: `website/docs/developer-guide/gateway-internals.md`
