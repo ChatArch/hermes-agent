@@ -214,11 +214,6 @@ _EXTRA_ENV_KEYS = frozenset({
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD", "MATRIX_DM_AUTO_THREAD",
     "MATRIX_RECOVERY_KEY",
-    # Langfuse observability plugin tuning keys + standard SDK vars (activation is via
-    # plugins.enabled; credentials gate the plugin at runtime).
-    "HERMES_LANGFUSE_ENV", "HERMES_LANGFUSE_RELEASE", "HERMES_LANGFUSE_SAMPLE_RATE",
-    "HERMES_LANGFUSE_MAX_CHARS", "HERMES_LANGFUSE_CAPTURE", "HERMES_LANGFUSE_DEBUG",
-    "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL",
     # ACP (Agent Client Protocol) keys — profile-isolable so profiles can use different backends.
     "HERMES_ACP_AUTH_METHOD", "HERMES_ACP_AUTO_APPROVE", "HERMES_COPILOT_ACP_COMMAND",
     "HERMES_COPILOT_ACP_ARGS", "COPILOT_CLI_PATH", "COPILOT_ACP_BASE_URL"})
@@ -1889,7 +1884,24 @@ def _raw_config_cache_hit(path_key: str, cache_key: tuple[Any, ...]) -> Optional
     return None
 
 
+def _worker_config_snapshot() -> Optional[dict[str, Any]]:
+    """A safe worker's frozen config, or None. Install-time loads run from ``hermes_cli`` alone
+    (the installer's completion step ships no ``agent`` package), and without ``agent`` there
+    is no worker policy to consult."""
+    try:
+        from agent.safe_worker_policy import worker_config_snapshot
+    except ModuleNotFoundError as exc:
+        if exc.name != "agent":
+            raise
+        return None
+    return worker_config_snapshot()
+
+
 def _read_raw_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
+    snapshot = _worker_config_snapshot()
+    if snapshot is not None:
+        return snapshot
+
     # Lock-free fast path for cache hits — same shape as `_load_config_impl`. `_RAW_CONFIG_CACHE`
     # publishes each entry as ONE `(*sig, data)` tuple replaced wholesale, so a reader sees either
     # the complete old entry or the complete new one; `_CONFIG_LOCK` only serializes the re-parse
@@ -1969,6 +1981,10 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
     non-mapping root — bare-``except`` loaders treat both as ``{}``, so a subsequent write would
     replace the recoverable file with only the caller's partial dict. Fails closed."""
     if config_path is None:
+        snapshot = _worker_config_snapshot()
+        if snapshot is not None:
+            # A bypass worker's config IS its frozen snapshot; it never reads the profile file.
+            return copy.deepcopy(snapshot)
         config_path = get_config_path()
     try:
         config_path.stat()
@@ -2307,6 +2323,10 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[dict[str, 
 
 
 def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
+    snapshot = _worker_config_snapshot()
+    if snapshot is not None:
+        return _deep_merge(copy.deepcopy(DEFAULT_CONFIG), snapshot)
+
     # Lock-free fast path for cache hits — same publication contract as `_read_raw_config_impl`
     # above (whole-tuple replace, `_CONFIG_LOCK` only serializes rebuilds and writers). A hit costs
     # ~0.024ms; behind a lock held by `save_config()` the same read measured 10010ms, and on a
@@ -2477,8 +2497,8 @@ def save_config(
         # swallows transient stat/open errors into ``{}``, and a ``{}`` at this point makes the
         # strip pass drop every user section whose value matches a default (#113301).
         _raw_for_paths = require_readable_config_before_write(config_path)
-        if merge_existing and _raw_for_paths:
-            config = _merge_partial_save(_raw_for_paths, config)
+        from hermes_cli.config_worker_save import rebase_for_save  # frozen-worker writes + merge_existing
+        config = rebase_for_save(config, _raw_for_paths, merge_existing)
 
         current_normalized = _canonicalize_config(config)
         normalized = current_normalized
@@ -2504,6 +2524,10 @@ def load_env() -> dict[str, str]:
     """Load ~/.hermes/.env as a dict. Memoised inside ``load_env_file`` (``get_env_value()`` runs
     hundreds of times per interactive menu render). Each assignment's value is opaque data for
     boundary discovery."""
+    # A frozen-policy worker never opens the profile's files; its secrets arrive
+    # through the owner-installed scope, so the .env layer is empty here.
+    if _worker_config_snapshot() is not None:
+        return {}
     from agent.secret_scope import load_env_file  # the one .env tokenizer; also installs profile scopes
 
     return load_env_file(get_env_path())
@@ -2916,7 +2940,6 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
 
 # ---- Config display ----
 
-from hermes_cli.config_display import show_config
 
 def redact_key(key: str) -> str:
     """Redact an API key for display."""
@@ -2966,81 +2989,6 @@ def redact_config_value(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, list):
         return [redact_config_value(v, _depth + 1) for v in value]
     return value
-
-
-def _section(title: str) -> None:
-    print()
-    print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
-
-
-
-
-
-
-
-
-def _show_model_section(config: dict[str, Any]) -> None:
-    _section("Model")
-    print(f"  Model:        {redact_config_value(config.get('model', 'not set'))}")
-    cfg_max_turns = config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])
-    print(f"  Max turns:    {cfg_max_turns}")
-    # Read the .env FILE directly so a stale HERMES_MAX_ITERATIONS ghost is caught even when the
-    # gateway bridge already overrode os.environ.
-    try:
-        env_ghost = load_env().get("HERMES_MAX_ITERATIONS")
-    except Exception:
-        env_ghost = None
-    if env_ghost is not None and str(env_ghost).strip() != str(cfg_max_turns).strip():
-        print(color(f"                ⚠ .env has stale HERMES_MAX_ITERATIONS={env_ghost} "
-                    f"(run 'hermes doctor --fix' to remove)", Colors.YELLOW))
-
-
-def _show_display_section(config: dict[str, Any]) -> None:
-    _section("Display")
-    display = config.get('display', {})
-    try:
-        from hermes_cli.personality import active_personality_name
-        active_personality = active_personality_name(config) or 'none'
-    except Exception:
-        active_personality = display.get('personality') or 'none'
-    on_off = lambda flag: 'on' if flag else 'off'
-    print(f"  Personality:  {active_personality}")
-    print(f"  Reasoning:    {on_off(display.get('show_reasoning', True))}")
-    print(
-        f"  Bell:         complete={on_off(display.get('bell_on_complete', False))}, "
-        f"prompt={on_off(display.get('bell_on_prompt', False))}")
-    ump = display.get('user_message_preview', {})
-    ump = ump if isinstance(ump, dict) else {}
-    print(f"  User preview: first {ump.get('first_lines', 2)} line(s), last {ump.get('last_lines', 2)} line(s)")
-
-
-
-
-
-
-
-
-
-
-
-def _show_skill_settings() -> None:
-    try:
-        from agent.skill_utils import discover_all_skill_config_vars, resolve_skill_config_values
-        skill_vars = discover_all_skill_config_vars()
-        if not skill_vars:
-            return
-        resolved = resolve_skill_config_values(skill_vars)
-        _section("Skill Settings")
-        for var in skill_vars:
-            value = resolved.get(var["key"], "")
-            display_val = str(value) if value else color("(not set)", Colors.DIM)
-            skill_tag = color(f"[{var.get('skill', '')}]", Colors.DIM)
-            print(f"  {var['key']:<20s} {display_val}  {skill_tag}")
-    except Exception:
-        pass
-
-
-
 
 
 def edit_config():
@@ -3838,9 +3786,14 @@ def _cmd_config_check(args):
     print()
 
 
+def _cmd_config_show() -> None:
+    from hermes_cli.config_show import show_config
+    show_config()
+
+
 _CONFIG_SUBCOMMANDS = {
-    None: lambda args: show_config(),
-    "show": lambda args: show_config(),
+    None: lambda args: _cmd_config_show(),
+    "show": lambda args: _cmd_config_show(),
     "edit": lambda args: edit_config(),
     "get": _cmd_config_get,
     "set": _cmd_config_set,
@@ -3974,7 +3927,12 @@ def _platform_plugin_manifests(home: Optional[Path] = None, source: PlatformMani
     flat ``plugins/*`` manifest proves it is one only by its content, so an unreadable one is
     skipped with a warning, as is an unsearchable plugin directory. A manifest that does not
     parse declares nothing (its adapter cannot load either) and is skipped. Every skip is appended
-    to ``skipped``, so a caller can tell a complete scan from a partial one."""
+    to ``skipped``, so a caller can tell a complete scan from a partial one. A safe worker reads
+    no plugin manifest at all."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return
     for dir_name, manifest_path, require_kind, st in _platform_manifest_paths(home, source):
         if manifest_path is None:
             logger.warning("Skipping unreadable plugin directory %s: %s", dir_name, st)

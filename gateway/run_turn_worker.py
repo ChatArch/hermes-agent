@@ -84,7 +84,6 @@ class GatewayTurnWorkerMixin:
                 name=f"gateway-turn-watchdog-{_turn_task_id[:12]}",
                 daemon=True,
             ).start()
-        worker.executor_task = asyncio.ensure_future(
-            self._run_in_executor_with_context(_run_sync_with_timeout_lifecycle)
-        )
+        from gateway.session_runtime_workers import start_turn_worker
+        start_turn_worker(self, worker, agent_holder, _run_sync_with_timeout_lifecycle)
         return worker
