@@ -27,7 +27,9 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
 logger = logging.getLogger("gateway.run")
+_progress_failure_logger = PrivateDiagnosticLogger(__name__)
 
 
 def _append_progress_repeat_count(message: str, occurrences: int) -> str:
@@ -295,7 +297,9 @@ class GatewayTurnProgressMixin:
         emoji = get_tool_emoji(tool_name, default="⚙️")
         try:
             adapter = self._runner._delivery_adapter_for(ctx.source)
-        except Exception:
+        except Exception as exc:
+            _progress_failure_logger.warning(
+                "Progress adapter unavailable; retaining plain progress fallback", exc_info=exc)
             adapter = None
         code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
         verbose = ctx.progress_mode == "verbose"
@@ -808,7 +812,8 @@ class GatewayTurnProgressMixin:
                 adapter.play_ack_in_voice(ctx._voice_ack_guild[0]), "voice ack scheduling error", loop=ctx._voice_ack_loop,
             )
         except Exception as err:
-            logger.debug("voice ack schedule failed: %s", err)
+            _progress_failure_logger.warning(
+                "Voice acknowledgement scheduling failed; keeping normal turn output", exc_info=err)
 
     # Slack-native task cards ride agent.tool_start_callback / tool_complete_callback so start and
     # completion correlate by the REAL tool-call id; name-correlated progress_callback text events

@@ -36,7 +36,7 @@ def remote(monkeypatch):
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "local"})
     monkeypatch.setattr(terminal_tool, "resolve_task_overrides", lambda task: {"env_type": "ssh", "ssh_alias": "target"} if task == "ssh-task" else {})
     monkeypatch.setattr(file_tools, "_get_file_ops", lambda task: SimpleNamespace(env=env))
-    monkeypatch.setattr(browser, "_blocked_url_in_code", lambda code: None)
+    monkeypatch.setattr(browser, "_code_url_verdict", lambda code: browser._CodeUrlVerdict(None, False))
     monkeypatch.setattr(browser, "_find_cli", lambda: ["gateway-cli"])
     monkeypatch.setattr(browser, "_base_subprocess_env", dict)
     monkeypatch.setattr(browser, "_route_backend", lambda *a, **k: (_ for _ in ()).throw(AssertionError("gateway routing forbidden")))
@@ -132,4 +132,11 @@ def test_gateway_endpoint_is_not_reinterpreted_on_target(remote, monkeypatch):
 def test_real_profile_request_fails_closed_without_gateway(remote):
     result = dispatch(local=True)
     assert result.get("error_type") == "remote_real_profile_unsupported"
+    assert not remote.calls
+
+
+def test_blocked_url_verdict_prevents_remote_execution(remote, monkeypatch):
+    monkeypatch.setattr(browser, "_code_url_verdict", lambda code: browser._CodeUrlVerdict("Blocked test URL", False))
+    result = dispatch()
+    assert result.get("error") == "Blocked test URL"
     assert not remote.calls

@@ -485,7 +485,7 @@ def _setup_ssh_env(monkeypatch, persistent: bool):
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_SSH_HOST", _SSH_HOST)
     monkeypatch.setenv("TERMINAL_SSH_USER", _SSH_USER)
-    monkeypatch.setenv("TERMINAL_CWD", _SSH_CWD)
+    monkeypatch.setenv("TERMINAL_CWD", "~")
     monkeypatch.setenv("TERMINAL_SSH_PERSISTENT", "true" if persistent else "false")
     if _SSH_PORT != 22:
         monkeypatch.setenv("TERMINAL_SSH_PORT", str(_SSH_PORT))

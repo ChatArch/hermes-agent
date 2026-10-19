@@ -16,7 +16,9 @@ from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
 logger = logging.getLogger(__name__)
+_relay_interaction_failure_logger = PrivateDiagnosticLogger(__name__)
 
 # Connector promptCodec.decodePromptCallback id alphabet ([A-Za-z0-9_.-], <=32).
 _PROMPT_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,32}$")
@@ -118,7 +120,9 @@ class RelayDiscordInteractionMixin:
         session key matches the one the follow-up capability was bound under."""
         try:
             payload = json.loads(bytes(getattr(forward, "body", b"")).decode("utf-8"))
-        except Exception:
+        except Exception as exc:
+            _relay_interaction_failure_logger.warning(
+                "Relay Discord interaction could not be decoded; ignoring unusable payload", exc_info=exc)
             return None
         if not isinstance(payload, dict):
             return None

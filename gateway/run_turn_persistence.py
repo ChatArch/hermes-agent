@@ -38,7 +38,9 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
+from hermes_cli.diagnostic_logging import PrivateDiagnosticLogger
 logger = logging.getLogger("gateway.run")
+_persistence_failure_logger = PrivateDiagnosticLogger(__name__)
 
 
 def _acp_launch(runner, source) -> bool:
@@ -164,7 +166,9 @@ class GatewayTurnPersistenceMixin:
                 default=bool(getattr(self, "_show_reasoning", False)), platform=source.platform,
                 require_platform_override_for={Platform.MATTERMOST},
             )
-        except Exception:
+        except Exception as exc:
+            _persistence_failure_logger.warning(
+                "Reasoning display configuration unavailable; retaining platform fallback", exc_info=exc)
             _show_reasoning_effective = (
                 False if source.platform == Platform.MATTERMOST else getattr(self, "_show_reasoning", False)
             )
@@ -184,7 +188,9 @@ class GatewayTurnPersistenceMixin:
             _reasoning_style = resolve_display_setting(
                 _load_gateway_config(), _platform_config_key(source.platform), "reasoning_style", "code",
             )
-        except Exception:
+        except Exception as exc:
+            _persistence_failure_logger.warning(
+                "Reasoning style unavailable; retaining code-block fallback", exc_info=exc)
             _reasoning_style = "code"
         _quote = self._REASONING_QUOTE_STYLES.get(_reasoning_style)
         if _quote:
@@ -215,7 +221,8 @@ class GatewayTurnPersistenceMixin:
                 served_model=agent_result.get("served_model"),
             )
         except Exception as _footer_err:
-            logger.debug("runtime_footer build failed: %s", _footer_err)
+            _persistence_failure_logger.warning(
+                "Runtime footer unavailable; retaining normal final response", exc_info=_footer_err)
             return ""
 
     async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response):
@@ -552,7 +559,8 @@ class GatewayTurnPersistenceMixin:
                     response = self._remote_media_failure_response(response)
             except Exception as exc:
                 media_failed = True
-                logger.warning("Remote media materialization failed: %s", exc)
+                _persistence_failure_logger.warning(
+                    "Remote media materialization failed; retaining safe attachment fallback", exc_info=exc)
                 response = self._remote_media_failure_response(response)
         # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
         _streaming_tts_done = adapter is not None and bool(
@@ -582,7 +590,8 @@ class GatewayTurnPersistenceMixin:
                 try:
                     await adapter.send(source.chat_id, _footer_line, metadata=self._event_thread_metadata(event, source))
                 except Exception as _e:
-                    logger.debug("trailing footer send failed: %s", _e)
+                    _persistence_failure_logger.warning(
+                        "Trailing footer send failed; retaining streamed final response", exc_info=_e)
             # Return None so the body isn't sent twice; stash the delivered text on the event for the
             # /loop and /goal hooks that read the return value.
             with suppress(Exception):

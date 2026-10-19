@@ -2940,7 +2940,6 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
 
 # ---- Config display ----
 
-from hermes_cli.config_show import show_config
 
 def redact_key(key: str) -> str:
     """Redact an API key for display."""
