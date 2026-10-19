@@ -128,7 +128,9 @@ def test_standard_windows_runner_bounds_native_process_tree_parallelism():
     windows = next(row for row in workflow["jobs"]["os-tests"]["strategy"]["matrix"]["include"] if row["marker"] == "windows")
     assert windows["runner"] == "windows-latest"
     assert int(windows["timeout"]) >= 60
-    workers = workflow["jobs"]["os-tests"]["steps"][-1]["env"]["HERMES_TEST_WORKERS"]
+    run = next(step for step in workflow["jobs"]["os-tests"]["steps"]
+               if step.get("name") == "Run ${{ matrix.marker }} tests")
+    workers = run["env"]["HERMES_TEST_WORKERS"]
     assert "'8'" not in workers
     assert "'2'" in workers
     e2e = workflow["jobs"]["e2e-windows"]
@@ -150,7 +152,8 @@ def test_standard_windows_bundle_runners_keep_both_native_architectures():
 
 def test_standard_e2e_runners_bound_process_tree_workers():
     python = _loaded()["tests.yml"]["jobs"]
-    assert int(python["e2e"]["steps"][-1]["env"]["HERMES_TEST_WORKERS"]) <= 2
+    run = next(step for step in python["e2e"]["steps"] if step.get("name") == "Run e2e tests")
+    assert int(run["env"]["HERMES_TEST_WORKERS"]) <= 2
     assert int(python["e2e"]["timeout-minutes"]) >= 60
     assert int(python["e2e-upgrade"]["timeout-minutes"]) >= 90
     install = _loaded()["windows-install-update-e2e.yml"]["jobs"]["install-update"]

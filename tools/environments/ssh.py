@@ -97,7 +97,8 @@ class SSHEnvironment(BaseEnvironment):
     """Run commands on a remote machine over SSH.
 
     Spawn-per-call: every execute() spawns a fresh ``ssh ... bash -c`` process.
-    Session snapshot preserves env vars across calls; CWD persists via in-band
+    Session snapshot preserves exported env vars across calls (unless
+    ``persistent=False``); CWD persists via in-band
     stdout markers. Uses SSH ControlMaster for connection reuse.
     """
 
@@ -111,7 +112,7 @@ class SSHEnvironment(BaseEnvironment):
                  host_key_policy: str = "accept-new", persistent: bool = True,
                  sync_back_on_cleanup: bool = False,
                  sync_hermes_files: bool = False, probe_only: bool = False, sync_files: bool | None = None):
-        super().__init__(cwd=cwd, timeout=timeout)
+        super().__init__(cwd=cwd, timeout=timeout, persist_env=persistent)
         self._persistent = bool(persistent)
         self._persist_session_state = self._persistent
         # SSH targets are real, long-lived machines with their own filesystem

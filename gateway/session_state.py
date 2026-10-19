@@ -35,6 +35,9 @@ class TurnState:
     # the durable row lease. These survive clear() just like lease_tokens.
     lease_worker_done: dict[int, Any] = field(default_factory=dict)
     lease_release_pending: set[int] = field(default_factory=set)
+    # Agents taken out of the cache while this turn still ran them (a one-turn ``model_override``
+    # agent): ``_release_running_agent_state`` releases them once the slot clears.
+    retired_agents: list[Any] = field(default_factory=list)
 
     def clear(self) -> None:
         """Reset the per-turn slot.  The caller pops ``lease`` first to release it."""
