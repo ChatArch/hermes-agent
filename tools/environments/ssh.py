@@ -114,7 +114,7 @@ class SSHEnvironment(BaseEnvironment):
                  sync_hermes_files: bool = False, probe_only: bool = False, sync_files: bool | None = None):
         super().__init__(cwd=cwd, timeout=timeout, persist_env=persistent)
         self._persistent = bool(persistent)
-        self._persist_session_state = self._persistent
+        # The upstream persist_env knob controls exports; cwd survives even a one-shot SSH shell.
         # SSH targets are real, long-lived machines with their own filesystem
         # and possibly their own Hermes installation.  Unlike disposable
         # container backends, default SSH execution must not upload local

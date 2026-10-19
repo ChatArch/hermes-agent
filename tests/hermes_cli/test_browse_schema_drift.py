@@ -523,14 +523,18 @@ class SlowConnection:
     and chains to that handler when it does."""
     def __init__(self, conn):
         self._conn = conn
-        self.set_progress_handler(None, 0)
+        self._install_slow_handler(None)
     def __getattr__(self, name):
         return getattr(self._conn, name)
-    def set_progress_handler(self, handler, n):
+    def _install_slow_handler(self, handler):
         def slow():
             time.sleep(0.01)
             return handler() if handler is not None else 0
         return self._conn.set_progress_handler(slow, 5)
+    def set_progress_handler(self, handler, n):
+        if handler is None:
+            return self._conn.set_progress_handler(None, 0)
+        return self._install_slow_handler(handler)
     def close(self):
         return self._conn.close()
 
@@ -549,6 +553,16 @@ def slowed(path, *a, **kw):
         print("slowed", flush=True)  # this process holds gateway.lock and the slow phase begins
         return SlowConnection(conn)
     return conn
+
+if phase == "clear-probe":
+    class RecordingConnection:
+        def set_progress_handler(self, handler, count):
+            self.installed = (handler, count)
+    recording = RecordingConnection()
+    connection = SlowConnection(recording)
+    connection.set_progress_handler(None, 0)
+    print("CLEAR", recording.installed == (None, 0), flush=True)
+    raise SystemExit(0)
 
 ssr.connect_tracked = slowed
 started = time.monotonic()
@@ -1009,3 +1023,14 @@ def test_every_raw_schema_catch_up_handles_an_old_indexed_column(tmp_path):
         assert not conn.in_transaction
     assert "last_read_at" in _session_columns(path)
     assert hasattr(hermes_state_schema, "apply_declared_schema")
+
+
+def test_slow_connection_honors_progress_handler_clear(tmp_path):
+    """The slow VM fixture must not reinstall a delay after production clears its deadline."""
+    import os
+    import subprocess
+    import sys
+
+    result = subprocess.run([sys.executable, "-c", _SLOW_BROWSE, str(tmp_path), "clear-probe"],
+                            env=os.environ, capture_output=True, text=True, timeout=20, check=True)
+    assert result.stdout.strip() == "CLEAR True", result.stdout + result.stderr
