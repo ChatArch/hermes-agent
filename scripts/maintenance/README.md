@@ -168,6 +168,8 @@ skips a busy or unavailable gateway, and retries on later scheduled days.
 After backup and restoration verification, an idle gateway acknowledges a
 drain request before the runner temporarily unloads its supervisor for offline
 cleanup. Its cleanup path restores the gateway and confirms Feishu readiness.
+The supervised process may be the gateway itself or a launch wrapper; recovery
+checks that the responding gateway belongs to that supervisor's process tree.
 The scheduled command never uses `--allow-active-stop`.
 
 The installer uses native `hermes config set` commands to set

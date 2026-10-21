@@ -124,10 +124,50 @@ class CycleLifecycle(unittest.TestCase):
         with patch.object(cycle.time, "monotonic", side_effect=lambda: clock[0]), \
                 patch.object(cycle.time, "sleep", side_effect=sleep), \
                 patch.object(cycle, "gateway_status", return_value=status), \
+                patch("hermes_cli.gateway._get_parent_pid", return_value=None), \
                 patch.object(cycle.subprocess, "run", side_effect=results) as commands:
             self.assertEqual(cycle.restart_gateway(previous_pid=123), 456)
         self.assertEqual(commands.call_count, 6)
         self.assertIn("bootstrap", commands.call_args_list[2].args[0])
+
+
+def test_restart_accepts_gateway_under_launchd_wrapper():
+    spec = importlib.util.spec_from_file_location("cycle_wrapped_test", ROOT / "scripts/maintenance/run_retention_cycle.py")
+    cycle = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cycle)
+    clock = [0]
+    status = {"pid": 20811, "gateway_state": "running", "platforms": {
+        "feishu": {"state": "connected", "writer_pid": 20811}}}
+
+    def sleep(_seconds):
+        clock[0] += 60
+
+    def launchctl(*_args, **_kwargs):
+        return subprocess.CompletedProcess([], 0, stdout="pid = 20807\n", stderr="")
+
+    parents = {20811: 20808, 20808: 20807}
+    with patch.object(cycle.time, "monotonic", side_effect=lambda: clock[0]), \
+            patch.object(cycle.time, "sleep", side_effect=sleep), \
+            patch.object(cycle, "gateway_status", return_value=status), \
+            patch.object(cycle.subprocess, "run", side_effect=launchctl), \
+            patch("hermes_cli.gateway._get_parent_pid", side_effect=parents.get):
+        assert cycle.restart_gateway(previous_pid=123) == 20811
+
+
+@pytest.mark.parametrize("supervisor,gateway,parents,expected", [
+    (20807, 20811, {20811: 20808, 20808: 20807}, True),
+    (20811, 20811, {}, True),
+    (999, 20811, {20811: 20808, 20808: 1}, False),
+    (20807, 20811, {20811: 20808, 20808: 20811}, False),
+    (None, 20811, {}, False),
+    (999, 100, {pid: pid + 1 for pid in range(100, 170)}, False),
+])
+def test_supervisor_ownership_is_bounded_and_rejects_unrelated_processes(supervisor, gateway, parents, expected):
+    from scripts.maintenance import run_retention_cycle as cycle
+
+    with patch("hermes_cli.gateway._get_parent_pid", side_effect=parents.get) as parent:
+        assert cycle.supervisor_owns_gateway(supervisor, gateway) is expected
+    assert parent.call_count <= 32
 
 
 if __name__ == "__main__":

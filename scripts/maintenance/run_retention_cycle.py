@@ -98,6 +98,24 @@ def validate_service():
         raise RuntimeError("Installed gateway service does not match retention home")
 
 
+def supervisor_owns_gateway(supervisor_pid, gateway_pid):
+    """Accept a direct gateway or its live parent chain under a launchd wrapper."""
+    from hermes_cli.gateway import _get_parent_pid
+
+    if supervisor_pid is None or supervisor_pid <= 0:
+        return False
+    seen = set()
+    pid = gateway_pid
+    for _ in range(32):
+        if pid is None or pid <= 0 or pid in seen:
+            return False
+        if pid == supervisor_pid:
+            return True
+        seen.add(pid)
+        pid = _get_parent_pid(pid)
+    return False
+
+
 def restart_gateway(previous_pid=None):
     from hermes_cli.gateway import _parse_launchd_pid_from_print_output
 
@@ -123,7 +141,8 @@ def restart_gateway(previous_pid=None):
             if feishu.get("state") == "connected" and feishu.get("writer_pid") == status["pid"]:
                 try:
                     loaded = subprocess.run(["/bin/launchctl", "print", target], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, check=False)
-                    if loaded.returncode == 0 and _parse_launchd_pid_from_print_output(loaded.stdout) == status["pid"]:
+                    if loaded.returncode == 0 and supervisor_owns_gateway(
+                            _parse_launchd_pid_from_print_output(loaded.stdout), status["pid"]):
                         return status["pid"]
                 except (OSError, subprocess.TimeoutExpired) as error:
                     last_error = str(error)
