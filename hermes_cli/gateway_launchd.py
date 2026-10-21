@@ -144,15 +144,20 @@ def _launchd_reload_budget() -> float:
 def _launchctl_supervised_pid(label: str) -> int | None:
     """PID launchd currently runs for ``label``, or None when it runs none. ``launchctl list`` exits 0 for
     a mere registered definition (``state = not running`` on macOS 26+), so a PID — not the exit code — is
-    the answer. Domain-agnostic on purpose: ``launchctl print`` domain probes fail on macOS-26 per-user
-    domains, which is why the invoking profile verifies through this and not ``_launchd_print_service_pid``."""
+    the answer. Try the caller's domain first, then explicit domains for SSH/background callers
+    that cannot see a GUI service through ``list``. Keep ``list`` for macOS per-user domains
+    that reject explicit ``print`` probes."""
     try:
         result = subprocess.run(["launchctl", "list", label], check=False, timeout=10, **_gw()._CAPTURE_TEXT)
     except (subprocess.TimeoutExpired, OSError):
+        result = None
+    if result is not None and result.returncode == 0:
+        return _gw()._parse_launchd_pid_from_list_output(result.stdout)
+    try:
+        _, pid = _gw()._locate_launchd_gateway_service(label)
+        return pid
+    except (subprocess.TimeoutExpired, OSError):
         return None
-    if result.returncode != 0:
-        return None
-    return _gw()._parse_launchd_pid_from_list_output(result.stdout)
 
 
 def _launchctl_label_supervising_process(label: str) -> bool:
@@ -912,6 +917,12 @@ def launchd_status(deep: bool = False):
 
     # `launchctl list` exits 0 for any registered definition (even `state = not running`); only a PID proves a process.
     launchd_pid = _gw()._parse_launchd_pid_from_list_output(list_output) if service_listed else None
+    if not service_listed:
+        try:
+            domain, launchd_pid = _gw()._locate_launchd_gateway_service(label)
+            service_listed = domain is not None
+        except (subprocess.TimeoutExpired, OSError):
+            pass
 
     # Hermes PID may be a detached fallback process; when launchd IS supervising both PIDs match — don't double-count.
     from gateway.status import get_running_pid
