@@ -378,14 +378,17 @@ class TestRestartMacosLaunchdGateways:
         assert restarted == ["ai.hermes.gateway-a"]
         assert failed == []
 
-    def test_current_profile_registered_but_unlocatable_still_restarts(
-        self, monkeypatch, tmp_path
+    @pytest.mark.parametrize("list_returncode", [0, 113])
+    def test_current_profile_unlocatable_snapshot_still_restarts(
+        self, monkeypatch, tmp_path, list_returncode
     ):
-        """macOS-26 quirk: a label can be `launchctl list`-registered while
-        both explicit gui/user `launchctl print` probes fail (domain doesn't
-        support service management). The gate must use the registered
-        predicate and hand off to launchd_restart(), which owns the
-        domain-unsupported fallback — locate is for siblings only."""
+        """A missing pre-restart PID cannot gate the current profile's restart.
+
+        macOS 26 may list a registered job without a PID while explicit domain
+        probes are unsupported; background callers may also fail to list it.
+        In either case launchd_restart() owns recovery, followed by supervision
+        verification. The snapshot may locate domains when list is unavailable.
+        """
         current = "ai.hermes.gateway"
         rec = _fleet(
             monkeypatch,
@@ -393,15 +396,17 @@ class TestRestartMacosLaunchdGateways:
             current=current,
             labels=[current],
             located={current: (None, None)},
-            registered={current: True},
         )
+        monkeypatch.setattr(gw.subprocess, "run", lambda *a, **k: _completed(list_returncode))
         restarted: list[str] = []
         failed: list[str] = []
 
         _restart_macos_launchd_gateways(restarted, failed, drain_budget=0.0)
 
         assert rec.current_restarts == [current]
-        assert current not in rec.locates
+        assert rec.locates == ([] if list_returncode == 0 else [current])
+        assert rec.registered_checks == []
+        assert rec.current_verifies == [current]
         assert restarted == [current]
         assert failed == []
 
