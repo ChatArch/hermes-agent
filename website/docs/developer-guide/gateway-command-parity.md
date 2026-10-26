@@ -26,7 +26,7 @@ narrower routes (`hermes_cli/gateway_chat_commands.py`).
 setting to this local session (its next turn and `config.get`), saving config.yaml only where the
 handler does; `client-local (cli_only)` commands are terminal/UI features of a client.
 
-103 registry commands: 29 control, 18 read, 56 refused.
+108 registry commands: 29 control, 18 read, 61 refused.
 
 | Command | Gateway (`slash.exec`) | Classic CLI | Ink | Desktop | ACP | Notes |
 |---|---|---|---|---|---|---|
@@ -46,10 +46,11 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/codex-runtime` (/codex_runtime) | control | HermesCLI._handle_codex_runtime | slash.exec | slash.exec | slash.exec | per-session setting (gateway handler) |
 | `/commands` | read | messaging-only: unknown command | slash.exec | action: help | slash.exec | messaging-only |
 | `/compress` (/compact) | refused | HermesCLI._manual_compress | canonical route | action: compress | session.mutate compress |  |
+| `/compress-local` | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | slash.exec: refused | messaging-only |
 | `/config` | refused | HermesCLI.show_config | slash.exec: refused | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
 | `/context` (/ctx) | read | HermesCLI._show_context_breakdown | slash.exec | slash.exec | slash.exec | TUI session: main's live /context with the category table |
 | `/copy` | refused | HermesCLI._handle_copy_command | local | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
-| `/cron` | refused | HermesCLI._handle_cron_command | slash.exec | unavailable: terminal | slash.exec: refused | TUI session: bare `/cron` and `/cron list [--all]` read the profile's jobs; client-local (cli_only) |
+| `/cron` | refused | HermesCLI._handle_cron_command | slash.exec | unavailable: terminal | slash.exec: refused | TUI session: bare `/cron` and `/cron list [--all]` read the profile's jobs |
 | `/curator` | control | HermesCLI._handle_curator_command | slash.exec | unavailable: advanced | slash.exec |  |
 | `/debug` | control | HermesCLI._handle_debug_command | slash.exec | slash.exec | slash.exec | uploads logs to a public paste |
 | `/deny` | control | messaging-only: unknown command | slash.exec | slash.exec | slash.exec | messaging-only |
@@ -70,6 +71,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/indicator` | refused | HermesCLI._handle_indicator_command | config.get, config.set | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
 | `/init` | control | HermesCLI._handle_init_command | slash.exec | slash.exec | slash.exec |  |
 | `/insights` | read | HermesCLI._show_insights | slash.exec | unavailable: advanced | slash.exec |  |
+| `/interrupt` | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | slash.exec: refused | messaging-only |
 | `/journey` (/learning, /memory-graph) | refused | HermesCLI._handle_journey_command | local | action: journey | slash.exec: refused | client-local (cli_only) |
 | `/kanban` | read (list/show/stats/assignees/context/runs/log/diagnostics) | HermesCLI._handle_kanban_command | slash.exec | unavailable: advanced | slash.exec |  |
 | `/learn` | control | HermesCLI._handle_learn_command | slash.exec | slash.exec | slash.exec |  |
@@ -109,6 +111,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/skills` | read (bare/`pending`/`diff`; `approve`/`reject`/`approval` control; hub refused) | HermesCLI._cmd_skills | slash.exec; sidecar: skills.manage | slash.exec | slash.exec | client-local (cli_only) |
 | `/skin` | refused | HermesCLI._handle_skin_command | config.get, config.set | action: skin | slash.exec: refused | client-local (cli_only) |
 | `/snapshot` (/snap) | refused | HermesCLI._handle_snapshot_command | slash.exec: refused | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
+| `/ssh` | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | slash.exec: refused | messaging-only |
 | `/start` | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | slash.exec: refused | messaging-only |
 | `/status` | read | HermesCLI._show_session_status | canonical route | slash.exec (rpc fallback) | slash.exec | TUI session: main's `Hermes TUI Status` |
 | `/statusbar` (/sb) | refused | HermesCLI._cmd_statusbar | local (preference not saved) | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
@@ -117,6 +120,8 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/subgoal` | control | HermesCLI._handle_subgoal_command | slash.exec | slash.exec | slash.exec |  |
 | `/subscription` (/upgrade) | refused | HermesCLI._show_subscription | sidecar: subscription.state | slash.exec: refused | slash.exec: refused | client-local (cli_only) |
 | `/suggestions` (/suggest) | read (bare only) | HermesCLI._handle_suggestions_command | slash.exec | slash.exec | slash.exec |  |
+| `/template` (/tpl) | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | slash.exec: refused | messaging-only |
+| `/thread` (/t) | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | slash.exec: refused | messaging-only |
 | `/timestamps` (/ts) | refused | HermesCLI._handle_timestamps_command | slash.exec: refused | slash.exec: refused | slash.exec: refused | client-local (cli_only) |
 | `/title` | control | HermesCLI._cmd_title | canonical route | action: title | session.mutate rename (bare: slash.exec) |  |
 | `/tools` | refused | HermesCLI._handle_tools_command | refused: not available yet | slash.exec: refused | session.info | client-local (cli_only) |

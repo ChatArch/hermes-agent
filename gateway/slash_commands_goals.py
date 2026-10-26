@@ -287,6 +287,7 @@ class GatewayGoalCommandsMixin:
                 route = {"platform": platform.value if hasattr(platform, "value") else str(platform or "")}
                 for key in ("chat_id", "chat_type", "thread_id", "user_id", "user_name", "profile"):
                     route[key] = str(getattr(src, key, "") or "")
+                route["message_id"] = str(event.message_id or getattr(src, "message_id", "") or "")
                 route = {k: v for k, v in route.items() if v}
         except Exception:
             route = {}

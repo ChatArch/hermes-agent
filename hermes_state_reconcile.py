@@ -232,10 +232,11 @@ def _apply_additive_schema(path: Path, budget: _Budget | None = None) -> None:
     budget.check()
     with closing(connect_tracked(path, tracking_path=path, timeout=budget.busy_timeout(),
                                  isolation_level=None)) as conn:
-        _reapply_durability_barriers(conn)
         budget.arm(conn)
-        conn.execute('BEGIN IMMEDIATE')
         try:
+            _reapply_durability_barriers(conn)
+            budget.check()
+            conn.execute('BEGIN IMMEDIATE')
             cursor = conn.cursor()
             apply_declared_schema(cursor)
             # Postcondition, still inside the transaction: every declared table/column resolves.
@@ -249,11 +250,15 @@ def _apply_additive_schema(path: Path, budget: _Budget | None = None) -> None:
             budget.check()
             conn.execute('COMMIT')
         except BaseException as exc:
+            # Cleanup must not run through the expired VM handler that interrupted the DDL.
+            conn.set_progress_handler(None, 0)
             with contextlib.suppress(sqlite3.Error):
                 conn.execute('ROLLBACK')
             if budget.expired and isinstance(exc, sqlite3.OperationalError):
                 raise BrowseBudgetExceeded('browse schema catch-up exceeded its time budget') from exc
             raise
+        finally:
+            conn.set_progress_handler(None, 0)
 
 
 BROWSE_RECONCILE_PURPOSE = 'browse_schema_reconcile'

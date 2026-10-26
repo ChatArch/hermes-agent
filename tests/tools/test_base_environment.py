@@ -104,14 +104,14 @@ class TestBoundedOutputCollector:
 
 class TestWrapCommand:
     @pytest.mark.parametrize("persistent", [False, True])
-    def test_snapshot_and_cwd_persistence_follow_backend_policy(self, tmp_path, persistent):
+    def test_exports_follow_persistence_policy_and_cwd_always_persists(self, tmp_path, persistent):
         env = _TestableEnv(cwd=str(tmp_path))
         snapshot = tmp_path / "snapshot.sh"
         snapshot.write_text("export HERMES_POLICY_PROBE=before\n")
         before = snapshot.read_bytes()
         env._snapshot_path = str(snapshot)
         env._snapshot_ready = True
-        env._persist_session_state = persistent
+        env._persist_env = persistent
         destination = tmp_path / "destination"
         destination.mkdir()
         wrapped = env._wrap_command(
@@ -124,7 +124,14 @@ class TestWrapCommand:
         env._extract_cwd_from_output(result)
         assert result["output"].strip() == "before"
         assert (snapshot.read_bytes() != before) is persistent
-        assert env.cwd == str(destination if persistent else tmp_path)
+        assert env.cwd == str(destination)
+        followup = env._wrap_command("printf '%s\n' \"$HERMES_POLICY_PROBE\"", env.cwd)
+        completed = subprocess.run(["bash", "-c", followup], capture_output=True, text=True, timeout=10, check=False)
+        assert completed.returncode == 0
+        result = {"output": completed.stdout}
+        env._extract_cwd_from_output(result)
+        assert result["output"].strip() == ("after" if persistent else "before")
+        assert env.cwd == str(destination)
 
     def test_basic_shape(self):
         env = _TestableEnv()

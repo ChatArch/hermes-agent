@@ -708,6 +708,7 @@ class GatewayNotificationsMixin(GatewayProcessWatcherMixin, GatewayUpdateNotific
         return SessionSource(
             platform=platform, chat_id=chat_id, chat_type=chat_type, thread_id=_opt("thread_id"),
             user_id=_opt("user_id"), user_name=_opt("user_name"), scope_id=scope_id, profile=profile,
+            message_id=_opt("message_id"),
         )
 
     async def _drain_watch_notifications(self, completion_queue) -> None:

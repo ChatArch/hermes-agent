@@ -35,7 +35,7 @@ def test_in_process_turn_routes_with_the_sessions_own_provider_routing(tmp_path,
         _resolve_turn_agent_config=lambda message, model, runtime: {'model': model, 'runtime': runtime})
     turn = TurnRunner.__new__(TurnRunner)
     turn._runner = runner
-    turn._ctx = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL, chat_id='c'), session_key='k',
+    turn._ctx = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL, chat_id='c'), session_key='k', session_id='sid',
                                 user_config={}, message='hi', inbound_message_id=None, enabled_toolsets=[])
     turn._combined_ephemeral_prompt = lambda: None
     turn._setup_stream_consumer = lambda platform_key: (None, None, None, False)

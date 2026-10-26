@@ -27,7 +27,10 @@ def test_astra_normalizes_both_override_layers_without_mutating_config(nested, t
         tools=[], request_overrides=overrides,
     )
     effective = kwargs["extra_body"] if nested else kwargs
-    assert effective["reasoning"] == {"effort": "low", "summary": "auto"}
+    expected_reasoning = {"effort": "low", "summary": "auto"}
+    if nested:
+        expected_reasoning["context"] = "all_turns"
+    assert effective["reasoning"] == expected_reasoning
     assert "prompt_cache_options" not in kwargs  # not an OpenAI SDK keyword
     # The generic SDK strips unsupported top-level options; the explicit extra_body
     # escape hatch remains available for options the backend supports.

@@ -8,7 +8,6 @@ so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import logging
 import time
 from contextlib import nullcontext, suppress
@@ -16,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.session_identity import replace_source
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner
@@ -103,13 +103,15 @@ class GatewayGoalsMixin:
     def _synthetic_prompt_event(source: Any, text: str, *, internal: bool = False) -> MessageEvent:
         """Build the TEXT event used to inject a goal/heartbeat/loop prompt into a session.
 
-        The stored source's ``message_id`` is the message that registered the watch; a synthetic
-        prompt is not a reply to it, so it is dropped or every progress bubble and final reply
-        would quote that stale message (Telegram DM topics route anchorless via the topic id).
-        ``replace_source`` keeps the receiving-adapter provenance native admission reads.
+        Feishu native topics need the source message as a transport reply anchor. Elsewhere the
+        stored id would quote the message that registered the watch, so clear that stale quote
+        while retaining the source's pinned routing identity and transport provenance.
         """
-        from gateway.session_identity import replace_source
-        source = replace_source(source, message_id=None) if getattr(source, "message_id", None) else source
+        if getattr(source, "message_id", None):
+            anchor = source.message_id if (
+                source.platform == Platform.FEISHU and getattr(source, "thread_id", None)
+            ) else None
+            source = replace_source(source, message_id=anchor)
         return MessageEvent(
             text=text, message_type=MessageType.TEXT, source=source, internal=internal,
             inherit_channel_pin=True,
@@ -453,7 +455,7 @@ class GatewayGoalsMixin:
             "session_key": "",
             "platform": platform_name,
             "chat_id": chat_id,
-            **{k: route.get(k, "") for k in ("chat_type", "thread_id", "user_id", "user_name")},
+            **{k: route.get(k, "") for k in ("chat_type", "thread_id", "user_id", "user_name", "message_id")},
         })
         if source is None:
             return
