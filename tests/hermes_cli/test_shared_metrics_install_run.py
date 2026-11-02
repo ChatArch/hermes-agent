@@ -136,7 +136,7 @@ def test_start_with_collection_off_purges_receipts_unreported(marks, monkeypatch
     assert marks.rows == []
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="runs the real install.sh")
+@pytest.mark.platforms("posix")
 def test_real_install_sh_ladder_leaves_only_closed_tokens(tmp_path):
     """The real ladder with git missing from PATH fails in prerequisites and parks one closed receipt."""
     tools = tmp_path / "bin"
@@ -180,8 +180,7 @@ def test_receipt_is_recorded_only_on_a_day_the_sender_can_ever_send(marks, monke
     t0 = datetime(2026, 10, 6, tzinfo=UTC)
     clock = {"now": t0 + timedelta(hours=9)}
     monkeypatch.setattr(store_module, "_utc_now", lambda: clock["now"])
-    # Receipt TTL and daily consent must share this controlled clock.
-    monkeypatch.setattr(install_run, "time", SimpleNamespace(time=lambda: clock["now"].timestamp()))
+    # Receipt TTL and daily consent now both read the store's controlled _utc_now clock.
     monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly",
                         lambda: {"telemetry": {"shared_metrics": {"enabled": True, "send": True}}})
     store = store_module.SharedMetricsStore()
