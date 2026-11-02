@@ -134,7 +134,7 @@ jobs:
 
   windows:
     name: install.ps1 protocol surface
-    runs-on: blacksmith-2vcpu-windows-2025
+    runs-on: windows-2025
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
