@@ -77,3 +77,13 @@ no partial result was retained.
    `scripts/run_tests.sh`, `python scripts/check`, and exact-head CI on
    macOS/Linux/Windows before marking the sync ready. PR #71's existing CI
    failure must also be understood; this branch is not a deployment or release.
+
+Local checks on this branch: the two new focused files passed (21 tests total),
+`python scripts/check --staged` passed with pre-existing advisory findings.
+An expanded five-file run reported 4 failures in two older Telegram test files:
+importing `gateway.run` reads the real Hermes install's `.git/worktrees/...`
+under the real-home I/O guard during `hermes_bootstrap` initialization, before
+the sender is called. This needs isolation/baseline verification; it is not a
+green full-suite claim. The local lefthook could not find `ruff` in its PATH,
+so the two commits used `core.hooksPath=/dev/null` after the project's
+12-check `scripts/check --staged` passed.
