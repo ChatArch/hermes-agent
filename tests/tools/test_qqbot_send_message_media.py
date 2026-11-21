@@ -10,15 +10,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from gateway.config import Platform
-from gateway.platforms.qqbot.constants import (
+from plugins.platforms.qqbot.constants import (
     MEDIA_TYPE_FILE,
     MEDIA_TYPE_IMAGE,
     MEDIA_TYPE_VIDEO,
     MEDIA_TYPE_VOICE,
     MSG_TYPE_MEDIA,
 )
-from tools.send_message_senders import _qqbot_media_file_type, _qqbot_upload_local_file
-from tools.send_message_tool import _send_qqbot, _send_to_platform
+from plugins.platforms.qqbot.send import _qqbot_media_file_type, _qqbot_upload_local_file
+from plugins.platforms.qqbot.send import send_qqbot as _send_qqbot
+from tools.send_message_tool import _send_to_platform
 
 
 def _pconfig():
@@ -50,16 +51,17 @@ class TestSendToPlatformQqbotMediaRouting:
         img.write_bytes(b"\x89PNG\r\n\x1a\n")
         media = [(str(img), False)]
 
+        mock_send = AsyncMock(
+            return_value={
+                "success": True,
+                "platform": "qqbot",
+                "chat_id": "openid-1",
+            }
+        )
         with patch(
-            "tools.send_message_tool._send_qqbot",
-            new=AsyncMock(
-                return_value={
-                    "success": True,
-                    "platform": "qqbot",
-                    "chat_id": "openid-1",
-                }
-            ),
-        ) as mock_send:
+            "tools.send_message_tool._plugin_standalone_sender",
+            return_value=(mock_send, None),
+        ):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.QQBOT,
@@ -80,12 +82,13 @@ class TestSendToPlatformQqbotMediaRouting:
         img.write_bytes(b"jpeg-bytes")
         media = [(str(img), False)]
 
+        mock_send = AsyncMock(
+            return_value={"success": True, "platform": "qqbot", "chat_id": "oid"}
+        )
         with patch(
-            "tools.send_message_tool._send_qqbot",
-            new=AsyncMock(
-                return_value={"success": True, "platform": "qqbot", "chat_id": "oid"}
-            ),
-        ) as mock_send:
+            "tools.send_message_tool._plugin_standalone_sender",
+            return_value=(mock_send, None),
+        ):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.QQBOT,
@@ -160,7 +163,7 @@ class TestSendQqbotMedia:
                 return {"file_info": "FI"}
 
         with patch.object(Path, "exists", checked_exists), patch.object(Path, "is_file", checked_is_file), patch(
-            "gateway.platforms.qqbot.chunked_upload.ChunkedUploader", Upload,
+            "plugins.platforms.qqbot.chunked_upload.ChunkedUploader", Upload,
         ):
             result = asyncio.run(_qqbot_upload_local_file(
                 SimpleNamespace(put=None), {}, "c2c", "u1", str(img), MEDIA_TYPE_IMAGE,
@@ -205,7 +208,7 @@ class TestSendQqbotMedia:
         )
 
         with patch.dict("sys.modules", {"httpx": _HttpxMod()}), patch(
-            "tools.send_message_senders._qqbot_deliver_one_media",
+            "plugins.platforms.qqbot.send._qqbot_deliver_one_media",
             new=deliver,
         ):
             result = asyncio.run(
@@ -229,7 +232,7 @@ class TestSendQqbotMedia:
         assert str(img) in _args
 
     def test_deliver_one_media_falls_back_c2c_to_group(self, tmp_path):
-        from tools.send_message_senders import _qqbot_deliver_one_media
+        from plugins.platforms.qqbot.send import _qqbot_deliver_one_media
 
         img = tmp_path / "a.png"
         img.write_bytes(b"x")
@@ -250,10 +253,10 @@ class TestSendQqbotMedia:
             return {"id": "mid-2"}
 
         with patch(
-            "tools.send_message_senders._qqbot_upload_local_file",
+            "plugins.platforms.qqbot.send._qqbot_upload_local_file",
             new=AsyncMock(side_effect=_fake_upload_local),
         ), patch(
-            "tools.send_message_senders._qqbot_send_media_message",
+            "plugins.platforms.qqbot.send._qqbot_send_media_message",
             new=AsyncMock(side_effect=_fake_send_media),
         ):
             result = asyncio.run(
@@ -332,7 +335,7 @@ class TestQqbotMediaFailureFallsBackToText:
             return SimpleNamespace(status_code=200, json=lambda: {"id": "text-mid"})
 
         with patch.dict("sys.modules", {"httpx": _token_client(_post)}), patch(
-            "tools.send_message_senders._qqbot_deliver_one_media", new=AsyncMock(side_effect=_deliver)
+            "plugins.platforms.qqbot.send._qqbot_deliver_one_media", new=AsyncMock(side_effect=_deliver)
         ):
             result = asyncio.run(
                 _send_qqbot(
@@ -360,7 +363,7 @@ class TestQqbotMediaFailureFallsBackToText:
             return SimpleNamespace(status_code=200, json=lambda: {"id": "mid"})
 
         with patch.dict("sys.modules", {"httpx": _token_client(_post)}), patch(
-            "tools.send_message_senders._qqbot_deliver_one_media",
+            "plugins.platforms.qqbot.send._qqbot_deliver_one_media",
             new=AsyncMock(return_value={"error": "QQBot media send failed: too large"}),
         ):
             result = asyncio.run(
@@ -382,7 +385,7 @@ class TestQqbotMediaFailureFallsBackToText:
 
 class TestQqbotSendMediaMessageBody:
     def test_body_uses_msg_type_media(self):
-        from tools.send_message_senders import _qqbot_send_media_message
+        from plugins.platforms.qqbot.send import _qqbot_send_media_message
 
         captured = {}
 
@@ -393,7 +396,7 @@ class TestQqbotSendMediaMessageBody:
             return {"id": "x"}
 
         with patch(
-            "tools.send_message_senders._qqbot_api_json",
+            "plugins.platforms.qqbot.send._qqbot_api_json",
             new=AsyncMock(side_effect=_fake_api),
         ):
             asyncio.run(

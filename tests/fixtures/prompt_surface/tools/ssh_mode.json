@@ -1,0 +1,36 @@
+{
+  "description": "Inspect or request the current gateway session's execution backend. Backends are 'local' plus configured SSH targets. Actions mirror the gateway /ssh command: status, list, test, use, on, off. The model may request use <backend>; if that backend is off for auto-switching, Hermes requests user approval instead of switching silently. on/off are user-owned permission changes and the model cannot use them to grant itself access.",
+  "name": "ssh_mode",
+  "parameters": {
+    "properties": {
+      "action": {
+        "description": "Action to perform.",
+        "enum": [
+          "status",
+          "list",
+          "test",
+          "use",
+          "on",
+          "off"
+        ],
+        "type": "string"
+      },
+      "backend": {
+        "description": "Backend name: 'local' or a configured SSH target alias.",
+        "type": "string"
+      },
+      "cwd": {
+        "description": "Optional remote working directory override for SSH backend use.",
+        "type": "string"
+      },
+      "reason": {
+        "description": "Short user-visible reason for switching backends.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "type": "object"
+  }
+}

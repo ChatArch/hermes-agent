@@ -19,12 +19,13 @@ from pathlib import Path
 
 OFFICIAL_COMMIT_API = "https://api.github.com/repos/NousResearch/hermes-agent/git/commits/"
 OFFICIAL_MERGE_PREFIX = "Merge official Hermes main "
-# This one-cycle allowlist contains the three upstream-main snapshots independently
-# read back before the PR #66 merge. A future sync must review and pin its own tips.
+# Reviewed upstream-main snapshots, independently read back for their sync cycles.
+# Each future sync must verify and pin its own tip; unknown parents fail closed.
 VERIFIED_MAIN_TIPS = frozenset({
     "f86276d2ebcccf0530873c11e2965c3f1cbd5a31",
     "66605471e9f0b0832abbefaf625ce08e948ca540",
     "c57331677d7fc46298a7159cf3a650853f0966c5",
+    "20acba0376944d11ee970d6e734afd54bfd8045c",
 })
 
 

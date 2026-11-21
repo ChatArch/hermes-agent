@@ -230,3 +230,34 @@ def test_retention_refuses_unverified_archives_live_direct_holders_and_schema_dr
     assert "schema changed" in process.stderr
     assert _session_ids(history.database) == original_ids
     assert not (manifest.parent / "apply.jsonl").exists()
+
+
+
+def test_retention_keeps_runtime_ledger_sessions_and_their_ancestors(history):
+    """Runtime admissions/workers are not archival transcript rows; retain them verbatim."""
+    with closing(sqlite3.connect(history.database)) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute(
+            "INSERT INTO session_admissions(admission_id,request_id,principal_id,target_session_id,"
+            "lineage_json,payload_json,payload_digest,intent,status) "
+            "VALUES ('a','r','human','old-child','[]','{}','digest','queue','terminal')")
+        connection.execute(
+            "INSERT INTO worker_executions(execution_id,session_id,kind,owner_epoch,generation,status,"
+            "adoption_digest) VALUES ('w','raw-old','cron',1,1,'terminal','digest')")
+        connection.commit()
+        before = list(connection.iterdump())
+        retention.canonical_schema(connection)
+        selected = {row["id"] for row in retention.candidates(connection, history.cutoff)}
+        assert not {"old-child", "old-parent", "raw-old"} & selected
+        assert "changed-old" in selected
+        assert list(connection.iterdump()) == before
+
+
+def test_retention_refuses_a_runtime_table_with_cascading_session_deletes():
+    with closing(sqlite3.connect(":memory:")) as connection:
+        for table in retention.TABLES:
+            connection.execute(f"CREATE TABLE {table}(id TEXT PRIMARY KEY)")
+        connection.execute("CREATE TABLE session_admissions (target_session_id TEXT "
+                           "REFERENCES sessions(id) ON DELETE CASCADE)")
+        with pytest.raises(RuntimeError, match="Unarchived foreign-key dependency"):
+            retention.canonical_schema(connection)

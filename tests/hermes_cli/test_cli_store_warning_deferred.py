@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 def test_deferred_store_warning_keeps_failure_details(monkeypatch):
     import cli
-    import hermes_state_registry
+    import hermes_cli.gateway_session_store as stores
     import hermes_cli.cli_init_mixin as init
     import gateway.warning_notifications as notifications
     from hermes_cli.cli_init_mixin import CLIInitMixin
@@ -16,7 +16,7 @@ def test_deferred_store_warning_keeps_failure_details(monkeypatch):
     def fail_open():
         raise RuntimeError("bounded store failure")
 
-    monkeypatch.setattr(hermes_state_registry, "acquire", fail_open)
+    monkeypatch.setattr(stores, "session_store", fail_open)
     monkeypatch.setattr(cli, "_run_state_db_auto_maintenance", lambda *_: None)
     monkeypatch.setattr(cli, "_run_checkpoint_auto_maintenance", lambda: None)
     monkeypatch.setattr(notifications, "render_notification", lambda callback, **kw: deferred.append(callback))

@@ -34,6 +34,8 @@ import time
 MIN_FREE = 512 * 1024 * 1024
 FORMAT = "hermes-session-retention-v1"
 TABLES = ("system_prompts", "sessions", "messages", "session_model_usage")
+# Runtime ledgers are not transcript exports: keep every referenced session instead of deleting them.
+RUNTIME_REFERENCES = {"session_admissions": "target_session_id", "worker_executions": "session_id"}
 
 
 def canonical_schema(connection):
@@ -50,7 +52,10 @@ def canonical_schema(connection):
             raise RuntimeError("Unsupported table identifier")
         for fk in connection.execute(f'PRAGMA foreign_key_list("{name}")'):
             if fk[2] in {"sessions", "messages"} and name not in TABLES:
-                raise RuntimeError(f"Unarchived foreign-key dependency: {name}")
+                retained = (name in RUNTIME_REFERENCES and
+                            tuple(fk[2:7]) == ("sessions", RUNTIME_REFERENCES[name], "id", "NO ACTION", "RESTRICT"))
+                if not retained:
+                    raise RuntimeError(f"Unarchived foreign-key dependency: {name}")
     return result
 
 
@@ -179,6 +184,14 @@ def offline(path, exclude=None):
             raise RuntimeError("Another in-process SessionDB holds the source store")
 
 
+def runtime_guarded_sessions(connection):
+    guarded = set()
+    for table, column in RUNTIME_REFERENCES.items():
+        if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+            guarded.update(row[0] for row in connection.execute(f'SELECT "{column}" FROM "{table}"'))
+    return guarded
+
+
 def candidates(connection, cutoff, include_stale_open=False, only_id=None, include_stale_messaging=False):
     """Native retention predicate plus conservative guards on whole parent graphs."""
     SessionDB, Maintenance, recency = native()
@@ -213,6 +226,7 @@ def candidates(connection, cutoff, include_stale_open=False, only_id=None, inclu
         if not isinstance(entry, dict) or not isinstance(entry.get("session_id"), str):
             raise RuntimeError("Cannot interpret recent gateway routing; refusing retention")
         guarded.add(entry["session_id"])
+    guarded.update(runtime_guarded_sessions(connection))
     frontier = list(guarded)
     while frontier:
         for child in children.get(frontier.pop(), ()):
